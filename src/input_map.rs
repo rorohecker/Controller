@@ -76,7 +76,7 @@ impl GyroAimMapper {
         let yaw = input.gyro[2] as f32;
         let pitch = input.gyro[0] as f32;
         let sens = self.config.sensitivity.clamp(0.05, 8.0);
-        let mut dx = yaw * self.config.yaw_scale.clamp(0.0, 4.0) * sens * 0.0022;
+        let dx = yaw * self.config.yaw_scale.clamp(0.0, 4.0) * sens * 0.0022;
         let mut dy = pitch * self.config.pitch_scale.clamp(0.0, 4.0) * sens * 0.0022;
         if self.config.invert_y {
             dy = -dy;

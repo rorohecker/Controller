@@ -5,6 +5,7 @@ mod haptics;
 mod input_map;
 mod processes;
 mod profiles;
+mod xinput_bridge;
 
 use std::{
     io::{self, BufRead, BufReader, BufWriter, Write},

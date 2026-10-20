@@ -8,6 +8,7 @@ use crate::{
     haptics::HapticClip,
     input_map::{GyroActivation, GyroAimConfig, GyroAimMapper, MouseMapper, RemapBinding, RemapMapper},
     processes,
+    xinput_bridge::XInputBridge,
 };
 use aftertouch_protocol::{self as protocol, TriggerSetting};
 use hidapi::{BusType, HidApi, HidDevice};
@@ -56,6 +57,9 @@ pub enum DeviceCommand {
         enabled: bool,
         #[serde(default)]
         bindings: Vec<RemapBindingDto>,
+    },
+    SetXinput {
+        enabled: bool,
     },
     PlayHaptic {
         shape: String,
@@ -365,12 +369,15 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
 fn drop_device(
     device: &mut Option<Connected>,
     mouse: &mut MouseMapper,
+    xinput: &mut XInputBridge,
     proxy: &Sender<serde_json::Value>,
     message: &str,
 ) {
     mouse.set_enabled(false);
+    xinput.shutdown();
     emit(proxy, json!({"type":"mouseMode","enabled":false}));
     emit(proxy, json!({"type":"lightMode","battery":false}));
+    emit(proxy, xinput.status_event());
     emit(
         proxy,
         json!({"type":"triggerLease","active":false,"durationMs":0}),
@@ -408,6 +415,7 @@ fn handle_command(
     mouse: &mut MouseMapper,
     gyro: &mut GyroAimMapper,
     remap: &mut RemapMapper,
+    xinput: &mut XInputBridge,
     api: &HidApi,
     preferred_path: &mut Option<String>,
 ) -> bool {
@@ -416,6 +424,7 @@ fn handle_command(
             mouse.set_enabled(false);
             remap.set(false, Vec::new());
             gyro.set_config(GyroAimConfig::default());
+            let _ = xinput.set_enabled(false);
             if let Some(device) = device.as_mut() {
                 let _ = device.reset();
             }
@@ -524,6 +533,27 @@ fn handle_command(
             emit(
                 proxy,
                 json!({"type":"notice","message":if enabled {"Remap on"} else {"Remap off"}}),
+            );
+            return true;
+        }
+        DeviceCommand::SetXinput { enabled } => {
+            if enabled && device.is_none() {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Connect a controller first."}),
+                );
+                return true;
+            }
+            let event = xinput.set_enabled(enabled);
+            let ok = event["status"] == "active" || event["status"] == "disabled";
+            let message = event["message"].as_str().unwrap_or("XInput").to_string();
+            emit(proxy, event);
+            emit(
+                proxy,
+                json!({
+                    "type": if ok { "notice" } else { "error" },
+                    "message": message
+                }),
             );
             return true;
         }
@@ -647,10 +677,12 @@ fn handle_command(
             mouse.set_enabled(false);
             gyro.set_config(GyroAimConfig::default());
             remap.set(false, Vec::new());
+            let xinput_event = xinput.set_enabled(false);
             device.battery_light = false;
             emit(proxy, json!({"type":"mouseMode","enabled":false}));
             emit(proxy, json!({"type":"gyroAim","enabled":false}));
             emit(proxy, json!({"type":"remap","enabled":false}));
+            emit(proxy, xinput_event);
             emit(proxy, json!({"type":"lightMode","battery":false}));
             device.reset().map(|_| {
                 emit(
@@ -667,7 +699,8 @@ fn handle_command(
         | DeviceCommand::SetTouchMouse { .. }
         | DeviceCommand::SetTouchGestures { .. }
         | DeviceCommand::SetGyroAim { .. }
-        | DeviceCommand::SetRemap { .. } => unreachable!(),
+        | DeviceCommand::SetRemap { .. }
+        | DeviceCommand::SetXinput { .. } => unreachable!(),
     };
     match result {
         Ok(message) => emit(proxy, json!({ "type": "notice", "message": message })),
@@ -691,6 +724,8 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     let mut mouse = MouseMapper::default();
     let mut gyro = GyroAimMapper::default();
     let mut remap = RemapMapper::default();
+    let mut xinput = XInputBridge::default();
+    emit(&proxy, xinput.status_event());
     let mut preferred_path: Option<String> = None;
     let mut next_scan = Instant::now();
     let mut input_report = [0u8; 78];
@@ -739,6 +774,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         &mut mouse,
                         &mut gyro,
                         &mut remap,
+                        &mut xinput,
                         &api,
                         &mut preferred_path,
                     ) {
@@ -747,6 +783,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 }
                 Err(TryRecvError::Disconnected) => {
                     mouse.set_enabled(false);
+                    let _ = xinput.set_enabled(false);
                     if let Some(device) = device.as_mut() {
                         let _ = device.reset();
                     }
@@ -769,7 +806,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     } else {
                         "Disconnected"
                     };
-                    drop_device(&mut device, &mut mouse, &proxy, message);
+                    drop_device(&mut device, &mut mouse, &mut xinput, &proxy, message);
                     next_scan = Instant::now();
                 } else if matches!(current.transport, BusType::Bluetooth)
                     && preferred_path.is_none()
@@ -885,14 +922,17 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         mouse.update(&input);
                         gyro.update(&input);
                         remap.update(&input);
+                        xinput.update(&input);
                         if input.panic_combo && !connected.panic_latched {
                             mouse.set_enabled(false);
                             gyro.set_config(GyroAimConfig::default());
                             remap.set(false, Vec::new());
+                            let xinput_event = xinput.set_enabled(false);
                             connected.battery_light = false;
                             emit(&proxy, json!({"type":"mouseMode","enabled":false}));
                             emit(&proxy, json!({"type":"gyroAim","enabled":false}));
                             emit(&proxy, json!({"type":"remap","enabled":false}));
+                            emit(&proxy, xinput_event);
                             emit(&proxy, json!({"type":"lightMode","battery":false}));
                             let _ = connected.reset();
                             emit(
@@ -916,6 +956,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     drop_device(
                         &mut device,
                         &mut mouse,
+                        &mut xinput,
                         &proxy,
                         &format!("Controller disconnected: {error}"),
                     );

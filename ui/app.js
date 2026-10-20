@@ -44,9 +44,10 @@
   ];
   const state = {
     connected:false,name:'',transport:'',path:'',battery:null,charging:false,
-    buttons:Array(names.length).fill(0),axes:[0,0,0,0],touch:[null,null],gyro:[0,0,0],
+    batteryInfo:null,buttons:Array(names.length).fill(0),axes:[0,0,0,0],touch:[null,null],gyro:[0,0,0],
     profileId:'standard',profiles:clone(defaultProfiles),side:'left',packet:0,
     mouse:false,gestures:false,gyroAim:false,remapArmed:false,batteryLight:false,
+    xinput:false,xinputStatus:'disabled',xinputMessage:'ViGEm not connected',
     activity:Array(80).fill(0),lastInputAt:0,rate:0,devices:[],selectedPath:'',
     currentView:'live',playUntil:0,playStart:0,playDuration:0,lastExternalExe:'',
     leaseUntil:0,leaseDuration:0,fullReport:false,manualScan:false,
@@ -419,6 +420,20 @@
   $('#gyro-activation').addEventListener('change', syncGyroCommand);
   $('#gyro-invert').addEventListener('change', syncGyroCommand);
 
+  function renderXinput() {
+    const b = $('#xinput-toggle');
+    b.classList.toggle('is-active', state.xinput);
+    b.setAttribute('aria-pressed', String(state.xinput));
+    b.textContent = state.xinput ? 'On' : 'Off';
+    b.disabled = !state.connected;
+    $('#xinput-status').textContent = state.xinputMessage || 'ViGEm not connected';
+    $('#diag-xinput').textContent = state.xinput ? 'Active' : (state.xinputStatus === 'unavailable' ? 'No ViGEm' : 'Off');
+  }
+  $('#xinput-toggle').addEventListener('click', () => {
+    if (!state.connected) { toast('Connect a controller.'); return; }
+    send({action:'setXinput', enabled: !state.xinput});
+  });
+
   $('#diag-reset').addEventListener('click',()=>send({action:'reset'}));
   $('#quick-reset').addEventListener('click',()=>send({action:'reset'}));
   function finishScan(){clearTimeout(scanTimeout);state.manualScan=false;$('#scan-button').disabled=false;$('#scan-button').textContent='Scan';}
@@ -463,8 +478,8 @@
     $('#diag-firmware').textContent=connected?(firmware||'Firmware unknown'):'Firmware —';
     $('#owner-status').textContent=connected?'Core writer':'No pad';
     $('#owner-square').classList.toggle('is-live',connected);
-    $$('#apply-triggers,#reset-effects,#touch-mouse-toggle,#gyro-aim-toggle,#send-light,#release-light,#diag-reset,#quick-reset,#apply-profile-now').forEach(b=>b.disabled=!connected);
-    if(!connected){state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.mouse=false;state.gyroAim=false;state.remapArmed=false;state.batteryLight=false;state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);$('#diag-rate').textContent='—';renderMouseSwitch();renderGestureSwitch();renderGyroControls();renderBatteryLight();renderInput();}
+    $$('#apply-triggers,#reset-effects,#touch-mouse-toggle,#gyro-aim-toggle,#xinput-toggle,#send-light,#release-light,#diag-reset,#quick-reset,#apply-profile-now').forEach(b=>b.disabled=!connected);
+    if(!connected){state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gyroAim=false;state.remapArmed=false;state.batteryLight=false;state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);$('#diag-rate').textContent='—';renderMouseSwitch();renderGestureSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderInput();}
     renderSession();
   }
 
@@ -490,11 +505,28 @@
     $('#diag-l2').textContent=(b[6]||0).toFixed(2);$('#diag-r2').textContent=(b[7]||0).toFixed(2);
     $('#left-stick-mark i').style.transform=`translate(${a[0]*8}px,${a[1]*8}px)`;
     $('#right-stick-mark i').style.transform=`translate(${a[2]*8}px,${a[3]*8}px)`;
+    const info=state.batteryInfo;
+    const healthNames={good:'Good',warm:'Warm',hot:'Hot',cold:'Cold',fault:'Fault',unknown:'Unknown'};
+    const chargeNames={discharging:'Discharging',charging:'Charging',full:'Full',voltageOrTempFault:'Voltage / temp fault',temperatureFault:'Temperature fault',chargingError:'Charging error',unknown:'Unknown'};
+    const healthLabel=info?.health ? (healthNames[info.health]||info.health) : null;
+    const chargeLabel=info?.chargeState ? (chargeNames[info.chargeState]||info.chargeState) : null;
     $('#battery-value').textContent=state.battery==null?'—':`${state.battery}%`;
     $('#diag-battery').textContent=state.battery==null?'—':`${state.battery}%`;
-    $('#battery-detail').textContent=state.battery==null?'—':state.charging?'Charging':'Battery';
+    $('#battery-detail').textContent=state.battery==null?(info?.healthDetail||'—'):(state.charging?'Charging':(chargeLabel||'Battery'));
+    $('#battery-health').textContent=healthLabel?`Health ${healthLabel}`:'Health —';
+    $('#battery-health').dataset.health=info?.health||'unknown';
+    $('#battery-temp').textContent=info?.temperatureC!=null?`Temp ${info.temperatureC} °C`:'Temp —';
+    $('#diag-health').textContent=healthLabel||'—';
+    $('#diag-temp').textContent=info?.temperatureC!=null?`${info.temperatureC}°`:'—';
+    $('#diag-charge').textContent=chargeLabel||'—';
+    const jackParts=[];
+    if(info?.headphoneJack)jackParts.push('Headphone');
+    if(info?.microphoneJack)jackParts.push('Mic');
+    $('#diag-jack').textContent=info?`Jack: ${jackParts.length?jackParts.join(' · '):'None'}${info.healthDetail?` · ${info.healthDetail}`:''}`:'Jack: —';
     $('#battery-light').disabled=!state.connected||state.battery==null;
     $$('#battery-segments i').forEach((el,i)=>el.classList.toggle('is-full',state.battery!=null&&state.battery>(i*10)));
+    $$('#battery-segments i').forEach(el=>el.classList.toggle('is-charging',!!state.charging));
+    $$('#battery-segments i').forEach(el=>el.classList.toggle('is-fault',info?.health==='fault'));
     state.touch.forEach((point,i)=>{const el=$(`#contact-${i}`);el.classList.toggle('is-active',!!point);if(point){el.style.left=`${point.x*100}%`;el.style.top=`${point.y*100}%`;} $(`#touch-${i+1}-pos`).textContent=point?`${point.x.toFixed(3)} / ${point.y.toFixed(3)}`:'—';});
     state.gyro.forEach((n,i)=>{const k=['x','y','z'][i];$(`#gyro-${k}`).textContent=String(n);const f=clamp(Math.abs(n)/16000)*50;const el=$(`#gyro-${k}-fill`);el.style.width=`${f}%`;el.style.left=n<0?`${50-f}%`:'50%';});
     const activity=(active.length/8+Math.abs(a[0])/4+Math.abs(a[1])/4+(b[6]+b[7])/4);state.activity.push(clamp(activity));state.activity.shift();
@@ -517,9 +549,15 @@
       if(state.manualScan)finishScan();
     }else if(event.type==='input'){
       state.buttons=event.input.buttons;state.axes=event.input.axes;state.touch=event.input.touch;state.gyro=event.input.gyro;
-      state.battery=event.input.battery;state.charging=event.input.charging;state.fullReport=!!event.input.fullReport;
+      state.battery=event.input.battery;state.charging=event.input.charging;state.batteryInfo=event.input.batteryInfo||null;
+      state.fullReport=!!event.input.fullReport;
       $('#photo-status').textContent=event.input.fullReport?`${state.transport} live`:'Bluetooth basic';
       state.packet++;state.lastInputAt=performance.now();renderInput();renderSession();
+    }else if(event.type==='xinput'){
+      state.xinput=!!event.enabled && event.status==='active';
+      state.xinputStatus=event.status||'disabled';
+      state.xinputMessage=event.message||event.error||'ViGEm not connected';
+      renderXinput();
     }else if(event.type==='rate'){
       state.rate=event.reportsPerSecond||0;$('#diag-rate').textContent=state.connected?`${state.rate} / S`:'—';
     }else if(event.type==='conflict'){
@@ -570,7 +608,7 @@
   window.addEventListener('blur',()=>{if(state.connected)return;held.clear();state.buttons.fill(0);renderInput();});
 
   async function start(){
-    renderAllProfileControls();setLightColor('#d4a84b');setConnected(false);renderInput();renderDeviceList();renderGestureSwitch();navigate(location.hash.slice(1)||'live');
+    renderAllProfileControls();setLightColor('#d4a84b');setConnected(false);renderInput();renderDeviceList();renderGestureSwitch();renderXinput();navigate(location.hash.slice(1)||'live');
     await loadProfiles();
     if(native){
       try{await window.__TAURI__.event.listen('core-event',e=>handleEvent(e.payload));await send({action:'listDevices'});log('Core ready');$('#core-status').textContent='Core: ready';}
