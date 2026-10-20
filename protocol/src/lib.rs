@@ -8,6 +8,7 @@ pub const DUALSENSE_PID: u16 = 0x0ce6;
 pub const EDGE_PID: u16 = 0x0df2;
 pub const USB_OUTPUT_LEN: usize = 63;
 pub const BT_OUTPUT_LEN: usize = 78;
+pub const BT_HAPTIC_LEN: usize = 141;
 pub const MAX_TRIGGER_LEVEL: u8 = 6; // conservative ceiling; firmware supports 0..8
 
 /// The 2.21 firmware feature version introduced compatible vibration v2.
@@ -239,6 +240,8 @@ pub struct InputState {
     pub battery_info: BatteryInfo,
     pub touch: [Option<TouchPoint>; 2],
     pub gyro: [i16; 3],
+    /// Incrementing report sequence in full USB/Bluetooth reports.
+    pub sequence: Option<u8>,
     pub panic_combo: bool,
     pub full_report: bool,
 }
@@ -301,6 +304,7 @@ pub fn parse_input(data: &[u8]) -> Option<InputState> {
             battery_info,
             touch: [None, None],
             gyro: [0; 3],
+            sequence: None,
             panic_combo: data[7] & 1 != 0 && data[6] & 0x20 != 0,
             full_report: false,
         });
@@ -343,6 +347,7 @@ pub fn parse_input(data: &[u8]) -> Option<InputState> {
         battery_info,
         touch: [touch_point(&body[32..36]), touch_point(&body[36..40])],
         gyro,
+        sequence: Some(body[6]),
         panic_combo: b2 & 1 != 0 && b1 & 0x20 != 0, // PS + Options
         full_report: true,
     })
@@ -449,6 +454,23 @@ pub fn bt_report(usb: &[u8; USB_OUTPUT_LEN], sequence: u8) -> [u8; BT_OUTPUT_LEN
     report
 }
 
+/// Experimental Bluetooth voice-coil frame, kept separate from 0x31 controls.
+/// Wire format and 3 kHz signed stereo PCM basis: egormanga/SAxense (MPL-2.0 research).
+/// This is a pure encoder; the app does not send 0x32 frames without hardware validation.
+pub fn bt_haptic_report(pcm: &[i8; 64], sequence: u8) -> [u8; BT_HAPTIC_LEN] {
+    let mut report = [0u8; BT_HAPTIC_LEN];
+    report[0] = 0x32;
+    report[1] = (sequence & 0x0f) << 4;
+    report[2..11].copy_from_slice(&[0x91, 7, 0xfe, 0, 0, 0, 0, 0xff, sequence]);
+    report[11..13].copy_from_slice(&[0x92, 64]);
+    for (destination, sample) in report[13..77].iter_mut().zip(pcm.iter()) {
+        *destination = *sample as u8;
+    }
+    let crc = crc32_seeded(0xa2, &report[..137]);
+    report[137..141].copy_from_slice(&crc.to_le_bytes());
+    report
+}
+
 pub fn crc32_seeded(seed: u8, data: &[u8]) -> u32 {
     let mut crc = 0xffff_ffffu32;
     for byte in std::iter::once(&seed).chain(data.iter()) {
@@ -502,6 +524,18 @@ mod tests {
         assert_eq!(
             u32::from_le_bytes(bt[74..78].try_into().unwrap()),
             0x82d3_7342 // independent Python zlib CRC32 of the seeded frame
+        );
+    }
+
+    #[test]
+    fn experimental_bt_haptic_framing_matches_independent_crc() {
+        let report = bt_haptic_report(&[0; 64], 3);
+        assert_eq!(report.len(), 141);
+        assert_eq!(&report[..4], &[0x32, 0x30, 0x91, 7]);
+        assert_eq!(&report[9..13], &[0xff, 3, 0x92, 64]);
+        assert_eq!(
+            u32::from_le_bytes(report[137..141].try_into().unwrap()),
+            0x2d0f_ab86
         );
     }
 

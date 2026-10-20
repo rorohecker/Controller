@@ -6,7 +6,9 @@ use std::{
 
 use crate::{
     haptics::HapticClip,
-    input_map::{GyroActivation, GyroAimConfig, GyroAimMapper, MouseMapper, RemapBinding, RemapMapper},
+    input_map::{
+        GyroActivation, GyroAimConfig, GyroAimMapper, MouseMapper, RemapBinding, RemapMapper,
+    },
     processes,
     xinput_bridge::XInputBridge,
 };
@@ -27,6 +29,7 @@ pub enum DeviceCommand {
         left: TriggerSetting,
         right: TriggerSetting,
     },
+    RenewTriggers,
     SetLightbar {
         rgb: [u8; 3],
     },
@@ -104,6 +107,7 @@ struct Connected {
     product_id: u16,
     rumble_flags: (u8, u8),
     sequence: u8,
+    input_sequence: Option<u8>,
     trigger_active: bool,
     light_active: bool,
     rumble_active: bool,
@@ -265,13 +269,7 @@ fn list_devices(api: &HidApi) -> Vec<serde_json::Value> {
             })
         })
         .collect();
-    items.sort_by_key(|item| {
-        if item["transport"] == "USB" {
-            0
-        } else {
-            1
-        }
-    });
+    items.sort_by_key(|item| if item["transport"] == "USB" { 0 } else { 1 });
     items
 }
 
@@ -299,7 +297,9 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
     if let Some(wanted) = wanted {
         candidates.retain(|info| path_key(info) == wanted);
         if candidates.is_empty() {
-            return Err(format!("Selected controller is no longer available: {wanted}"));
+            return Err(format!(
+                "Selected controller is no longer available: {wanted}"
+            ));
         }
     }
     let mut last_error = None;
@@ -340,6 +340,7 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                         info.product_id() == protocol::EDGE_PID,
                     ),
                     sequence: 0,
+                    input_sequence: None,
                     trigger_active: false,
                     light_active: false,
                     rumble_active: false,
@@ -369,27 +370,44 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
 fn drop_device(
     device: &mut Option<Connected>,
     mouse: &mut MouseMapper,
+    gyro: &mut GyroAimMapper,
+    remap: &mut RemapMapper,
     xinput: &mut XInputBridge,
     proxy: &Sender<serde_json::Value>,
     message: &str,
 ) {
-    mouse.set_enabled(false);
-    xinput.shutdown();
-    emit(proxy, json!({"type":"mouseMode","enabled":false}));
+    stop_input_mappers(mouse, gyro, remap, xinput, proxy);
     emit(proxy, json!({"type":"lightMode","battery":false}));
-    emit(proxy, xinput.status_event());
     emit(
         proxy,
         json!({"type":"triggerLease","active":false,"durationMs":0}),
     );
     if let Some(mut old) = device.take() {
-        // Clear effects while the HID handle is still open (stall / soft disconnect).
         let _ = old.reset();
     }
     emit(
         proxy,
         json!({"type":"device","connected":false,"message":message}),
     );
+}
+
+fn stop_input_mappers(
+    mouse: &mut MouseMapper,
+    gyro: &mut GyroAimMapper,
+    remap: &mut RemapMapper,
+    xinput: &mut XInputBridge,
+    proxy: &Sender<serde_json::Value>,
+) {
+    mouse.set_enabled(false);
+    mouse.set_gestures(false);
+    gyro.set_config(GyroAimConfig::default());
+    remap.set(false, Vec::new());
+    xinput.shutdown();
+    emit(proxy, json!({"type":"mouseMode","enabled":false}));
+    emit(proxy, json!({"type":"touchGestures","enabled":false}));
+    emit(proxy, json!({"type":"gyroAim","enabled":false}));
+    emit(proxy, json!({"type":"remap","enabled":false}));
+    emit(proxy, xinput.status_event());
 }
 
 fn emit_connected(proxy: &Sender<serde_json::Value>, found: &Connected) {
@@ -422,17 +440,20 @@ fn handle_command(
 ) -> bool {
     match command {
         DeviceCommand::Shutdown => {
-            mouse.set_enabled(false);
-            remap.set(false, Vec::new());
-            gyro.set_config(GyroAimConfig::default());
-            let _ = xinput.set_enabled(false);
+            stop_input_mappers(mouse, gyro, remap, xinput, proxy);
             if let Some(device) = device.as_mut() {
                 let _ = device.reset();
             }
             return false;
         }
         DeviceCommand::Scan | DeviceCommand::ListDevices => {
-            emit_device_list(api, proxy, preferred_path.as_deref().or(device.as_ref().map(|d| d.path_display.as_str())));
+            emit_device_list(
+                api,
+                proxy,
+                preferred_path
+                    .as_deref()
+                    .or(device.as_ref().map(|d| d.path_display.as_str())),
+            );
             if let Some(found) = device.as_ref() {
                 emit_connected(proxy, found);
             }
@@ -443,20 +464,31 @@ fn handle_command(
                 emit(proxy, json!({"type":"notice","message":"Already selected"}));
                 return true;
             }
+            stop_input_mappers(mouse, gyro, remap, xinput, proxy);
             if let Some(mut old) = device.take() {
                 let _ = old.reset();
             }
-            mouse.set_enabled(false);
+            emit(proxy, json!({"type":"lightMode","battery":false}));
+            emit(
+                proxy,
+                json!({"type":"triggerLease","active":false,"durationMs":0}),
+            );
             *preferred_path = Some(path.clone());
             match open_path(api, Some(&path)) {
                 Ok(Some(found)) => {
                     emit_connected(proxy, &found);
                     emit_device_list(api, proxy, Some(&found.path_display));
                     *device = Some(found);
-                    emit(proxy, json!({"type":"notice","message":"Controller selected"}));
+                    emit(
+                        proxy,
+                        json!({"type":"notice","message":"Controller selected"}),
+                    );
                 }
                 Ok(None) => {
-                    emit(proxy, json!({"type":"device","connected":false,"message":"Controller not found"}));
+                    emit(
+                        proxy,
+                        json!({"type":"device","connected":false,"message":"Controller not found"}),
+                    );
                 }
                 Err(error) => emit(proxy, json!({"type":"error","message":error})),
             }
@@ -479,6 +511,13 @@ fn handle_command(
             return true;
         }
         DeviceCommand::SetTouchGestures { enabled } => {
+            if enabled && (device.is_none() || !mouse.enabled()) {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Turn on touchpad mouse before enabling edge gestures."}),
+                );
+                return true;
+            }
             mouse.set_gestures(enabled);
             emit(proxy, json!({"type":"touchGestures","enabled":enabled}));
             emit(
@@ -502,13 +541,30 @@ fn handle_command(
                 );
                 return true;
             }
+            let Some(activation_mode) = GyroActivation::from_label(&activation) else {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Choose a valid gyro activation control."}),
+                );
+                return true;
+            };
+            if !(0.05..=8.0).contains(&sensitivity)
+                || !(0.0..=4.0).contains(&yaw_scale)
+                || !(0.0..=4.0).contains(&pitch_scale)
+            {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Gyro settings are out of range."}),
+                );
+                return true;
+            }
             gyro.set_config(GyroAimConfig {
                 enabled,
                 sensitivity,
                 yaw_scale,
                 pitch_scale,
                 invert_y,
-                activation: GyroActivation::from_label(&activation),
+                activation: activation_mode,
             });
             emit(
                 proxy,
@@ -521,9 +577,27 @@ fn handle_command(
             return true;
         }
         DeviceCommand::SetRemap { enabled, bindings } => {
+            if enabled && device.is_none() {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Connect a controller before enabling remap."}),
+                );
+                return true;
+            }
+            let mut seen = std::collections::HashSet::new();
+            if bindings.len() > 23
+                || bindings
+                    .iter()
+                    .any(|b| b.button >= 23 || b.vk == 0 || b.vk > 255 || !seen.insert(b.button))
+            {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Remap bindings must use distinct buttons and valid Windows keys."}),
+                );
+                return true;
+            }
             let mapped = bindings
                 .into_iter()
-                .filter(|b| b.button < 23)
                 .map(|b| RemapBinding {
                     button: b.button,
                     vk: b.vk,
@@ -620,6 +694,16 @@ fn handle_command(
                 (Err(error), _) | (_, Err(error)) => Err(error.into()),
             }
         }
+        DeviceCommand::RenewTriggers => {
+            if device.trigger_active && device.trigger_until.is_some() {
+                device.trigger_until = Some(Instant::now() + Duration::from_secs(15));
+                emit(
+                    proxy,
+                    json!({"type":"triggerLease","active":true,"durationMs":15000}),
+                );
+            }
+            return true;
+        }
         DeviceCommand::SetLightbar { rgb } => {
             let result = if device.last_light == Some(rgb) {
                 Ok(())
@@ -654,9 +738,7 @@ fn handle_command(
             if enabled {
                 Ok("Battery light on")
             } else {
-                device
-                    .release_lightbar()
-                    .map(|_| "Battery light off")
+                device.release_lightbar().map(|_| "Battery light off")
             }
         }
         DeviceCommand::PlayHaptic {
@@ -687,15 +769,9 @@ fn handle_command(
             })
         }
         DeviceCommand::Reset => {
-            mouse.set_enabled(false);
-            gyro.set_config(GyroAimConfig::default());
-            remap.set(false, Vec::new());
-            let xinput_event = xinput.set_enabled(false);
+            stop_input_mappers(mouse, gyro, remap, xinput, proxy);
+            emit(proxy, json!({"type":"safetyReset"}));
             device.battery_light = false;
-            emit(proxy, json!({"type":"mouseMode","enabled":false}));
-            emit(proxy, json!({"type":"gyroAim","enabled":false}));
-            emit(proxy, json!({"type":"remap","enabled":false}));
-            emit(proxy, xinput_event);
             emit(proxy, json!({"type":"lightMode","battery":false}));
             device.reset().map(|_| {
                 emit(
@@ -747,14 +823,18 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     let mut first_process_check = true;
     let mut last_foreground = None::<String>;
     let mut raw_reports = 0u32;
+    let mut sequence_gaps = 0u32;
+    let mut invalid_reports = 0u32;
     let mut next_rate = Instant::now() + Duration::from_secs(1);
     loop {
         if Instant::now() >= next_rate {
             emit(
                 &proxy,
-                json!({"type":"rate","reportsPerSecond":raw_reports}),
+                json!({"type":"rate","reportsPerSecond":raw_reports,"sequenceGaps":sequence_gaps,"invalidReports":invalid_reports}),
             );
             raw_reports = 0;
+            sequence_gaps = 0;
+            invalid_reports = 0;
             next_rate = Instant::now() + Duration::from_secs(1);
         }
         if Instant::now() >= next_process_check {
@@ -770,9 +850,10 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
             }
             first_process_check = false;
             if status.foreground_exe != last_foreground {
-                if let Some(exe) = status.foreground_exe.as_ref() {
-                    emit(&proxy, json!({"type":"foreground","exe":exe}));
-                }
+                emit(
+                    &proxy,
+                    json!({"type":"foreground","exe":status.foreground_exe.as_deref().unwrap_or("")}),
+                );
                 last_foreground = status.foreground_exe;
             }
             next_process_check = Instant::now() + Duration::from_secs(2);
@@ -795,8 +876,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
-                    mouse.set_enabled(false);
-                    let _ = xinput.set_enabled(false);
+                    stop_input_mappers(&mut mouse, &mut gyro, &mut remap, &mut xinput, &proxy);
                     if let Some(device) = device.as_mut() {
                         let _ = device.reset();
                     }
@@ -819,7 +899,15 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     } else {
                         "Disconnected"
                     };
-                    drop_device(&mut device, &mut mouse, &mut xinput, &proxy, message);
+                    drop_device(
+                        &mut device,
+                        &mut mouse,
+                        &mut gyro,
+                        &mut remap,
+                        &mut xinput,
+                        &proxy,
+                        message,
+                    );
                     next_scan = Instant::now();
                 } else if matches!(current.transport, BusType::Bluetooth)
                     && preferred_path.is_none()
@@ -829,8 +917,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     && let Ok(Some(found)) = open_path(&api, None)
                     && found.path != current.path
                 {
-                    mouse.set_enabled(false);
-                    emit(&proxy, json!({"type":"mouseMode","enabled":false}));
+                    stop_input_mappers(&mut mouse, &mut gyro, &mut remap, &mut xinput, &proxy);
                     if let Some(old) = device.as_mut() {
                         let _ = old.reset();
                     }
@@ -904,6 +991,15 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     if let Some(input) = protocol::parse_input(&input_report[..length]) {
                         connected.last_valid_report = Instant::now();
                         raw_reports += 1;
+                        if let Some(sequence) = input.sequence {
+                            if let Some(previous) = connected.input_sequence {
+                                let delta = sequence.wrapping_sub(previous);
+                                if (2..128).contains(&delta) {
+                                    sequence_gaps += u32::from(delta - 1);
+                                }
+                            }
+                            connected.input_sequence = Some(sequence);
+                        }
                         if connected.battery_light
                             && let Some(battery) = input.battery
                         {
@@ -937,22 +1033,19 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         if let Some(event) = xinput.update(&input) {
                             emit(&proxy, event.clone());
                             if let Some(message) = event["message"].as_str() {
-                                emit(
-                                    &proxy,
-                                    json!({ "type": "error", "message": message }),
-                                );
+                                emit(&proxy, json!({ "type": "error", "message": message }));
                             }
                         }
                         if input.panic_combo && !connected.panic_latched {
-                            mouse.set_enabled(false);
-                            gyro.set_config(GyroAimConfig::default());
-                            remap.set(false, Vec::new());
-                            let xinput_event = xinput.set_enabled(false);
+                            emit(&proxy, json!({"type":"safetyReset"}));
+                            stop_input_mappers(
+                                &mut mouse,
+                                &mut gyro,
+                                &mut remap,
+                                &mut xinput,
+                                &proxy,
+                            );
                             connected.battery_light = false;
-                            emit(&proxy, json!({"type":"mouseMode","enabled":false}));
-                            emit(&proxy, json!({"type":"gyroAim","enabled":false}));
-                            emit(&proxy, json!({"type":"remap","enabled":false}));
-                            emit(&proxy, xinput_event);
                             emit(&proxy, json!({"type":"lightMode","battery":false}));
                             let _ = connected.reset();
                             emit(
@@ -969,6 +1062,8 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                             emit(&proxy, json!({ "type": "input", "input": input }));
                             connected.last_input_sent = Instant::now();
                         }
+                    } else if matches!(input_report[0], 0x01 | 0x31) {
+                        invalid_reports += 1;
                     }
                 }
                 Ok(_) => {}
@@ -976,6 +1071,8 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     drop_device(
                         &mut device,
                         &mut mouse,
+                        &mut gyro,
+                        &mut remap,
                         &mut xinput,
                         &proxy,
                         &format!("Controller disconnected: {error}"),

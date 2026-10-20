@@ -3,7 +3,7 @@
 //! Aftertouch never bundles or installs that driver.
 
 use aftertouch_protocol::InputState;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum XInputStatus {
@@ -48,7 +48,8 @@ impl XInputBridge {
             "type": "xinput",
             "enabled": self.enabled,
             "status": self.status.as_str(),
-            "available": cfg!(windows),
+            "available": self.status == XInputStatus::Active,
+            "platformSupported": cfg!(windows),
             "message": self.status_message(),
             "error": self.last_error,
         })
@@ -57,21 +58,21 @@ impl XInputBridge {
     fn status_message(&self) -> String {
         match self.status {
             XInputStatus::Disabled => "XInput bridge off".into(),
-            XInputStatus::Unavailable => self
-                .last_error
-                .clone()
-                .unwrap_or_else(|| {
-                    if cfg!(windows) {
-                        "ViGEmBus not found — install the Nefarius driver to enable XInput".into()
-                    } else {
-                        "XInput bridge is Windows-only".into()
-                    }
-                }),
+            XInputStatus::Unavailable => self.last_error.clone().unwrap_or_else(|| {
+                if cfg!(windows) {
+                    "ViGEmBus not found — install the Nefarius driver to enable XInput".into()
+                } else {
+                    "XInput bridge is Windows-only".into()
+                }
+            }),
             XInputStatus::Active => "Virtual Xbox 360 pad active (ViGEm)".into(),
         }
     }
 
     pub fn set_enabled(&mut self, enabled: bool) -> Value {
+        if enabled && self.status == XInputStatus::Active {
+            return self.status_event();
+        }
         self.enabled = enabled;
         if !enabled {
             self.shutdown();

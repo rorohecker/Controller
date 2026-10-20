@@ -11,8 +11,9 @@ use std::{
     io::{self, BufRead, BufReader, BufWriter, Write},
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex, mpsc,
+        mpsc,
     },
     thread,
     time::{Duration, Instant},
@@ -72,10 +73,7 @@ impl Bridge {
                     "core-event",
                     json!({"type":"device","connected":false,"message":"Core stopped"}),
                 );
-                let _ = event_handle.emit(
-                    "core-event",
-                    json!({"type":"core","status":"stopped"}),
-                );
+                let _ = event_handle.emit("core-event", json!({"type":"core","status":"stopped"}));
             })?;
         thread::Builder::new()
             .name("aftertouch-core-errors".into())

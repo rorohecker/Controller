@@ -1,6 +1,8 @@
 //! Gyro aim, touch gestures, and button→keyboard remapping via SendInput.
 
 use aftertouch_protocol::{InputState, TouchPoint};
+use std::collections::HashSet;
+use std::time::{Duration, Instant};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN,
     MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
@@ -31,14 +33,15 @@ pub enum GyroActivation {
 }
 
 impl GyroActivation {
-    pub fn from_label(label: &str) -> Self {
+    pub fn from_label(label: &str) -> Option<Self> {
         match label {
-            "l2" => Self::L2,
-            "r2" => Self::R2,
-            "l1" => Self::L1,
-            "r1" => Self::R1,
-            "touchpad" => Self::Touchpad,
-            _ => Self::Always,
+            "always" => Some(Self::Always),
+            "l2" => Some(Self::L2),
+            "r2" => Some(Self::R2),
+            "l1" => Some(Self::L1),
+            "r1" => Some(Self::R1),
+            "touchpad" => Some(Self::Touchpad),
+            _ => None,
         }
     }
 
@@ -59,6 +62,7 @@ pub struct GyroAimMapper {
     pub config: GyroAimConfig,
     remainder_x: f32,
     remainder_y: f32,
+    last_sample: Option<Instant>,
 }
 
 impl GyroAimMapper {
@@ -66,34 +70,57 @@ impl GyroAimMapper {
         self.config = config;
         self.remainder_x = 0.0;
         self.remainder_y = 0.0;
+        self.last_sample = None;
     }
 
     pub fn update(&mut self, input: &InputState) {
-        if !self.config.enabled || !self.config.activation.active(input) {
+        if !self.config.enabled || !input.full_report || !self.config.activation.active(input) {
+            self.last_sample = None;
+            self.remainder_x = 0.0;
+            self.remainder_y = 0.0;
             return;
         }
-        // DualSense gyro: body[15]=X, [17]=Y, [19]=Z in Linux order; yaw≈Z, pitch≈X.
+        let now = Instant::now();
+        let dt = self
+            .last_sample
+            .replace(now)
+            .map(|previous| now.duration_since(previous).as_secs_f32().min(0.025))
+            .unwrap_or(0.0);
+        if dt == 0.0 {
+            return;
+        }
+        // The Linux driver documents 1024 raw units per degree per second.
+        // Integrating with elapsed time keeps pointer speed stable across USB and BT rates.
         let yaw = input.gyro[2] as f32;
         let pitch = input.gyro[0] as f32;
         let sens = self.config.sensitivity.clamp(0.05, 8.0);
-        let dx = yaw * self.config.yaw_scale.clamp(0.0, 4.0) * sens * 0.0022;
-        let mut dy = pitch * self.config.pitch_scale.clamp(0.0, 4.0) * sens * 0.0022;
+        let to_pixels = |raw: f32| {
+            if raw.abs() < 90.0 {
+                0.0
+            } else {
+                raw / 1024.0 * dt * 18.0
+            }
+        };
+        let dx = to_pixels(yaw) * self.config.yaw_scale.clamp(0.0, 4.0) * sens;
+        let mut dy = to_pixels(pitch) * self.config.pitch_scale.clamp(0.0, 4.0) * sens;
         if self.config.invert_y {
             dy = -dy;
         }
         self.remainder_x += dx;
         self.remainder_y += dy;
+        self.remainder_x = self.remainder_x.clamp(-48.0, 48.0);
+        self.remainder_y = self.remainder_y.clamp(-48.0, 48.0);
         let mx = self.remainder_x.trunc() as i32;
         let my = self.remainder_y.trunc() as i32;
         if mx != 0 || my != 0 {
             self.remainder_x -= mx as f32;
             self.remainder_y -= my as f32;
-            send_mouse(mx.clamp(-48, 48), my.clamp(-48, 48), 0, MOUSEEVENTF_MOVE);
+            send_mouse(mx, my, 0, MOUSEEVENTF_MOVE);
         }
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemapBinding {
     pub button: u8,
     pub vk: u16,
@@ -103,7 +130,7 @@ pub struct RemapBinding {
 pub struct RemapMapper {
     enabled: bool,
     bindings: Vec<RemapBinding>,
-    pressed: [bool; 23],
+    keys_down: HashSet<u16>,
 }
 
 impl RemapMapper {
@@ -112,15 +139,11 @@ impl RemapMapper {
     }
 
     pub fn set(&mut self, enabled: bool, bindings: Vec<RemapBinding>) {
-        if !enabled {
-            for (i, was) in self.pressed.iter_mut().enumerate() {
-                if *was {
-                    if let Some(binding) = self.bindings.iter().find(|b| b.button as usize == i) {
-                        send_key(binding.vk, true);
-                    }
-                    *was = false;
-                }
-            }
+        if self.enabled == enabled && self.bindings == bindings {
+            return;
+        }
+        for vk in self.keys_down.drain() {
+            send_key(vk, true);
         }
         self.enabled = enabled;
         self.bindings = bindings;
@@ -130,17 +153,27 @@ impl RemapMapper {
         if !self.enabled {
             return;
         }
-        for binding in &self.bindings {
-            let idx = binding.button as usize;
-            if idx >= 23 {
-                continue;
-            }
-            let down = input.buttons[idx] > 0.5;
-            if down != self.pressed[idx] {
-                send_key(binding.vk, !down);
-                self.pressed[idx] = down;
-            }
+        let active = self.active_keys(input);
+        for vk in self.keys_down.difference(&active) {
+            send_key(*vk, true);
         }
+        for vk in active.difference(&self.keys_down) {
+            send_key(*vk, false);
+        }
+        self.keys_down = active;
+    }
+
+    fn active_keys(&self, input: &InputState) -> HashSet<u16> {
+        self.bindings
+            .iter()
+            .filter(|binding| {
+                input
+                    .buttons
+                    .get(binding.button as usize)
+                    .is_some_and(|value| *value > 0.5)
+            })
+            .map(|binding| binding.vk)
+            .collect()
     }
 }
 
@@ -152,7 +185,32 @@ pub struct MouseMapper {
     previous_scroll: Option<f32>,
     wheel_remainder: f32,
     left_down: bool,
-    edge_anchor: Option<(f32, f32)>,
+    edge_anchor: Option<EdgeGesture>,
+}
+
+struct EdgeGesture {
+    started: Instant,
+    left: bool,
+    start: TouchPoint,
+    last: TouchPoint,
+}
+
+impl EdgeGesture {
+    fn arrow_key(&self) -> Option<u16> {
+        if self.started.elapsed() > Duration::from_millis(750)
+            || (self.last.y - self.start.y).abs() > 0.12
+        {
+            return None;
+        }
+        let dx = self.last.x - self.start.x;
+        if self.left && dx >= 0.18 {
+            Some(VK_RIGHT)
+        } else if !self.left && dx <= -0.18 {
+            Some(VK_LEFT)
+        } else {
+            None
+        }
+    }
 }
 
 impl MouseMapper {
@@ -199,12 +257,21 @@ impl MouseMapper {
             }
             [Some(point), None] | [None, Some(point)] => {
                 self.previous_scroll = None;
-                if self.gestures && point.x <= 0.12 {
-                    self.handle_edge(point, true);
-                } else if self.gestures && point.x >= 0.88 {
-                    self.handle_edge(point, false);
+                if let Some(gesture) = self.edge_anchor.as_mut() {
+                    gesture.last = point;
+                    self.previous = None;
+                } else if self.gestures
+                    && self.previous.is_none()
+                    && (point.x <= 0.12 || point.x >= 0.88)
+                {
+                    self.edge_anchor = Some(EdgeGesture {
+                        started: Instant::now(),
+                        left: point.x <= 0.12,
+                        start: point,
+                        last: point,
+                    });
+                    self.previous = None;
                 } else if point.y >= 0.12 {
-                    self.edge_anchor = None;
                     if let Some(previous) = self.previous {
                         let dx = ((point.x - previous.x) * 1250.0).round() as i32;
                         let dy = ((point.y - previous.y) * 780.0).round() as i32;
@@ -223,16 +290,10 @@ impl MouseMapper {
             }
             [None, None] => {
                 if self.gestures
-                    && let Some((start_x, start_y)) = self.edge_anchor.take()
+                    && let Some(gesture) = self.edge_anchor.take()
+                    && let Some(vk) = gesture.arrow_key()
                 {
-                    // Edge-zone release fires browser-style history keys.
-                    if (start_y - 0.5).abs() < 0.45 {
-                        if start_x <= 0.12 {
-                            tap_key(VK_LEFT);
-                        } else if start_x >= 0.88 {
-                            tap_key(VK_RIGHT);
-                        }
-                    }
+                    tap_key(vk);
                 }
                 self.previous = None;
                 self.previous_scroll = None;
@@ -251,13 +312,6 @@ impl MouseMapper {
                 },
             );
             self.left_down = should_press;
-        }
-    }
-
-    fn handle_edge(&mut self, point: TouchPoint, _left: bool) {
-        self.previous = None;
-        if self.edge_anchor.is_none() {
-            self.edge_anchor = Some((point.x, point.y));
         }
     }
 }
@@ -302,4 +356,48 @@ fn send_key(vk: u16, up: bool) {
 fn tap_key(vk: u16) {
     send_key(vk, false);
     send_key(vk, true);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn two_buttons_sharing_key_keep_it_active_until_both_release() {
+        let mapper = RemapMapper {
+            enabled: true,
+            bindings: vec![
+                RemapBinding { button: 0, vk: 65 },
+                RemapBinding { button: 1, vk: 65 },
+            ],
+            ..Default::default()
+        };
+        let mut report = [0u8; 64];
+        report[0] = 0x01;
+        report[8] = 0x68;
+        let both = aftertouch_protocol::parse_input(&report).unwrap();
+        assert_eq!(mapper.active_keys(&both), HashSet::from([65]));
+        report[8] = 0x48;
+        let one = aftertouch_protocol::parse_input(&report).unwrap();
+        assert_eq!(mapper.active_keys(&one), HashSet::from([65]));
+        report[8] = 0x08;
+        let none = aftertouch_protocol::parse_input(&report).unwrap();
+        assert!(mapper.active_keys(&none).is_empty());
+    }
+
+    #[test]
+    fn edge_tap_does_not_fire_but_inward_swipe_does() {
+        let start = TouchPoint { x: 0.04, y: 0.5 };
+        let mut gesture = EdgeGesture {
+            started: Instant::now(),
+            left: true,
+            start,
+            last: start,
+        };
+        assert_eq!(gesture.arrow_key(), None);
+        gesture.last.x = 0.31;
+        assert_eq!(gesture.arrow_key(), Some(VK_RIGHT));
+        gesture.last.y = 0.8;
+        assert_eq!(gesture.arrow_key(), None);
+    }
 }

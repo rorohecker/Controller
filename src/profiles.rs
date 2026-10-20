@@ -167,11 +167,11 @@ fn validate(data: Value) -> Result<Archive, String> {
         {
             return Err("Gyro aim settings are out of range".into());
         }
+        let mut mapped_buttons = std::collections::HashSet::new();
         if p.remap.bindings.len() > 23
-            || p.remap
-                .bindings
-                .iter()
-                .any(|b| b.button >= 23 || b.vk == 0)
+            || p.remap.bindings.iter().any(|b| {
+                b.button >= 23 || b.vk == 0 || b.vk > 255 || !mapped_buttons.insert(b.button)
+            })
         {
             return Err("Remap bindings are invalid".into());
         }
@@ -286,6 +286,14 @@ mod tests {
     fn archive_rejects_out_of_range_trigger() {
         let mut value = sample_profile();
         value["profiles"][0]["triggers"]["left"]["strength"] = 101.into();
+        assert!(validate(value).is_err());
+    }
+
+    #[test]
+    fn archive_rejects_duplicate_remap_buttons() {
+        let mut value = sample_profile();
+        value["profiles"][0]["remap"]["bindings"] =
+            serde_json::json!([{"button": 0, "vk": 65}, {"button": 0, "vk": 66}]);
         assert!(validate(value).is_err());
     }
 

@@ -25,9 +25,9 @@
   const defaultGyro = () => ({enabled:false,sensitivity:1,yawScale:1,pitchScale:1,invertY:false,activation:'always'});
   const defaultRemap = () => ({enabled:false,bindings:[]});
   const defaultProfiles = [
-    {id:'standard',name:'Standard',description:'Default response.',tag:'GENERAL',matchExe:'',autoApply:true,triggers:{left:{mode:'resistance',strength:40,curve:clone(presets.Linear)},right:{mode:'resistance',strength:55,curve:clone(presets.Swell)}},haptics:{shape:'sine',frequency:90,attack:12,release:220,strength:44,pan:0},gyroAim:defaultGyro(),remap:defaultRemap()},
-    {id:'rally',name:'Rally',description:'Firm brake, light throttle.',tag:'RACING',matchExe:'',autoApply:true,triggers:{left:{mode:'resistance',strength:73,curve:clone(presets.Wall)},right:{mode:'vibration',strength:54,curve:clone(presets.Pulse)}},haptics:{shape:'saw',frequency:65,attack:8,release:240,strength:55,pan:-10},gyroAim:defaultGyro(),remap:defaultRemap()},
-    {id:'arcade',name:'Arcade',description:'Sharp break on both triggers.',tag:'ACTION',matchExe:'',autoApply:true,triggers:{left:{mode:'weapon',strength:57,curve:clone(presets.Break)},right:{mode:'weapon',strength:70,curve:clone(presets.Break)}},haptics:{shape:'square',frequency:180,attack:3,release:110,strength:39,pan:0},gyroAim:defaultGyro(),remap:defaultRemap()}
+    {id:'standard',name:'Standard',description:'A gentle starting point: L2 builds resistance evenly, while R2 rises more gradually. Use it to get a feel for the trigger editor before making a game profile.',tag:'GENERAL',matchExe:'',autoApply:true,triggers:{left:{mode:'resistance',strength:40,curve:clone(presets.Linear)},right:{mode:'resistance',strength:55,curve:clone(presets.Swell)}},haptics:{shape:'sine',frequency:90,attack:12,release:220,strength:44,pan:0},gyroAim:defaultGyro(),remap:defaultRemap()},
+    {id:'rally',name:'Rally',description:'L2 has a firm wall for braking. R2 uses a pulsing response for throttle experiments; tune its strength to suit your hands and the game.',tag:'RACING',matchExe:'',autoApply:true,triggers:{left:{mode:'resistance',strength:73,curve:clone(presets.Wall)},right:{mode:'vibration',strength:54,curve:clone(presets.Pulse)}},haptics:{shape:'saw',frequency:65,attack:8,release:240,strength:55,pan:-10},gyroAim:defaultGyro(),remap:defaultRemap()},
+    {id:'arcade',name:'Arcade',description:'Both triggers break sharply for a punchy action feel. This preset is deliberately bold; lower the strength if it feels tiring during longer sessions.',tag:'ACTION',matchExe:'',autoApply:true,triggers:{left:{mode:'weapon',strength:57,curve:clone(presets.Break)},right:{mode:'weapon',strength:70,curve:clone(presets.Break)}},haptics:{shape:'square',frequency:180,attack:3,release:110,strength:39,pan:0},gyroAim:defaultGyro(),remap:defaultRemap()}
   ];
   const textures = [
     {name:'Soft tick',type:'Light',settings:{shape:'sine',frequency:175,attack:3,release:80,strength:30,pan:0}},
@@ -51,9 +51,19 @@
     activity:Array(80).fill(0),lastInputAt:0,rate:0,devices:[],selectedPath:'',
     currentView:'live',playUntil:0,playStart:0,playDuration:0,lastExternalExe:'',
     leaseUntil:0,leaseDuration:0,fullReport:false,manualScan:false,
-    autoApply:true,coreStatus:'ready'
+    autoApply:true,coreStatus:'ready',foregroundExe:'',autoMatchId:'',autoSuppressed:false,
+    sequenceGaps:0,invalidReports:0,stickTest:null,batteryHistory:[]
   };
   let toastTimeout, audioContext, dragging = -1, saveTimeout, saveChain=Promise.resolve(), scanTimeout;
+  const palettes=['dusk','cinder','tide','verdigris'];
+  function setPalette(palette){
+    const choice=palettes.includes(palette)?palette:'dusk';
+    document.body.dataset.theme=choice;
+    $('#theme-select').value=choice;
+    try{localStorage.setItem('aftertouch.palette',choice);}catch{}
+  }
+  try{setPalette(localStorage.getItem('aftertouch.palette')||'dusk');}catch{setPalette('dusk');}
+  $('#theme-select').addEventListener('change',e=>setPalette(e.target.value));
 
   const profile = () => state.profiles.find(p => p.id === state.profileId) || state.profiles[0];
   const trigger = () => profile().triggers[state.side];
@@ -103,6 +113,8 @@
   setInterval(() => $('#clock').textContent = timeLabel(),1000); $('#clock').textContent = timeLabel();
 
   function validProfile(p) {
+    const g=p?.gyroAim || defaultGyro(), r=p?.remap || defaultRemap();
+    const bindings=Array.isArray(r.bindings)?r.bindings:[];
     return p && typeof p.id==='string' && p.id.length>0 && p.id.length<=80
       && typeof p.name === 'string' && p.name.trim().length>0 && p.name.length<=40
       && typeof p.description==='string' && p.description.length<=180 && typeof p.tag==='string' && p.tag.length<=40
@@ -111,7 +123,13 @@
       const t = p.triggers[side];
       return t && modeLabel[t.mode] && Number.isFinite(t.strength) && t.strength>=0 && t.strength<=100 && Array.isArray(t.curve) && t.curve.length===11 && t.curve.every(n=>Number.isFinite(n)&&n>=0&&n<=1);
     }) && p.haptics && ['sine','square','saw','noise'].includes(p.haptics.shape)
-      && hapticFields.every(f=>Number.isInteger(p.haptics[f.key]) && p.haptics[f.key]>=f.min && p.haptics[f.key]<=f.max);
+      && hapticFields.every(f=>Number.isInteger(p.haptics[f.key]) && p.haptics[f.key]>=f.min && p.haptics[f.key]<=f.max)
+      && Number.isFinite(g.sensitivity) && g.sensitivity>=.05 && g.sensitivity<=8
+      && Number.isFinite(g.yawScale) && g.yawScale>=0 && g.yawScale<=4
+      && Number.isFinite(g.pitchScale) && g.pitchScale>=0 && g.pitchScale<=4
+      && ['always','l1','r1','l2','r2','touchpad'].includes(g.activation)
+      && bindings.length<=23 && bindings.every(b=>Number.isInteger(b.button)&&b.button>=0&&b.button<23&&Number.isInteger(b.vk)&&b.vk>=1&&b.vk<=255)
+      && new Set(bindings.map(b=>b.button)).size===bindings.length;
   }
   async function loadProfiles() {
     try {
@@ -143,13 +161,13 @@
   async function applyProfileHardware(announce=true) {
     const p = profile();
     if (!state.connected) {
-      if (announce) toast('Connect a controller.');;
+      if (announce) toast('Connect a controller.');
       return false;
     }
     const ok = await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right});
     if (!ok) return false;
     if (p.gyroAim) {
-      await send({
+      if (!await send({
         action:'setGyroAim',
         enabled: !!p.gyroAim.enabled,
         sensitivity: Number(p.gyroAim.sensitivity)||1,
@@ -157,19 +175,26 @@
         pitchScale: Number(p.gyroAim.pitchScale)||1,
         invertY: !!p.gyroAim.invertY,
         activation: p.gyroAim.activation || 'always'
-      });
+      })) return false;
     }
     if (p.remap) {
-      await send({
+      if (!await send({
         action:'setRemap',
         enabled: !!p.remap.enabled,
         bindings: (p.remap.bindings||[]).map(b=>({button:+b.button,vk:+b.vk}))
-      });
+      })) return false;
     }
-    if (announce) toast(`Applied ${p.name}`);;
-    log(`AUTO APPLY / ${p.name}`);
+    if (announce) { state.autoSuppressed=false; toast(`Sent ${p.name} settings to controller`); log(`PROFILE / ${p.name} sent`); }
     return true;
   }
+  setInterval(async () => {
+    if (!state.connected || !state.autoApply || state.autoSuppressed || !state.autoMatchId ||
+        state.profileId !== state.autoMatchId || !profile().autoApply ||
+        profile().matchExe?.toLowerCase() !== state.foregroundExe) return;
+    if (profile().triggers.left.mode==='off' && profile().triggers.right.mode==='off') return;
+    if (state.leaseUntil>performance.now()) await send({action:'renewTriggers'});
+    else await applyProfileHardware(false);
+  }, 5000);
 
   function renderAutoApply() {
     const b = $('#auto-apply-toggle');
@@ -280,7 +305,11 @@
       });
       const remove = document.createElement('button');
       remove.type = 'button'; remove.textContent = '✕'; remove.className = 'remap-remove';
-      btnSelect.addEventListener('change', () => { binding.button = +btnSelect.value; saveProfiles(); });
+      btnSelect.addEventListener('change', () => {
+        const next=+btnSelect.value;
+        if (bindings.some((b,i)=>i!==index&&b.button===next)) { toast('That button already has a binding.'); btnSelect.value=String(binding.button); return; }
+        binding.button=next; saveProfiles();
+      });
       keySelect.addEventListener('change', () => { binding.vk = +keySelect.value; saveProfiles(); });
       remove.addEventListener('click', () => { profile().remap.bindings.splice(index, 1); renderRemapEditor(); saveProfiles(); });
       row.append(btnSelect, keySelect, remove);
@@ -289,7 +318,10 @@
   }
   $('#add-remap').addEventListener('click', () => {
     if (profile().remap.bindings.length >= 12) { toast('12 binding limit.'); return; }
-    profile().remap.bindings.push({button:0, vk:0x20});
+    const used=new Set(profile().remap.bindings.map(b=>b.button));
+    const button=names.findIndex((_,i)=>!used.has(i));
+    if(button<0){toast('Every button already has a binding.');return;}
+    profile().remap.bindings.push({button, vk:0x20});
     renderRemapEditor(); saveProfiles();
   });
 
@@ -372,9 +404,9 @@
   $('#release-light').addEventListener('click',()=>send({action:'releaseLightbar'}));
   function renderBatteryLight(){const b=$('#battery-light');b.textContent=`Battery color: ${state.batteryLight?'on':'off'}`;b.setAttribute('aria-pressed',String(state.batteryLight));b.classList.toggle('is-active',state.batteryLight);}
   $('#touch-mouse-toggle').addEventListener('click',()=>send({action:'setTouchMouse',enabled:!state.mouse}));
-  function renderMouseSwitch(){const b=$('#touch-mouse-toggle');b.classList.toggle('is-active',state.mouse);b.setAttribute('aria-pressed',String(state.mouse));b.textContent=state.mouse?'On':'Off';}
+  function renderMouseSwitch(){const b=$('#touch-mouse-toggle');b.classList.toggle('is-active',state.mouse);b.setAttribute('aria-pressed',String(state.mouse));b.textContent=state.mouse?'On':'Off';renderGestureSwitch();}
   $('#touch-gesture-toggle').addEventListener('click',()=>send({action:'setTouchGestures',enabled:!state.gestures}));
-  function renderGestureSwitch(){const b=$('#touch-gesture-toggle');b.classList.toggle('is-active',state.gestures);b.setAttribute('aria-pressed',String(state.gestures));b.textContent=state.gestures?'On':'Off';}
+  function renderGestureSwitch(){const b=$('#touch-gesture-toggle');b.classList.toggle('is-active',state.gestures&&state.mouse);b.setAttribute('aria-pressed',String(state.gestures));b.disabled=!state.connected||!state.mouse;b.textContent=state.gestures?(state.mouse?'On':'Paused'):'Off';}
 
   function syncGyroCommand() {
     const g = profile().gyroAim;
@@ -405,6 +437,7 @@
     $('#gyro-invert').checked = !!g.invertY;
     fillRange($('#gyro-sens'));
     const b = $('#gyro-aim-toggle');
+    b.disabled=!state.connected||!state.fullReport;
     b.classList.toggle('is-active', state.gyroAim);
     b.setAttribute('aria-pressed', String(state.gyroAim));
     b.textContent = state.gyroAim ? 'On' : 'Off';
@@ -466,7 +499,7 @@
   }
 
   function setConnected(connected,name='',transport='',firmware='',path=''){
-    state.connected=connected;state.name=name;state.transport=transport;state.path=path||state.path;
+    state.connected=connected;state.name=name;state.transport=transport;state.path=connected?path:'';
     $('#side-dot').parentElement.classList.toggle('is-connected',connected);
     $('#side-state').textContent=connected?'Connected':'Searching';
     $('#top-transport').textContent=connected?transport:'No device';
@@ -479,7 +512,8 @@
     $('#owner-status').textContent=connected?'Core writer':'No pad';
     $('#owner-square').classList.toggle('is-live',connected);
     $$('#apply-triggers,#reset-effects,#touch-mouse-toggle,#gyro-aim-toggle,#xinput-toggle,#send-light,#release-light,#diag-reset,#quick-reset,#apply-profile-now').forEach(b=>b.disabled=!connected);
-    if(!connected){state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gyroAim=false;state.remapArmed=false;state.batteryLight=false;state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);$('#diag-rate').textContent='—';renderMouseSwitch();renderGestureSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderInput();}
+    if(!connected){state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.batteryLight=false;state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderInput();}
+    renderStickButtons();
     renderSession();
   }
 
@@ -492,6 +526,75 @@
     const signal=!state.connected?'Waiting':!state.lastInputAt?'Connecting':age>1500?'Stalled':state.fullReport?'Full report':'Basic';
     $('#session-signal').textContent=signal;
     $('#session-signal-dot').classList.toggle('is-live',state.connected&&age<=1500&&!!state.lastInputAt);
+  }
+  function renderBatteryHistory(){
+    const host=$('#battery-history');host.replaceChildren();
+    if(!state.batteryHistory.length){host.textContent='Readings appear here after the controller reports battery level.';return;}
+    state.batteryHistory.forEach(({time,level,charging})=>{
+      const bar=document.createElement('span');bar.className='battery-history-bar'+(charging?' is-charging':'');
+      bar.style.height=`${Math.max(8,level)}%`;
+      bar.title=`${new Date(time).toLocaleString()} — ${level}%${charging?' (charging)':''}`;
+      bar.setAttribute('aria-label',bar.title);host.append(bar);
+    });
+  }
+  try{
+    const saved=JSON.parse(localStorage.getItem('aftertouch.batteryHistory')||'[]');
+    if(Array.isArray(saved))state.batteryHistory=saved.filter(v=>v&&Number.isFinite(v.time)&&Number.isInteger(v.level)&&v.level>=0&&v.level<=100&&typeof v.charging==='boolean').slice(-24);
+  }catch{}
+  renderBatteryHistory();
+  function recordBattery(){
+    if(state.battery==null)return;
+    const last=state.batteryHistory.at(-1),now=Date.now();
+    if(last&&last.level===state.battery&&last.charging===state.charging&&now-last.time<60*60*1000)return;
+    state.batteryHistory.push({time:now,level:state.battery,charging:state.charging});
+    state.batteryHistory=state.batteryHistory.slice(-24);
+    try{localStorage.setItem('aftertouch.batteryHistory',JSON.stringify(state.batteryHistory));}catch{}
+    renderBatteryHistory();
+  }
+  function renderStickButtons(){
+    $$('#start-drift,#start-circularity').forEach(b=>b.disabled=!state.connected||!!state.stickTest);
+  }
+  function startStickTest(kind){
+    if(!state.connected||state.stickTest)return;
+    const duration=kind==='drift'?5000:10000;
+    state.stickTest={kind,until:performance.now()+duration,count:0,sum:[0,0,0,0],max:[0,0],sectors:[Array(12).fill(0),Array(12).fill(0)]};
+    $(`#${kind}-result`).textContent=kind==='drift'?'Leave both sticks untouched for five seconds.':'Rotate both sticks around their outer edge for ten seconds.';
+    renderStickButtons();
+  }
+  $('#start-drift').addEventListener('click',()=>startStickTest('drift'));
+  $('#start-circularity').addEventListener('click',()=>startStickTest('circularity'));
+  function sampleStickTest(){
+    const t=state.stickTest;if(!t)return;
+    const a=state.axes;t.count++;
+    if(t.kind==='drift'){
+      for(let i=0;i<4;i++)t.sum[i]+=a[i];
+      for(let i=0;i<2;i++)t.max[i]=Math.max(t.max[i],Math.hypot(a[2*i],a[2*i+1]));
+    }else{
+      for(let i=0;i<2;i++){
+        const radius=Math.hypot(a[2*i],a[2*i+1]);
+        if(radius<.25)continue;
+        const sector=Math.floor((Math.atan2(a[2*i+1],a[2*i])+Math.PI)/(2*Math.PI)*12)%12;
+        t.sectors[i][sector]=Math.max(t.sectors[i][sector],radius);
+      }
+    }
+  }
+  function updateStickTest(now){
+    const t=state.stickTest;if(!t)return;
+    const target=$(`#${t.kind}-result`);
+    if(now<t.until){target.textContent=`Measuring… ${Math.ceil((t.until-now)/1000)} seconds left. ${t.count} readings collected.`;return;}
+    if(t.count<30)target.textContent='Too few reports arrived to complete the test. Check the connection and try again.';
+    else if(t.kind==='drift'){
+      target.textContent=[0,1].map(i=>{
+        const center=Math.hypot(t.sum[i*2]/t.count,t.sum[i*2+1]/t.count)*100;
+        return `${i?'Right':'Left'}: center ${center.toFixed(1)}%, largest movement ${(t.max[i]*100).toFixed(1)}%`;
+      }).join(' · ') + '. A game may apply its own deadzone.';
+    }else{
+      target.textContent=t.sectors.map((sectors,i)=>{
+        const reached=sectors.filter(v=>v>=.6),spread=reached.length?100*(Math.max(...reached)-Math.min(...reached)):0;
+        return `${i?'Right':'Left'}: ${reached.length}/12 directions, ${spread.toFixed(1)}% outer-travel variation`;
+      }).join(' · ') + '. Fewer than ten directions usually means the stick needs another full rotation.';
+    }
+    state.stickTest=null;renderStickButtons();
   }
   function formatAxis(n){return(Math.abs(n)<.005?0:n).toFixed(2);}
   function renderInput(){
@@ -514,7 +617,7 @@
     $('#battery-value').textContent=state.battery!=null?`${state.battery}%`:(fault?'Fault':'—');
     $('#diag-battery').textContent=state.battery!=null?`${state.battery}%`:(fault?'Fault':'—');
     $('#battery-detail').textContent=!info?'—':fault?(info.healthDetail||'Charge fault'):state.charging?'Charging':(chargeLabel||'Battery');
-    $('#battery-health').textContent=healthLabel?`Health ${healthLabel}`:'Health —';
+    $('#battery-health').textContent=healthLabel?`Condition ${healthLabel}`:'Condition —';
     $('#battery-health').dataset.health=info?.health||'unknown';
     $('#battery-temp').textContent=info?.temperatureC!=null?`Temp ${info.temperatureC} °C`:'Temp —';
     $('#diag-health').textContent=healthLabel||'—';
@@ -556,7 +659,10 @@
     }else if(event.type==='input'){
       state.buttons=event.input.buttons;state.axes=event.input.axes;state.touch=event.input.touch;state.gyro=event.input.gyro;
       state.battery=event.input.battery;state.charging=event.input.charging;state.batteryInfo=event.input.batteryInfo||null;
+      recordBattery();sampleStickTest();
+      const reportChanged=state.fullReport!==!!event.input.fullReport;
       state.fullReport=!!event.input.fullReport;
+      if(reportChanged)renderGyroControls();
       $('#photo-status').textContent=event.input.fullReport?`${state.transport} live`:'Bluetooth basic';
       state.packet++;state.lastInputAt=performance.now();renderInput();renderSession();
     }else if(event.type==='xinput'){
@@ -566,17 +672,24 @@
       renderXinput();
     }else if(event.type==='rate'){
       state.rate=event.reportsPerSecond||0;$('#diag-rate').textContent=state.connected?`${state.rate} / S`:'—';
+      state.sequenceGaps=event.sequenceGaps||0;state.invalidReports=event.invalidReports||0;
+      $('#diag-gaps').textContent=state.connected?String(state.sequenceGaps):'—';
+      $('#diag-invalid').textContent=state.connected?String(state.invalidReports):'—';
     }else if(event.type==='conflict'){
       $('#conflict-message').textContent=event.message||'No conflicting tools.';
       $('#conflict-message').style.color=event.detected?'#d4a84b':'';
       if(event.detected) log(`OUTPUT CONFLICT / ${event.message}`);
     }else if(event.type==='foreground'){
-      state.lastExternalExe=event.exe||'';
+      const previous=state.foregroundExe;
+      state.foregroundExe=event.exe||'';
+      if(state.foregroundExe)state.lastExternalExe=state.foregroundExe;
       $('#detected-app').textContent=`Last app: ${state.lastExternalExe||'none'}`;
-      const match=state.profiles.find(p=>p.matchExe?.toLowerCase()===state.lastExternalExe);
+      if(previous!==state.foregroundExe)state.autoSuppressed=false;
+      const match=state.foregroundExe?state.profiles.find(p=>p.matchExe?.toLowerCase()===state.foregroundExe):null;
+      state.autoMatchId=match?.id||'';
       if(match && match.id!==state.profileId){
         state.profileId=match.id;renderAllProfileControls();saveProfiles();
-        log(`AUTO LOAD / ${match.name} FOR ${state.lastExternalExe}`);
+        log(`AUTO LOAD / ${match.name} FOR ${state.foregroundExe}`);
         toast(match.name);
         if (state.autoApply && match.autoApply !== false) applyProfileHardware(false);
       } else if (match && state.autoApply && match.autoApply !== false) {
@@ -596,6 +709,10 @@
       state.leaseDuration=event.active?event.durationMs:0;
       state.leaseUntil=event.active?performance.now()+event.durationMs:0;
       renderSession();
+    }else if(event.type==='safetyReset'){
+      state.autoSuppressed=true;
+      state.leaseUntil=0;
+      renderSession();
     }else if(event.type==='core'){
       state.coreStatus = event.status || 'ready';
       $('#core-status').textContent = event.status === 'restarting' ? 'Core: restarting'
@@ -607,7 +724,7 @@
       toast(event.message);log(event.message);
     }
   }
-  let lastCanvas=0;function frame(now){if(now-lastCanvas>35){drawActivity();if(state.currentView==='haptics'||now<state.playUntil)drawWave(now);renderSession();lastCanvas=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
+  let lastCanvas=0;function frame(now){if(now-lastCanvas>35){drawActivity();if(state.currentView==='haptics'||now<state.playUntil)drawWave(now);renderSession();updateStickTest(now);lastCanvas=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
   const keyMap={j:2,k:0,l:1,i:3,q:4,e:5,z:6,c:7,ArrowUp:12,ArrowDown:13,ArrowLeft:14,ArrowRight:15};
   const held=new Set();window.addEventListener('keydown',e=>{if(state.connected||e.target.matches('input,textarea,button,select'))return;if(!(e.key in keyMap))return;held.add(e.key);state.buttons[keyMap[e.key]]=1;renderInput();});
   window.addEventListener('keyup',e=>{if(!(e.key in keyMap)||state.connected)return;held.delete(e.key);state.buttons[keyMap[e.key]]=0;renderInput();});

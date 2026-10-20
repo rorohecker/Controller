@@ -74,24 +74,22 @@ impl HapticClip {
             _ => ((phase * std::f32::consts::TAU).sin() * 0.5 + 0.5).clamp(0.15, 1.0),
         };
         let amp = env * (self.strength as f32 / 100.0) * wave;
-        let left = (amp
-            * if self.pan > 0 {
+        let left =
+            (amp * if self.pan > 0 {
                 1.0 - self.pan as f32 / 150.0
             } else {
                 1.0
-            }
-            * 100.0)
-            .round()
-            .clamp(0.0, 100.0) as u8;
-        let right = (amp
-            * if self.pan < 0 {
+            } * 100.0)
+                .round()
+                .clamp(0.0, 100.0) as u8;
+        let right =
+            (amp * if self.pan < 0 {
                 1.0 + self.pan as f32 / 150.0
             } else {
                 1.0
-            }
-            * 100.0)
-            .round()
-            .clamp(0.0, 100.0) as u8;
+            } * 100.0)
+                .round()
+                .clamp(0.0, 100.0) as u8;
         // Drive motors at ~frequency-bounded update rate without flooding HID.
         let period_ms = (1000u64 / (self.frequency as u64 / 4).max(8)).clamp(12, 40);
         self.next_tick = Instant::now() + Duration::from_millis(period_ms);
@@ -110,6 +108,7 @@ mod tests {
     #[test]
     fn envelope_produces_nonzero_then_ends() {
         let mut clip = HapticClip::new("sine".into(), 90, 12, 80, 60, 0);
+        clip.started = Instant::now() - Duration::from_millis(20);
         let sample = clip.sample_motors().unwrap();
         assert!(sample[0] > 0 || sample[1] > 0);
         clip.started = Instant::now() - Duration::from_millis(200);
