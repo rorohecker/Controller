@@ -14,6 +14,8 @@ use serde_json::Value;
 struct Archive {
     schema_version: u8,
     active_id: String,
+    #[serde(default = "default_true")]
+    auto_apply: bool,
     profiles: Vec<Profile>,
 }
 
@@ -26,8 +28,18 @@ struct Profile {
     tag: String,
     #[serde(default, alias = "match_exe")]
     match_exe: String,
+    #[serde(default = "default_true")]
+    auto_apply: bool,
     triggers: TriggerPair,
     haptics: Haptics,
+    #[serde(default)]
+    gyro_aim: GyroAimSettings,
+    #[serde(default)]
+    remap: RemapSettings,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -46,14 +58,73 @@ struct Haptics {
     pan: i16,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GyroAimSettings {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default = "default_sens")]
+    sensitivity: f32,
+    #[serde(default = "default_axis")]
+    yaw_scale: f32,
+    #[serde(default = "default_axis")]
+    pitch_scale: f32,
+    #[serde(default)]
+    invert_y: bool,
+    #[serde(default = "default_activation")]
+    activation: String,
+}
+
+fn default_sens() -> f32 {
+    1.0
+}
+fn default_axis() -> f32 {
+    1.0
+}
+fn default_activation() -> String {
+    "always".into()
+}
+
+impl Default for GyroAimSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sensitivity: 1.0,
+            yaw_scale: 1.0,
+            pitch_scale: 1.0,
+            invert_y: false,
+            activation: "always".into(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RemapSettings {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    bindings: Vec<RemapBinding>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RemapBinding {
+    button: u8,
+    vk: u16,
+}
+
 fn path() -> Result<PathBuf, String> {
     let base = env::var_os("APPDATA").ok_or("APPDATA is unavailable")?;
     Ok(PathBuf::from(base).join("Aftertouch").join("profiles.json"))
 }
 
 fn validate(data: Value) -> Result<Archive, String> {
-    let archive: Archive = serde_json::from_value(data).map_err(|e| e.to_string())?;
-    if archive.schema_version != 1 || archive.profiles.is_empty() || archive.profiles.len() > 50 {
+    let mut archive: Archive = serde_json::from_value(data).map_err(|e| e.to_string())?;
+    // Accept schema 1 (legacy) and 2 (auto-apply / gyro / remap fields).
+    if archive.schema_version == 1 {
+        archive.schema_version = 2;
+    }
+    if archive.schema_version != 2 || archive.profiles.is_empty() || archive.profiles.len() > 50 {
         return Err("Unsupported profile schema or profile count".into());
     }
     if !archive.profiles.iter().any(|p| p.id == archive.active_id) {
@@ -84,6 +155,25 @@ fn validate(data: Value) -> Result<Archive, String> {
             || !(-100..=100).contains(&h.pan)
         {
             return Err("Haptic settings are out of range".into());
+        }
+        let g = &p.gyro_aim;
+        if !(0.05..=8.0).contains(&g.sensitivity)
+            || !(0.0..=4.0).contains(&g.yaw_scale)
+            || !(0.0..=4.0).contains(&g.pitch_scale)
+            || !matches!(
+                g.activation.as_str(),
+                "always" | "l1" | "r1" | "l2" | "r2" | "touchpad"
+            )
+        {
+            return Err("Gyro aim settings are out of range".into());
+        }
+        if p.remap.bindings.len() > 23
+            || p.remap
+                .bindings
+                .iter()
+                .any(|b| b.button >= 23 || b.vk == 0)
+        {
+            return Err("Remap bindings are invalid".into());
         }
     }
     Ok(archive)
@@ -176,34 +266,41 @@ pub fn export(data: Value) -> Result<String, String> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn archive_rejects_out_of_range_trigger() {
-        let value = serde_json::json!({
-            "schemaVersion": 1, "activeId": "one", "profiles": [{
+    fn sample_profile() -> Value {
+        serde_json::json!({
+            "schemaVersion": 2, "activeId": "one", "autoApply": true, "profiles": [{
                 "id": "one", "name": "Test", "description": "", "tag": "GENERAL",
+                "autoApply": true,
                 "triggers": {
-                    "left": {"mode":"resistance","strength":101,"curve":[0,0,0,0,0,0,0,0,0,0,0]},
+                    "left": {"mode":"resistance","strength":40,"curve":[0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1]},
                     "right":{"mode":"off","strength":0,"curve":[0,0,0,0,0,0,0,0,0,0,0]}
                 },
-                "haptics":{"shape":"sine","frequency":90,"attack":12,"release":220,"strength":44,"pan":0}
+                "haptics":{"shape":"sine","frequency":90,"attack":12,"release":220,"strength":44,"pan":0},
+                "gyroAim":{"enabled":false,"sensitivity":1,"yawScale":1,"pitchScale":1,"invertY":false,"activation":"always"},
+                "remap":{"enabled":false,"bindings":[]}
             }]
-        });
+        })
+    }
+
+    #[test]
+    fn archive_rejects_out_of_range_trigger() {
+        let mut value = sample_profile();
+        value["profiles"][0]["triggers"]["left"]["strength"] = 101.into();
         assert!(validate(value).is_err());
     }
 
     #[test]
+    fn schema_one_migrates_to_two() {
+        let mut value = sample_profile();
+        value["schemaVersion"] = 1.into();
+        let saved = serde_json::to_value(validate(value).unwrap()).unwrap();
+        assert_eq!(saved["schemaVersion"], 2);
+    }
+
+    #[test]
     fn executable_match_survives_frontend_roundtrip_and_legacy_name() {
-        let mut value = serde_json::json!({
-            "schemaVersion": 1, "activeId": "one", "profiles": [{
-                "id": "one", "name": "Racing", "description": "", "tag": "RACING",
-                "matchExe": "game.exe",
-                "triggers": {
-                    "left": {"mode":"off","strength":0,"curve":[0,0,0,0,0,0,0,0,0,0,0]},
-                    "right":{"mode":"off","strength":0,"curve":[0,0,0,0,0,0,0,0,0,0,0]}
-                },
-                "haptics":{"shape":"sine","frequency":90,"attack":12,"release":220,"strength":44,"pan":0}
-            }]
-        });
+        let mut value = sample_profile();
+        value["profiles"][0]["matchExe"] = "game.exe".into();
         let saved = serde_json::to_value(validate(value.clone()).unwrap()).unwrap();
         assert_eq!(saved["profiles"][0]["matchExe"], "game.exe");
         value["profiles"][0]
