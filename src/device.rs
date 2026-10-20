@@ -408,6 +408,7 @@ fn emit_connected(proxy: &Sender<serde_json::Value>, found: &Connected) {
     );
 }
 
+#[allow(clippy::too_many_arguments)] // Core command dispatch shares device + mapper state.
 fn handle_command(
     command: DeviceCommand,
     device: &mut Option<Connected>,
@@ -894,10 +895,9 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
             } else if connected
                 .rumble_until
                 .is_some_and(|deadline| Instant::now() >= deadline)
+                && connected.write_rumble([0, 0]).is_ok()
             {
-                if connected.write_rumble([0, 0]).is_ok() {
-                    connected.rumble_until = None;
-                }
+                connected.rumble_until = None;
             }
             match connected.hid.read_timeout(&mut input_report, 20) {
                 Ok(length) if length > 0 => {
