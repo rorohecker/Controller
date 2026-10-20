@@ -107,6 +107,10 @@ pub struct RemapMapper {
 }
 
 impl RemapMapper {
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
     pub fn set(&mut self, enabled: bool, bindings: Vec<RemapBinding>) {
         if !enabled {
             for (i, was) in self.pressed.iter_mut().enumerate() {
@@ -152,6 +156,10 @@ pub struct MouseMapper {
 }
 
 impl MouseMapper {
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
     pub fn set_enabled(&mut self, enabled: bool) {
         if !enabled && self.left_down {
             send_mouse(0, 0, 0, MOUSEEVENTF_LEFTUP);

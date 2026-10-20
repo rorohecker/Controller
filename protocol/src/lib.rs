@@ -188,6 +188,11 @@ impl BatteryInfo {
     }
 }
 
+fn sanitize_temperature(raw: u8) -> Option<u8> {
+    // Plausible DualSense chip range; excludes 0 (unset) and wild glitches.
+    (1..=65).contains(&raw).then_some(raw)
+}
+
 fn derive_health(
     charge_state: ChargeState,
     charge_code: u8,
@@ -317,7 +322,8 @@ pub fn parse_input(data: &[u8]) -> Option<InputState> {
     let b2 = body[9];
     let buttons = decode_buttons(b0, b1, b2, body[4], body[5]);
     // body[31] is sensor temperature (°C) in community layouts; Linux labels it reserved2.
-    let temperature_c = Some(body[31]);
+    // 0 and out-of-band values are common on some links — treat as unavailable for health.
+    let temperature_c = sanitize_temperature(body[31]);
     let battery_info = BatteryInfo::from_status(body[52], body[53], temperature_c);
     let gyro = [
         i16::from_le_bytes([body[15], body[16]]),
@@ -572,9 +578,14 @@ mod tests {
         let hot = parse_input(&report).unwrap();
         assert_eq!(hot.battery_info.health, BatteryHealth::Hot);
 
-        report[32] = 3;
+        report[32] = 4;
         let cold = parse_input(&report).unwrap();
         assert_eq!(cold.battery_info.health, BatteryHealth::Cold);
+
+        report[32] = 0; // unset / unreliable
+        let missing_temp = parse_input(&report).unwrap();
+        assert_eq!(missing_temp.battery_info.temperature_c, None);
+        assert_eq!(missing_temp.battery_info.health, BatteryHealth::Unknown);
 
         report[53] = 0x20; // full
         report[32] = 40;

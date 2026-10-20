@@ -555,6 +555,18 @@ fn handle_command(
                     "message": message
                 }),
             );
+            if enabled && ok {
+                let pointer_on = mouse.enabled() || gyro.config.enabled || remap.enabled();
+                if pointer_on {
+                    emit(
+                        proxy,
+                        json!({
+                            "type": "notice",
+                            "message": "XInput is on — hide the DualSense (e.g. HidHide) or turn off mouse/gyro/remap to avoid double input"
+                        }),
+                    );
+                }
+            }
             return true;
         }
         _ => {}
@@ -922,7 +934,15 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         mouse.update(&input);
                         gyro.update(&input);
                         remap.update(&input);
-                        xinput.update(&input);
+                        if let Some(event) = xinput.update(&input) {
+                            emit(&proxy, event.clone());
+                            if let Some(message) = event["message"].as_str() {
+                                emit(
+                                    &proxy,
+                                    json!({ "type": "error", "message": message }),
+                                );
+                            }
+                        }
                         if input.panic_combo && !connected.panic_latched {
                             mouse.set_enabled(false);
                             gyro.set_config(GyroAimConfig::default());

@@ -104,9 +104,10 @@ impl XInputBridge {
         self.status_event()
     }
 
-    pub fn update(&mut self, input: &InputState) {
+    /// Returns a status event when the bridge drops due to a write failure.
+    pub fn update(&mut self, input: &InputState) -> Option<Value> {
         if self.status != XInputStatus::Active {
-            return;
+            return None;
         }
         #[cfg(windows)]
         if let Some(pad) = self.inner.as_mut()
@@ -114,13 +115,14 @@ impl XInputBridge {
         {
             self.last_error = Some(error);
             self.shutdown();
-            self.enabled = false;
             self.status = XInputStatus::Unavailable;
+            return Some(self.status_event());
         }
         #[cfg(not(windows))]
         {
             let _ = input;
         }
+        None
     }
 
     pub fn shutdown(&mut self) {
@@ -168,7 +170,15 @@ mod windows_impl {
     }
 
     fn axis_to_thumb(value: f32) -> i16 {
-        let scaled = (value.clamp(-1.0, 1.0) * 32767.0).round() as i32;
+        // Small center deadzone so resting DualSense sticks don't drift XInput.
+        const DEAD: f32 = 0.08;
+        let clamped = value.clamp(-1.0, 1.0);
+        let rescaled = if clamped.abs() <= DEAD {
+            0.0
+        } else {
+            clamped.signum() * (clamped.abs() - DEAD) / (1.0 - DEAD)
+        };
+        let scaled = (rescaled * 32767.0).round() as i32;
         scaled.clamp(i16::MIN as i32, i16::MAX as i32) as i16
     }
 

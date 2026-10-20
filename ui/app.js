@@ -510,9 +510,10 @@
     const chargeNames={discharging:'Discharging',charging:'Charging',full:'Full',voltageOrTempFault:'Voltage / temp fault',temperatureFault:'Temperature fault',chargingError:'Charging error',unknown:'Unknown'};
     const healthLabel=info?.health ? (healthNames[info.health]||info.health) : null;
     const chargeLabel=info?.chargeState ? (chargeNames[info.chargeState]||info.chargeState) : null;
-    $('#battery-value').textContent=state.battery==null?'—':`${state.battery}%`;
-    $('#diag-battery').textContent=state.battery==null?'—':`${state.battery}%`;
-    $('#battery-detail').textContent=state.battery==null?(info?.healthDetail||'—'):(state.charging?'Charging':(chargeLabel||'Battery'));
+    const fault=info?.health==='fault';
+    $('#battery-value').textContent=state.battery!=null?`${state.battery}%`:(fault?'Fault':'—');
+    $('#diag-battery').textContent=state.battery!=null?`${state.battery}%`:(fault?'Fault':'—');
+    $('#battery-detail').textContent=!info?'—':fault?(info.healthDetail||'Charge fault'):state.charging?'Charging':(chargeLabel||'Battery');
     $('#battery-health').textContent=healthLabel?`Health ${healthLabel}`:'Health —';
     $('#battery-health').dataset.health=info?.health||'unknown';
     $('#battery-temp').textContent=info?.temperatureC!=null?`Temp ${info.temperatureC} °C`:'Temp —';
@@ -522,11 +523,16 @@
     const jackParts=[];
     if(info?.headphoneJack)jackParts.push('Headphone');
     if(info?.microphoneJack)jackParts.push('Mic');
-    $('#diag-jack').textContent=info?`Jack: ${jackParts.length?jackParts.join(' · '):'None'}${info.healthDetail?` · ${info.healthDetail}`:''}`:'Jack: —';
+    $('#diag-jack').textContent=info?`Jack: ${jackParts.length?jackParts.join(' · '):'None'}`:'Jack: —';
+    $('#battery-band')?.classList.toggle('is-fault', !!fault);
+    $('#battery-band')?.classList.toggle('is-charging', !!state.charging);
     $('#battery-light').disabled=!state.connected||state.battery==null;
-    $$('#battery-segments i').forEach((el,i)=>el.classList.toggle('is-full',state.battery!=null&&state.battery>(i*10)));
-    $$('#battery-segments i').forEach(el=>el.classList.toggle('is-charging',!!state.charging));
-    $$('#battery-segments i').forEach(el=>el.classList.toggle('is-fault',info?.health==='fault'));
+    $$('#battery-segments i').forEach((el,i)=>{
+      const full=state.battery!=null&&state.battery>(i*10);
+      el.classList.toggle('is-full', full);
+      el.classList.toggle('is-charging', full && !!state.charging);
+      el.classList.toggle('is-fault', fault);
+    });
     state.touch.forEach((point,i)=>{const el=$(`#contact-${i}`);el.classList.toggle('is-active',!!point);if(point){el.style.left=`${point.x*100}%`;el.style.top=`${point.y*100}%`;} $(`#touch-${i+1}-pos`).textContent=point?`${point.x.toFixed(3)} / ${point.y.toFixed(3)}`:'—';});
     state.gyro.forEach((n,i)=>{const k=['x','y','z'][i];$(`#gyro-${k}`).textContent=String(n);const f=clamp(Math.abs(n)/16000)*50;const el=$(`#gyro-${k}-fill`);el.style.width=`${f}%`;el.style.left=n<0?`${50-f}%`:'50%';});
     const activity=(active.length/8+Math.abs(a[0])/4+Math.abs(a[1])/4+(b[6]+b[7])/4);state.activity.push(clamp(activity));state.activity.shift();
