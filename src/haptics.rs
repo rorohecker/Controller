@@ -68,7 +68,7 @@ impl HapticClip {
             }
             "saw" => (phase % 1.0) * 0.85 + 0.15,
             "noise" => {
-                let n = ((phase * 12.9898).sin() * 43758.5453).fract().abs();
+                let n = ((phase * 12.9898).sin() * 43_758.547).fract().abs();
                 0.2 + n * 0.8
             }
             _ => ((phase * std::f32::consts::TAU).sin() * 0.5 + 0.5).clamp(0.15, 1.0),

@@ -114,10 +114,10 @@ impl Bridge {
                 .lock()
                 .ok()
                 .and_then(|mut guard| {
-                    guard.as_mut().and_then(|child| match child.try_wait() {
-                        Ok(Some(_)) => Some(true),
-                        Ok(None) => Some(false),
-                        Err(_) => Some(true),
+                    guard.as_mut().map(|child| match child.try_wait() {
+                        Ok(Some(_)) => true,
+                        Ok(None) => false,
+                        Err(_) => true,
                     })
                 })
                 .unwrap_or(true);
