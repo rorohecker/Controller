@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aftertouch"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "aftertouch-protocol",
  "hidapi",
@@ -18,12 +18,13 @@ dependencies = [
  "serde_json",
  "tauri",
  "tauri-build",
+ "vigem-client",
  "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "aftertouch-protocol"
-version = "0.2.0"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -3582,6 +3583,15 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vigem-client"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b857e6f99efe1e1eb1e4dfb035de8ae7ec8ec56bd1928edcbd7c6e4427634d52"
+dependencies = [
+ "winapi",
+]
 
 [[package]]
 name = "vswhom"

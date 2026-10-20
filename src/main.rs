@@ -1,14 +1,19 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod device;
+mod haptics;
+mod input_map;
 mod processes;
 mod profiles;
-mod touch_mouse;
+mod xinput_bridge;
 
 use std::{
     io::{self, BufRead, BufReader, BufWriter, Write},
     process::{Child, ChildStdin, Command, Stdio},
-    sync::{Mutex, mpsc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, mpsc,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -22,10 +27,12 @@ use std::os::windows::process::CommandExt;
 struct Bridge {
     writer: Mutex<Option<ChildStdin>>,
     child: Mutex<Option<Child>>,
+    handle: tauri::AppHandle,
+    stopping: AtomicBool,
 }
 
 impl Bridge {
-    fn spawn(handle: tauri::AppHandle) -> io::Result<Self> {
+    fn spawn_child(app: &tauri::AppHandle) -> io::Result<(Child, ChildStdin)> {
         let mut command = Command::new(std::env::current_exe()?);
         command
             .arg("--core")
@@ -33,7 +40,7 @@ impl Bridge {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         #[cfg(windows)]
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW for the background HID process.
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         let mut child = command.spawn()?;
         let writer = child
             .stdin
@@ -47,7 +54,7 @@ impl Bridge {
             .stderr
             .take()
             .ok_or_else(|| io::Error::other("Core error pipe missing"))?;
-        let event_handle = handle.clone();
+        let event_handle = app.clone();
         thread::Builder::new()
             .name("aftertouch-core-events".into())
             .spawn(move || {
@@ -63,7 +70,11 @@ impl Bridge {
                 }
                 let _ = event_handle.emit(
                     "core-event",
-                    json!({"type":"device","connected":false,"message":"Device core stopped"}),
+                    json!({"type":"device","connected":false,"message":"Core stopped"}),
+                );
+                let _ = event_handle.emit(
+                    "core-event",
+                    json!({"type":"core","status":"stopped"}),
                 );
             })?;
         thread::Builder::new()
@@ -73,15 +84,88 @@ impl Bridge {
                     eprintln!("core: {line}");
                 }
             })?;
-        Ok(Self {
+        Ok((child, writer))
+    }
+
+    fn spawn(handle: tauri::AppHandle) -> io::Result<Arc<Self>> {
+        let (child, writer) = Self::spawn_child(&handle)?;
+        let bridge = Arc::new(Self {
             writer: Mutex::new(Some(writer)),
             child: Mutex::new(Some(child)),
-        })
+            handle,
+            stopping: AtomicBool::new(false),
+        });
+        let watcher = Arc::clone(&bridge);
+        thread::Builder::new()
+            .name("aftertouch-core-watch".into())
+            .spawn(move || watcher.watch_and_respawn())
+            .map_err(io::Error::other)?;
+        Ok(bridge)
+    }
+
+    fn watch_and_respawn(self: Arc<Self>) {
+        loop {
+            thread::sleep(Duration::from_millis(400));
+            if self.stopping.load(Ordering::SeqCst) {
+                return;
+            }
+            let dead = self
+                .child
+                .lock()
+                .ok()
+                .and_then(|mut guard| {
+                    guard.as_mut().and_then(|child| match child.try_wait() {
+                        Ok(Some(_)) => Some(true),
+                        Ok(None) => Some(false),
+                        Err(_) => Some(true),
+                    })
+                })
+                .unwrap_or(true);
+            if !dead {
+                continue;
+            }
+            if self.stopping.load(Ordering::SeqCst) {
+                return;
+            }
+            let _ = self.handle.emit(
+                "core-event",
+                json!({"type":"core","status":"restarting","message":"Restarting core…"}),
+            );
+            thread::sleep(Duration::from_millis(350));
+            if self.stopping.load(Ordering::SeqCst) {
+                return;
+            }
+            match Self::spawn_child(&self.handle) {
+                Ok((child, writer)) => {
+                    if let Ok(mut guard) = self.writer.lock() {
+                        *guard = Some(writer);
+                    }
+                    if let Ok(mut guard) = self.child.lock() {
+                        *guard = Some(child);
+                    }
+                    let _ = self.handle.emit(
+                        "core-event",
+                        json!({"type":"core","status":"ready","message":"Core restarted"}),
+                    );
+                    let _ = self.handle.emit(
+                        "core-event",
+                        json!({"type":"notice","message":"Core restarted"}),
+                    );
+                }
+                Err(error) => {
+                    let _ = self.handle.emit(
+                        "core-event",
+                        json!({"type":"error","message":format!("Core restart failed: {error}")}),
+                    );
+                    thread::sleep(Duration::from_secs(2));
+                }
+            }
+        }
     }
 
     fn send(&self, value: &Value) -> Result<(), String> {
         let mut guard = self.writer.lock().map_err(|_| "Core pipe lock failed")?;
-        let writer = guard.as_mut().ok_or("Device core has stopped")?;
+        let writer = guard.as_mut().ok_or("Device core is restarting…")?;
         serde_json::to_writer(&mut *writer, value).map_err(|e| e.to_string())?;
         writer
             .write_all(b"\n")
@@ -90,6 +174,7 @@ impl Bridge {
     }
 
     fn shutdown(&self) {
+        self.stopping.store(true, Ordering::SeqCst);
         if let Ok(mut guard) = self.writer.lock()
             && let Some(mut writer) = guard.take()
         {
@@ -113,7 +198,7 @@ impl Bridge {
 }
 
 #[tauri::command]
-fn send_command(command: Value, bridge: State<'_, Bridge>) -> Result<(), String> {
+fn send_command(command: Value, bridge: State<'_, Arc<Bridge>>) -> Result<(), String> {
     let parsed: device::DeviceCommand =
         serde_json::from_value(command.clone()).map_err(|e| e.to_string())?;
     if matches!(parsed, device::DeviceCommand::Shutdown) {
@@ -140,19 +225,33 @@ fn export_profiles(data: Value) -> Result<String, String> {
 fn run_core() {
     let (commands_tx, commands_rx) = mpsc::channel();
     let (events_tx, events_rx) = mpsc::channel();
+    let command_errors = events_tx.clone();
     thread::Builder::new()
         .name("aftertouch-core-input".into())
         .spawn(move || {
             for line in io::stdin().lock().lines() {
                 match line {
                     Ok(line) if line.len() <= 65_536 => {
-                        if let Ok(command) = serde_json::from_str::<device::DeviceCommand>(&line)
-                            && commands_tx.send(command).is_err()
-                        {
-                            break;
+                        match serde_json::from_str::<device::DeviceCommand>(&line) {
+                            Ok(command) => {
+                                if commands_tx.send(command).is_err() {
+                                    break;
+                                }
+                            }
+                            Err(error) => {
+                                let _ = command_errors.send(json!({
+                                    "type": "error",
+                                    "message": format!("Ignored malformed core command: {error}")
+                                }));
+                            }
                         }
                     }
-                    Ok(_) => {}
+                    Ok(_) => {
+                        let _ = command_errors.send(json!({
+                            "type": "error",
+                            "message": "Ignored oversized core command"
+                        }));
+                    }
                     Err(_) => break,
                 }
             }
@@ -184,7 +283,8 @@ fn main() {
     }
     let app = tauri::Builder::default()
         .setup(|app| {
-            app.manage(Bridge::spawn(app.handle().clone())?);
+            let bridge = Bridge::spawn(app.handle().clone())?;
+            app.manage(bridge);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -197,7 +297,7 @@ fn main() {
         .expect("Aftertouch desktop shell");
     app.run(|handle, event| {
         if let tauri::RunEvent::Exit = event
-            && let Some(bridge) = handle.try_state::<Bridge>()
+            && let Some(bridge) = handle.try_state::<Arc<Bridge>>()
         {
             bridge.shutdown();
         }

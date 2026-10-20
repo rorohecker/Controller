@@ -3,9 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#11151a">
-  <title>AFTERTOUCH / Device Studio</title>
+  <meta name="theme-color" content="#152033">
+  <title>Aftertouch</title>
   <link rel="icon" href="./assets/icon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=Spectral:wght@500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./style.css">
   <script src="./app.js" defer></script>
 </head>
@@ -14,48 +17,49 @@
     <aside class="sidebar">
       <div class="brand">
         <img src="./assets/icon.png" alt="" width="35" height="35">
-        <div><strong>AFTER<br>TOUCH<span class="brand-stop">.</span></strong><small>DEVICE STUDIO / 02</small></div>
+        <div><strong>Aftertouch</strong><small>DualSense studio</small></div>
       </div>
-      <div class="side-caption">OPERATING SURFACES <span>///</span></div>
+      <div class="side-caption">Menu</div>
       <nav id="nav" aria-label="Sections">
-        <button class="nav-link is-current" data-view="live" aria-current="page"><span class="nav-index">01</span><span>LIVE INPUT</span><i></i></button>
-        <button class="nav-link" data-view="triggers"><span class="nav-index">02</span><span>TRIGGER FORGE</span><i></i></button>
-        <button class="nav-link" data-view="haptics"><span class="nav-index">03</span><span>HAPTIC LAB</span><i></i></button>
-        <button class="nav-link" data-view="touch"><span class="nav-index">04</span><span>TOUCH + MOTION</span><i></i></button>
-        <button class="nav-link" data-view="lights"><span class="nav-index">05</span><span>LIGHTBAR</span><i></i></button>
-        <button class="nav-link" data-view="profiles"><span class="nav-index">06</span><span>PROFILES</span><i></i></button>
-        <button class="nav-link" data-view="diagnostics"><span class="nav-index">07</span><span>DIAGNOSTICS</span><i></i></button>
+        <button class="nav-link is-current" data-view="live" aria-current="page"><span class="nav-index">01</span><span>Input</span></button>
+        <button class="nav-link" data-view="triggers"><span class="nav-index">02</span><span>Triggers</span></button>
+        <button class="nav-link" data-view="haptics"><span class="nav-index">03</span><span>Haptics</span></button>
+        <button class="nav-link" data-view="touch"><span class="nav-index">04</span><span>Touch</span></button>
+        <button class="nav-link" data-view="lights"><span class="nav-index">05</span><span>Lightbar</span></button>
+        <button class="nav-link" data-view="profiles"><span class="nav-index">06</span><span>Profiles</span></button>
+        <button class="nav-link" data-view="diagnostics"><span class="nav-index">07</span><span>Diagnostics</span></button>
       </nav>
       <div class="side-bottom">
-        <div class="side-led"><span id="side-dot"></span><span id="side-state">SEARCHING FOR PAD</span></div>
-        <p>LOCAL SYSTEM<br>NO CLOUD / NO HOOKS</p>
-        <div class="side-code">AT–DS/2026 <span>BUILD 0.2</span></div>
+        <div class="side-led"><span id="side-dot"></span><span id="side-state">Searching</span></div>
+        <p>Local only</p>
+        <div class="side-code">0.4</div>
       </div>
     </aside>
 
     <div class="workspace">
       <header class="masthead">
-        <div class="mast-title"><span class="mast-cross">✳</span> FEEL ENGINEERING <span class="mast-divider">/</span> DUALSENSE WORKBENCH</div>
-        <div class="mast-actions"><span id="clock">00:00:00</span><span class="mast-separator"></span><span class="transport-label" id="top-transport">NO DEVICE</span><button id="scan-button" class="header-button" type="button">SCAN <span>↗</span></button></div>
+        <div class="mast-title">DualSense workbench</div>
+        <div class="mast-actions"><span id="clock">00:00:00</span><span class="mast-separator"></span><span class="transport-label" id="top-transport">No device</span><button id="scan-button" class="header-button" type="button">Scan</button></div>
       </header>
 
-      <div class="session-rail" aria-label="Current controller session">
-        <button class="session-profile" type="button" data-goto="profiles"><small>CURRENT PROFILE</small><strong id="session-profile-name">STANDARD STUDY</strong><span>↗</span></button>
-        <div class="session-signal"><small>HID SIGNAL</small><strong id="session-signal">AWAITING INPUT</strong><i id="session-signal-dot"></i></div>
-        <div class="session-lease"><small>TRIGGER LEASE</small><strong id="session-lease">NEUTRAL</strong><div class="lease-track"><i id="lease-fill"></i></div></div>
-        <button id="quick-reset" class="session-reset" type="button" disabled>RESET OUTPUT <span>↗</span></button>
+      <div class="session-rail" aria-label="Session">
+        <button class="session-profile" type="button" data-goto="profiles"><small>Profile</small><strong id="session-profile-name">Standard</strong></button>
+        <div class="session-signal"><small>Signal</small><strong id="session-signal">Waiting</strong><i id="session-signal-dot"></i></div>
+        <div class="session-lease"><small>Trigger lease</small><strong id="session-lease">Off</strong><div class="lease-track"><i id="lease-fill"></i></div></div>
+        <button id="auto-apply-toggle" class="session-auto" type="button" aria-pressed="true"><small>Auto-apply</small><strong>On</strong></button>
+        <button id="quick-reset" class="session-reset" type="button" disabled>Reset</button>
       </div>
 
       <main>
         <section class="screen is-current" id="live" aria-labelledby="live-title">
-          <div class="page-heading"><div><div class="eyebrow"><span>01 / SYSTEM</span><span>INPUT OBSERVATORY</span></div><h1 id="live-title">READ THE <em>HANDS.</em></h1></div><p>Every press has a signature. Watch the physical controller, not an approximation.</p></div>
+          <div class="page-heading"><div><div class="eyebrow"><span>01</span><span>Input</span></div><h1 id="live-title">Live input</h1></div><p>Button overlay on the controller photo.</p></div>
           <div class="live-layout">
-            <div class="photo-module">
-              <div class="module-topline"><span><b class="blink-pixel"></b> CONTROLLER MAP / FRONT</span><span id="photo-status">HID INPUT / WAITING</span></div>
+            <div class="photo-module framed">
+              <div class="module-topline"><span><b class="blink-pixel"></b> Front map</span><span id="photo-status">Waiting</span></div>
               <div class="photo-stage" id="photo-stage">
-                <div class="photo-ruler top-ruler"><span>0</span><span>10</span><span>20</span><span>30</span><span>40</span><span>50</span><span>60</span><span>70</span><span>80</span><span>90</span><span>100</span></div>
+                <div class="photo-ruler top-ruler"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
                 <div class="controller-photo-wrap">
-                  <img class="controller-photo" src="./assets/dualsense-photo.png" alt="Photograph of a white DualSense controller, front view" draggable="false">
+                  <img class="controller-photo" src="./assets/dualsense-photo.png" alt="DualSense controller" draggable="false">
                   <span class="shoulder-mark left-l2" data-button="6">L2 <i></i></span>
                   <span class="shoulder-mark left-l1" data-button="4">L1 <i></i></span>
                   <span class="shoulder-mark right-r1" data-button="5">R1 <i></i></span>
@@ -72,70 +76,77 @@
                   <span class="hotspot stick" data-button="11" id="right-stick-mark" style="--x:69.9%;--y:37.3%" aria-label="Right stick"><i></i></span>
                   <span class="hotspot small" data-button="8" style="--x:43.3%;--y:10.6%" aria-label="Create"><i></i></span>
                   <span class="hotspot small" data-button="9" style="--x:81.6%;--y:25.1%" aria-label="Options"><i></i></span>
-                  <span class="hotspot touch-mark" data-button="17" style="--x:60.5%;--y:16.5%" aria-label="Touchpad press"><i></i></span>
-                  <span class="hotspot small" data-button="16" style="--x:54.5%;--y:35.3%" aria-label="PS button"><i></i></span>
-                  <span class="hotspot small" data-button="18" style="--x:52.5%;--y:40.6%" aria-label="Microphone mute button"><i></i></span>
+                  <span class="hotspot touch-mark" data-button="17" style="--x:60.5%;--y:16.5%" aria-label="Touchpad"><i></i></span>
+                  <span class="hotspot small" data-button="16" style="--x:54.5%;--y:35.3%" aria-label="PS"><i></i></span>
+                  <span class="hotspot small" data-button="18" style="--x:52.5%;--y:40.6%" aria-label="Mute"><i></i></span>
                 </div>
-                <div class="photo-index">FIG. 01 — ACTUAL CONTROLLER / LIVE CONTACT OVERLAY</div>
               </div>
-              <div class="photo-underbar"><span>ACTIVE: <b id="active-buttons">NONE</b></span><span>PRESS A BUTTON TO TRACE IT <span class="orange-arrow">↗</span></span></div>
+              <div class="photo-underbar"><span>Active: <b id="active-buttons">None</b></span></div>
               <div class="trigger-twin">
-                <div class="trigger-meter"><div><span>L2 / LEFT</span><b id="live-l2">00%</b></div><div class="meter-track"><i id="live-l2-fill"></i></div></div>
-                <div class="trigger-meter"><div><span>R2 / RIGHT</span><b id="live-r2">00%</b></div><div class="meter-track"><i id="live-r2-fill"></i></div></div>
+                <div class="trigger-meter"><div><span>L2</span><b id="live-l2">00%</b></div><div class="meter-track"><i id="live-l2-fill"></i></div></div>
+                <div class="trigger-meter"><div><span>R2</span><b id="live-r2">00%</b></div><div class="meter-track"><i id="live-r2-fill"></i></div></div>
               </div>
             </div>
-            <aside class="telemetry">
-              <div class="telemetry-head"><span>LIVE TELEMETRY</span><span id="packet-counter">0000</span></div>
-              <div class="telemetry-main"><small>DEVICE ID / 01</small><strong id="device-name">NO CONTROLLER</strong><span id="device-subtitle">CONNECT BY USB OR BLUETOOTH</span></div>
-              <div class="battery-band"><div><span>POWER CELL</span><strong id="battery-value">—</strong></div><div class="battery-segments" id="battery-segments"></div><small id="battery-detail">WAITING FOR DEVICE</small></div>
-              <div class="telemetry-axes"><div><span>LEFT STICK</span><strong id="left-axis">0.00 / 0.00</strong></div><div><span>RIGHT STICK</span><strong id="right-axis">0.00 / 0.00</strong></div></div>
-              <div class="telemetry-scope"><div class="scope-label"><span>INPUT ACTIVITY</span><span>LIVE / 30 FPS</span></div><canvas id="activity-scope" width="530" height="130" aria-label="Controller input activity graph"></canvas></div>
-              <button class="next-surface" data-goto="triggers">NEXT / SHAPE THE TRIGGERS <span>↗</span></button>
+            <aside class="telemetry framed">
+              <div class="telemetry-head"><span>Status</span><span id="packet-counter">0000</span></div>
+              <div class="telemetry-main"><small>Device</small><strong id="device-name">No controller</strong><span id="device-subtitle">USB or Bluetooth</span></div>
+              <div class="battery-band" id="battery-band">
+                <div><span>Battery</span><strong id="battery-value">—</strong></div>
+                <div class="battery-segments" id="battery-segments"></div>
+                <div class="battery-meta">
+                  <span id="battery-detail">—</span>
+                  <span id="battery-health">Health —</span>
+                  <span id="battery-temp">Temp —</span>
+                </div>
+              </div>
+              <div class="telemetry-axes"><div><span>Left stick</span><strong id="left-axis">0.00 / 0.00</strong></div><div><span>Right stick</span><strong id="right-axis">0.00 / 0.00</strong></div></div>
+              <div class="telemetry-scope"><div class="scope-label"><span>Activity</span></div><canvas id="activity-scope" width="530" height="130" aria-label="Input activity"></canvas></div>
+              <button class="next-surface" data-goto="triggers">Triggers →</button>
             </aside>
           </div>
         </section>
 
         <section class="screen" id="triggers" aria-labelledby="triggers-title" hidden>
-          <div class="page-heading"><div><div class="eyebrow"><span>02 / FORCE</span><span>ADAPTIVE TRIGGER FORGE</span></div><h1 id="triggers-title">DRAW THE <em>BREAK.</em></h1></div><p>Ten hardware zones. Two independent pulls. Make resistance speak clearly.</p></div>
+          <div class="page-heading"><div><div class="eyebrow"><span>02</span><span>Triggers</span></div><h1 id="triggers-title">Adaptive triggers</h1></div><p>Ten zones per trigger. Apply sends a 15s test.</p></div>
           <div class="split-layout">
-            <div class="work-panel trigger-work"><div class="panel-cap"><span>01 // FORCE MAP</span><span id="curve-side-label">L2 / LEFT CHANNEL</span></div>
-              <div class="side-selector"><button class="side-tab is-active" data-side="left" type="button">L2 <small>LEFT</small></button><button class="side-tab" data-side="right" type="button">R2 <small>RIGHT</small></button></div>
-              <div class="curve-paper"><svg id="curve-svg" viewBox="0 0 760 380" role="img" aria-label="Editable trigger force curve"><g id="curve-grid"></g><path id="curve-fill"></path><path id="curve-steps"></path><path id="curve-line"></path><g id="curve-points"></g><line id="curve-playhead" x1="45" x2="45" y1="20" y2="315"></line><text x="45" y="355">0% TRAVEL</text><text x="658" y="355">100% TRAVEL</text></svg></div>
-              <div class="curve-footer"><span>— CONTINUOUS CURVE</span><span>┄ TEN ZONE OUTPUT</span><span>DRAG A NODE TO EDIT</span></div>
-              <div class="curve-presets"><span>STARTING SHAPES</span><div id="curve-presets"></div></div>
+            <div class="work-panel trigger-work framed"><div class="panel-cap"><span>Curve</span><span id="curve-side-label">L2</span></div>
+              <div class="side-selector"><button class="side-tab is-active" data-side="left" type="button">L2</button><button class="side-tab" data-side="right" type="button">R2</button></div>
+              <div class="curve-paper"><svg id="curve-svg" viewBox="0 0 760 380" role="img" aria-label="Trigger curve"><g id="curve-grid"></g><path id="curve-fill"></path><path id="curve-steps"></path><path id="curve-line"></path><g id="curve-points"></g><line id="curve-playhead" x1="45" x2="45" y1="20" y2="315"></line><text x="45" y="355">0%</text><text x="680" y="355">100%</text></svg></div>
+              <div class="curve-footer"><span>Drag nodes to edit</span></div>
+              <div class="curve-presets"><span>Presets</span><div id="curve-presets"></div></div>
             </div>
-            <aside class="controls-panel"><div class="panel-cap"><span>02 // ACTUATOR SETTINGS</span><span>LIVE TEST / EXPLICIT</span></div><div class="controls-inner"><h2>Shape the<br><em>response.</em></h2><div class="mode-list" id="trigger-modes"></div><label class="control-label" for="trigger-strength"><span>OUTPUT STRENGTH</span><b id="trigger-strength-number">40%</b></label><input id="trigger-strength" type="range" min="0" max="100" value="40"><div class="ceiling-note">FIRMWARE RANGE IS CAPPED BY THE CORE.</div><div class="apply-box"><div><small>HARDWARE SESSION</small><strong>15 SECOND LEASE</strong></div><button class="main-action" id="apply-triggers" type="button" disabled>APPLY BOTH TRIGGERS <span>↗</span></button><button class="quiet-action" id="reset-effects" type="button" disabled>RESET ALL EFFECTS</button><p>Profile edits stay local until you press Apply. PS + Options is the panic reset.</p></div></div></aside>
+            <aside class="controls-panel framed"><div class="panel-cap"><span>Settings</span><span>15s lease</span></div><div class="controls-inner"><h2>Mode</h2><div class="mode-list" id="trigger-modes"></div><label class="control-label" for="trigger-strength"><span>Strength</span><b id="trigger-strength-number">40%</b></label><input id="trigger-strength" type="range" min="0" max="100" value="40"><div class="ceiling-note">Firmware level capped at 6/8.</div><div class="apply-box"><button class="main-action" id="apply-triggers" type="button" disabled>Apply both</button><button class="quiet-action" id="reset-effects" type="button" disabled>Reset effects</button><p>Edits stay local until Apply. PS + Options clears output.</p></div></div></aside>
           </div>
         </section>
 
         <section class="screen" id="haptics" aria-labelledby="haptics-title" hidden>
-          <div class="page-heading"><div><div class="eyebrow"><span>03 / FEEL</span><span>HAPTIC LABORATORY</span></div><h1 id="haptics-title">DESIGN A <em>PULSE.</em></h1></div><p>Sketch shape and envelope in audio. Preview a safe, short rumble on the controller.</p></div>
-          <div class="work-panel waveform-panel"><div class="panel-cap"><span>01 // ENVELOPE SCOPE</span><span id="wave-formula">SINE / 90 HZ</span></div><div class="wave-stage"><canvas id="wave-canvas" width="1400" height="370" aria-label="Haptic waveform drawing"></canvas><div class="wave-caption"><span>0 MS</span><span id="wave-duration">240 MS</span></div></div><div class="wave-bottom"><span>COMPUTER AUDIO SKETCH <b>+</b> CONTROLLER RUMBLE TEST</span><button id="play-haptic" class="main-action" type="button">▶ PREVIEW FEEL</button></div></div>
-          <div class="haptic-grid"><div class="work-panel"><div class="panel-cap"><span>02 // SIGNAL GENERATOR</span><span>BOUNDED OUTPUT</span></div><div class="haptic-controls"><div class="wave-shapes" id="wave-shapes"></div><div id="haptic-sliders"></div></div></div><div class="work-panel"><div class="panel-cap"><span>03 // FEEL SKETCHES</span><span>LOAD + PLAY</span></div><div id="texture-list" class="texture-list"></div></div></div>
-          <p class="feature-boundary">The waveform is a computer audio study. Hardware preview uses standard short rumble; USB voice coil routing and system audio loopback are a separate engineering milestone.</p>
+          <div class="page-heading"><div><div class="eyebrow"><span>03</span><span>Haptics</span></div><h1 id="haptics-title">Rumble envelope</h1></div><p>Audio sketch plus timed motor pattern on the pad.</p></div>
+          <div class="work-panel waveform-panel framed"><div class="panel-cap"><span>Waveform</span><span id="wave-formula">Sine / 90 Hz</span></div><div class="wave-stage"><canvas id="wave-canvas" width="1400" height="370" aria-label="Waveform"></canvas><div class="wave-caption"><span>0 ms</span><span id="wave-duration">240 ms</span></div></div><div class="wave-bottom"><span>PC audio + pad motors</span><button id="play-haptic" class="main-action" type="button">Play</button></div></div>
+          <div class="haptic-grid"><div class="work-panel framed"><div class="panel-cap"><span>Generator</span></div><div class="haptic-controls"><div class="wave-shapes" id="wave-shapes"></div><div id="haptic-sliders"></div></div></div><div class="work-panel framed"><div class="panel-cap"><span>Presets</span></div><div id="texture-list" class="texture-list"></div></div></div>
+          <p class="feature-boundary">Motor envelope only — no USB voice-coil PCM.</p>
         </section>
 
         <section class="screen" id="touch" aria-labelledby="touch-title" hidden>
-          <div class="page-heading"><div><div class="eyebrow"><span>04 / SURFACE</span><span>TOUCH + MOTION TRACKER</span></div><h1 id="touch-title">FOLLOW THE <em>CONTACT.</em></h1></div><p>Two raw touch contacts and three gyro axes, straight from the controller report.</p></div>
-          <div class="split-layout"><div class="work-panel touch-work"><div class="panel-cap"><span>01 // CAPACITIVE PLANE</span><span>1920 × 1080 NATIVE COORDINATES</span></div><div class="touch-plane" id="touch-plane"><div class="touch-grid"></div><div class="zone-label z-left">LEFT EDGE</div><div class="zone-label z-top">SCROLL STRIP</div><div class="zone-label z-right">RIGHT EDGE</div><span class="touch-contact" id="contact-0"><i>1</i></span><span class="touch-contact second" id="contact-1"><i>2</i></span><div class="touch-crosshair">+</div></div><div class="plane-readout"><span>CONTACT 01 <b id="touch-1-pos">—</b></span><span>CONTACT 02 <b id="touch-2-pos">—</b></span></div></div><aside class="controls-panel"><div class="panel-cap"><span>02 // MOTION SENSOR</span><span>RAW GYRO</span></div><div class="controls-inner motion-inner"><h2>Small movements.<br><em>Clear signals.</em></h2><div class="gyro-line"><span>X / ROLL</span><b id="gyro-x">0</b><i><i id="gyro-x-fill"></i></i></div><div class="gyro-line"><span>Y / PITCH</span><b id="gyro-y">0</b><i><i id="gyro-y-fill"></i></i></div><div class="gyro-line"><span>Z / YAW</span><b id="gyro-z">0</b><i><i id="gyro-z-fill"></i></i></div><div class="touch-mode"><strong>TOUCHPAD MOUSE</strong><p>Move with one finger. Two fingers scroll. Release your finger to reposition.</p><button id="touch-mouse-toggle" class="switch-button" type="button" aria-pressed="false" disabled>OFF <span>○</span></button></div><p class="feature-boundary">Mouse mode sends standard Windows pointer input only while enabled. No game process injection.</p></div></aside></div>
+          <div class="page-heading"><div><div class="eyebrow"><span>04</span><span>Touch</span></div><h1 id="touch-title">Touch and motion</h1></div><p>Opt-in mouse, edge keys, and gyro aim.</p></div>
+          <div class="split-layout"><div class="work-panel touch-work framed"><div class="panel-cap"><span>Touchpad</span><span>1920 × 1080</span></div><div class="touch-plane" id="touch-plane"><div class="touch-grid"></div><div class="zone-band zone-left"></div><div class="zone-band zone-right"></div><div class="zone-band zone-top"></div><div class="zone-label z-left">Left</div><div class="zone-label z-top">Clutch</div><div class="zone-label z-right">Right</div><span class="touch-contact" id="contact-0"><i>1</i></span><span class="touch-contact second" id="contact-1"><i>2</i></span><div class="touch-crosshair">+</div></div><div class="plane-readout"><span>Contact 1 <b id="touch-1-pos">—</b></span><span>Contact 2 <b id="touch-2-pos">—</b></span></div></div><aside class="controls-panel framed"><div class="panel-cap"><span>Controls</span></div><div class="controls-inner motion-inner"><h2>Pointer</h2><div class="gyro-line"><span>X</span><b id="gyro-x">0</b><i><i id="gyro-x-fill"></i></i></div><div class="gyro-line"><span>Y</span><b id="gyro-y">0</b><i><i id="gyro-y-fill"></i></i></div><div class="gyro-line"><span>Z</span><b id="gyro-z">0</b><i><i id="gyro-z-fill"></i></i></div><div class="touch-mode"><strong>Touchpad mouse</strong><p>One finger moves. Two fingers scroll.</p><button id="touch-mouse-toggle" class="switch-button" type="button" aria-pressed="false" disabled>Off</button></div><div class="touch-mode"><strong>Edge gestures</strong><p>Left/right edge → ← / →</p><button id="touch-gesture-toggle" class="switch-button" type="button" aria-pressed="false">Off</button></div><div class="gyro-aim-block"><strong>Gyro aim</strong><p>Yaw/pitch moves the cursor.</p><button id="gyro-aim-toggle" class="switch-button" type="button" aria-pressed="false" disabled>Off</button><label class="control-label" for="gyro-sens"><span>Sensitivity</span><b id="gyro-sens-value">1.0×</b></label><input id="gyro-sens" type="range" min="5" max="80" value="10"><label class="control-label" for="gyro-activation">Hold to aim</label><select id="gyro-activation"><option value="always">Always</option><option value="l2">L2</option><option value="r2">R2</option><option value="l1">L1</option><option value="r1">R1</option><option value="touchpad">Touchpad</option></select><label class="check-row"><input id="gyro-invert" type="checkbox"> Invert pitch</label></div><div class="xinput-block"><strong>XInput bridge</strong><p>Optional Xbox 360 pad through ViGEmBus (same approach as DualSenseX). Install the driver separately.</p><button id="xinput-toggle" class="switch-button" type="button" aria-pressed="false" disabled>Off</button><small id="xinput-status">ViGEm not connected</small></div><p class="feature-boundary">Pointer modes use SendInput. The XInput bridge needs Nefarius ViGEmBus; Aftertouch does not install it.</p></div></aside></div>
         </section>
 
         <section class="screen" id="lights" aria-labelledby="lights-title" hidden>
-          <div class="page-heading"><div><div class="eyebrow"><span>05 / LUMINANCE</span><span>LIGHTBAR CONTROL</span></div><h1 id="lights-title">TUNE THE <em>GLOW.</em></h1></div><p>Send a color on purpose, then return control to the controller on reset.</p></div>
-          <div class="light-layout"><div class="light-display"><div class="panel-cap"><span>01 // CHROMA PANEL</span><span>RGB / MANUAL</span></div><div class="light-arcs" id="light-arcs"><i></i><i></i><i></i></div><div class="light-display-bottom"><span>SELECTED COLOR</span><strong id="light-hex">#FF7451</strong></div></div><div class="controls-panel"><div class="panel-cap"><span>02 // COMMAND</span><span>ON CHANGE ONLY</span></div><div class="controls-inner light-controls"><h2>Color is<br><em>feedback.</em></h2><label class="control-label" for="light-color">CHOOSE A COLOR</label><input id="light-color" type="color" value="#ff7451"><div class="light-presets" id="light-presets"></div><button class="main-action" id="send-light" type="button" disabled>SET LIGHTBAR <span>↗</span></button><button class="quiet-action" id="battery-light" type="button" disabled aria-pressed="false">BATTERY COLOR MODE / OFF</button><button class="quiet-action" id="release-light" type="button" disabled>RELEASE LIGHTBAR CONTROL</button><p>Bluetooth writes include a sequence tag and CRC. USB uses the hardware report path.</p></div></div></div>
+          <div class="page-heading"><div><div class="eyebrow"><span>05</span><span>Lightbar</span></div><h1 id="lights-title">Lightbar</h1></div><p>Set a color or release control.</p></div>
+          <div class="light-layout"><div class="light-display framed"><div class="panel-cap"><span>Preview</span><span>RGB</span></div><div class="light-arcs" id="light-arcs"><i></i><i></i><i></i></div><div class="light-display-bottom"><span>Color</span><strong id="light-hex">#D4A84B</strong></div></div><div class="controls-panel framed"><div class="panel-cap"><span>Command</span></div><div class="controls-inner light-controls"><h2>Color</h2><label class="control-label" for="light-color">Picker</label><input id="light-color" type="color" value="#d4a84b"><div class="light-presets" id="light-presets"></div><button class="main-action" id="send-light" type="button" disabled>Set lightbar</button><button class="quiet-action" id="battery-light" type="button" disabled aria-pressed="false">Battery color: off</button><button class="quiet-action" id="release-light" type="button" disabled>Release</button></div></div></div>
         </section>
 
         <section class="screen" id="profiles" aria-labelledby="profiles-title" hidden>
-          <div class="page-heading"><div><div class="eyebrow"><span>06 / MEMORY</span><span>PROFILE ARCHIVE</span></div><h1 id="profiles-title">SAVE THE <em>FEEL.</em></h1></div><p>Named, versioned, local files. A profile changes the editor until you apply it.</p></div>
-          <div class="profile-layout"><div class="work-panel"><div class="panel-cap"><span>01 // LOCAL PROFILES</span><span id="profile-count">00 SAVED</span></div><div class="profile-list" id="profile-list"></div><button class="profile-new" id="new-profile" type="button">+ NEW PROFILE <span>↗</span></button></div><div class="controls-panel"><div class="panel-cap"><span>02 // RECORD</span><span>SCHEMA V1</span></div><div class="controls-inner profile-editor"><div class="profile-stamp">AFTERTOUCH <span>//</span> MEMORY CARD</div><label class="control-label" for="profile-name">PROFILE NAME</label><input id="profile-name" type="text" maxlength="40"><label class="control-label" for="profile-description">DESCRIPTION</label><textarea id="profile-description" rows="3" maxlength="180"></textarea><label class="control-label" for="profile-match">AUTO SWITCH / PROCESS NAME</label><input id="profile-match" type="text" maxlength="80" placeholder="game.exe" spellcheck="false"><small class="detected-app" id="detected-app">LAST ACTIVE APP / NONE DETECTED</small><button class="quiet-action learn-process" id="learn-process" type="button">USE LAST ACTIVE APP</button><div class="profile-buttons"><button class="main-action" id="save-profile" type="button">SAVE PROFILE</button><button class="quiet-action" id="duplicate-profile" type="button">DUPLICATE</button><button class="quiet-action" id="delete-profile" type="button">DELETE</button></div><div class="import-row"><button id="export-profiles" type="button">EXPORT JSON ↗</button><button id="import-profiles" type="button">IMPORT JSON ↗</button><input id="import-file" type="file" accept=".json,application/json" hidden></div></div></div></div>
+          <div class="page-heading"><div><div class="eyebrow"><span>06</span><span>Profiles</span></div><h1 id="profiles-title">Profiles</h1></div><p>Local JSON. Auto-apply can push settings to the pad.</p></div>
+          <div class="profile-layout"><div class="work-panel framed"><div class="panel-cap"><span>Saved</span><span id="profile-count">00</span></div><div class="profile-list" id="profile-list"></div><button class="profile-new" id="new-profile" type="button">+ New</button></div><div class="controls-panel framed"><div class="panel-cap"><span>Edit</span><span>Schema v2</span></div><div class="controls-inner profile-editor"><div class="profile-stamp">Profile</div><label class="control-label" for="profile-name">Name</label><input id="profile-name" type="text" maxlength="40"><label class="control-label" for="profile-description">Notes</label><textarea id="profile-description" rows="3" maxlength="180"></textarea><label class="control-label" for="profile-match">Match exe</label><input id="profile-match" type="text" maxlength="80" placeholder="game.exe" spellcheck="false"><small class="detected-app" id="detected-app">Last app: none</small><button class="quiet-action learn-process" id="learn-process" type="button">Use last app</button><label class="check-row profile-auto"><input id="profile-auto-apply" type="checkbox" checked> Apply to hardware on load</label><div class="remap-block"><strong>Keyboard remap</strong><p>Button → virtual key. Not a virtual Xbox pad.</p><label class="check-row"><input id="remap-enabled" type="checkbox"> Enable on apply</label><div id="remap-bindings" class="remap-bindings"></div><button id="add-remap" class="quiet-action" type="button">+ Binding</button></div><div class="profile-buttons"><button class="main-action" id="save-profile" type="button">Save</button><button class="quiet-action" id="apply-profile-now" type="button">Apply to pad</button><button class="quiet-action" id="duplicate-profile" type="button">Duplicate</button><button class="quiet-action" id="delete-profile" type="button">Delete</button></div><div class="import-row"><button id="export-profiles" type="button">Export</button><button id="import-profiles" type="button">Import</button><input id="import-file" type="file" accept=".json,application/json" hidden></div></div></div></div>
         </section>
 
         <section class="screen" id="diagnostics" aria-labelledby="diagnostics-title" hidden>
-          <div class="page-heading"><div><div class="eyebrow"><span>07 / VERIFY</span><span>DEVICE DIAGNOSTICS</span></div><h1 id="diagnostics-title">SEE EVERY <em>SIGNAL.</em></h1></div><p>Controller state, output ownership, protocol health, and a clear route back to neutral.</p></div>
-          <div class="diag-layout"><div class="work-panel"><div class="panel-cap"><span>01 // INPUT MATRIX</span><span id="diag-packet">REPORT —</span></div><div class="diag-device"><small>CONNECTED UNIT</small><strong id="diag-device-name">WAITING FOR CONTROLLER</strong><span id="diag-transport">USB / BLUETOOTH</span><span id="diag-firmware">FIRMWARE ?</span></div><div class="button-matrix" id="button-matrix"></div><div class="diag-readouts"><div><span>L2</span><b id="diag-l2">0.00</b></div><div><span>R2</span><b id="diag-r2">0.00</b></div><div><span>BATTERY</span><b id="diag-battery">—</b></div><div><span>INPUT RATE</span><b id="diag-rate">—</b></div></div></div><aside class="controls-panel"><div class="panel-cap"><span>02 // OUTPUT OWNERSHIP</span><span>SAFETY FIRST</span></div><div class="controls-inner diag-side"><div class="owner-status"><span class="status-square" id="owner-square"></span><div><small>DEVICE WRITER</small><strong id="owner-status">NO PAD FOUND</strong></div></div><p id="conflict-message">The core checks for other controller tools on this machine.</p><div class="diag-log-head">SESSION EVENTS <span>LOCAL ONLY</span></div><ol id="event-log" class="event-log"></ol><button id="diag-reset" class="main-action" type="button" disabled>RESET ALL OUTPUT <span>↗</span></button><button id="diag-scan" class="quiet-action" type="button">SCAN FOR CONTROLLER</button><p class="feature-boundary">The Rust core is the only writer for this app. It sends output on state changes, times out tests, and clears active effects on shutdown.</p></div></aside></div>
+          <div class="page-heading"><div><div class="eyebrow"><span>07</span><span>Diagnostics</span></div><h1 id="diagnostics-title">Diagnostics</h1></div><p>Pads, conflicts, and session log.</p></div>
+          <div class="diag-layout"><div class="work-panel framed"><div class="panel-cap"><span>Matrix</span><span id="diag-packet">—</span></div><div class="diag-device"><small>Connected</small><strong id="diag-device-name">Waiting</strong><span id="diag-transport">USB / Bluetooth</span><span id="diag-firmware">Firmware —</span></div><div class="device-picker"><div class="panel-cap sub"><span>Pads</span><span id="device-count">0</span></div><div id="device-list" class="device-list"></div></div><div class="button-matrix" id="button-matrix"></div><div class="diag-readouts"><div><span>L2</span><b id="diag-l2">0.00</b></div><div><span>R2</span><b id="diag-r2">0.00</b></div><div><span>Battery</span><b id="diag-battery">—</b></div><div><span>Health</span><b id="diag-health">—</b></div><div><span>Temp</span><b id="diag-temp">—</b></div><div><span>Charge</span><b id="diag-charge">—</b></div><div><span>XInput</span><b id="diag-xinput">Off</b></div><div><span>Rate</span><b id="diag-rate">—</b></div></div><p class="diag-jack" id="diag-jack">Jack: —</p></div><aside class="controls-panel framed"><div class="panel-cap"><span>Output</span></div><div class="controls-inner diag-side"><div class="owner-status"><span class="status-square" id="owner-square"></span><div><small>Writer</small><strong id="owner-status">No pad</strong></div></div><p id="core-status" class="core-status">Core: starting</p><p id="conflict-message">Checking for other controller tools.</p><div class="diag-log-head">Log</div><ol id="event-log" class="event-log"></ol><button id="diag-reset" class="main-action" type="button" disabled>Reset output</button><button id="diag-scan" class="quiet-action" type="button">Scan</button></div></aside></div>
         </section>
       </main>
-      <footer class="footer"><span>AT / DESIGNED TO BE FELT</span><span>PHOTO: ALEX COCHRANE / <a href="https://commons.wikimedia.org/wiki/File:Playstation_DualSense_Controller.png" target="_blank" rel="noreferrer">CC BY-SA 4.0</a></span><span>LOCAL DEVICE SYSTEM / 2026</span></footer>
+      <footer class="footer"><span>Aftertouch</span><span>Photo: <a href="https://commons.wikimedia.org/wiki/File:Playstation_DualSense_Controller.png" target="_blank" rel="noreferrer">Alex Cochrane / CC BY-SA 4.0</a></span></footer>
     </div>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>

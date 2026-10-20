@@ -4,7 +4,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{processes, touch_mouse::MouseMapper};
+use crate::{
+    haptics::HapticClip,
+    input_map::{GyroActivation, GyroAimConfig, GyroAimMapper, MouseMapper, RemapBinding, RemapMapper},
+    processes,
+    xinput_bridge::XInputBridge,
+};
 use aftertouch_protocol::{self as protocol, TriggerSetting};
 use hidapi::{BusType, HidApi, HidDevice};
 use serde::Deserialize;
@@ -14,6 +19,10 @@ use serde_json::json;
 #[serde(tag = "action", rename_all = "camelCase")]
 pub enum DeviceCommand {
     Scan,
+    ListDevices,
+    SelectDevice {
+        path: String,
+    },
     ApplyTriggers {
         left: TriggerSetting,
         right: TriggerSetting,
@@ -28,6 +37,38 @@ pub enum DeviceCommand {
     SetTouchMouse {
         enabled: bool,
     },
+    SetTouchGestures {
+        enabled: bool,
+    },
+    SetGyroAim {
+        enabled: bool,
+        #[serde(default = "default_sens")]
+        sensitivity: f32,
+        #[serde(default = "default_axis")]
+        yaw_scale: f32,
+        #[serde(default = "default_axis")]
+        pitch_scale: f32,
+        #[serde(default)]
+        invert_y: bool,
+        #[serde(default = "default_activation")]
+        activation: String,
+    },
+    SetRemap {
+        enabled: bool,
+        #[serde(default)]
+        bindings: Vec<RemapBindingDto>,
+    },
+    SetXinput {
+        enabled: bool,
+    },
+    PlayHaptic {
+        shape: String,
+        frequency: u16,
+        attack: u16,
+        release: u16,
+        strength: u8,
+        pan: i16,
+    },
     Rumble {
         left: u8,
         right: u8,
@@ -38,11 +79,29 @@ pub enum DeviceCommand {
     Shutdown,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RemapBindingDto {
+    pub button: u8,
+    pub vk: u16,
+}
+
+fn default_sens() -> f32 {
+    1.0
+}
+fn default_axis() -> f32 {
+    1.0
+}
+fn default_activation() -> String {
+    "always".into()
+}
+
 struct Connected {
     hid: HidDevice,
     path: Vec<u8>,
+    path_display: String,
     name: String,
     transport: BusType,
+    product_id: u16,
     rumble_flags: (u8, u8),
     sequence: u8,
     trigger_active: bool,
@@ -50,6 +109,7 @@ struct Connected {
     rumble_active: bool,
     trigger_until: Option<Instant>,
     rumble_until: Option<Instant>,
+    haptic: Option<HapticClip>,
     last_input_sent: Instant,
     last_valid_report: Instant,
     panic_latched: bool,
@@ -65,8 +125,6 @@ impl Connected {
         if matches!(self.transport, BusType::Bluetooth) {
             let bt = protocol::bt_report(&report, self.sequence);
             self.sequence = self.sequence.wrapping_add(1);
-            // Windows Bluetooth stacks can acknowledge WriteFile while dropping
-            // interrupt output. Prefer the HID Set_Report control path.
             match self.hid.send_output_report(&bt) {
                 Ok(()) => return Ok(()),
                 Err(_) => self.hid.write(&bt),
@@ -92,7 +150,29 @@ impl Connected {
         .map_err(|error| format!("Controller write failed: {error}"))
     }
 
+    fn write_rumble(&mut self, motors: [u8; 2]) -> Result<(), String> {
+        let result = if self.last_rumble == Some(motors) {
+            Ok(())
+        } else {
+            self.write(protocol::usb_report(
+                self.rumble_flags.0,
+                0,
+                self.rumble_flags.1,
+                None,
+                None,
+                None,
+                Some(motors),
+                false,
+            ))
+        };
+        result.map(|_| {
+            self.rumble_active = motors != [0, 0];
+            self.last_rumble = Some(motors);
+        })
+    }
+
     fn reset(&mut self) -> Result<(), String> {
+        self.haptic = None;
         if !(self.trigger_active || self.light_active || self.rumble_active) {
             return Ok(());
         }
@@ -167,18 +247,61 @@ fn is_controller(info: &hidapi::DeviceInfo) -> bool {
         && info.usage() == 5
 }
 
-fn open_first(api: &HidApi) -> Result<Option<Connected>, String> {
-    let mut candidates: Vec<_> = api
+fn path_key(info: &hidapi::DeviceInfo) -> String {
+    info.path().to_string_lossy().into_owned()
+}
+
+fn list_devices(api: &HidApi) -> Vec<serde_json::Value> {
+    let mut items: Vec<_> = api
         .device_list()
         .filter(|info| is_controller(info))
+        .map(|info| {
+            json!({
+                "path": path_key(info),
+                "name": info.product_string().unwrap_or("DualSense"),
+                "transport": if matches!(info.bus_type(), BusType::Bluetooth) { "Bluetooth" } else { "USB" },
+                "productId": format!("{:04x}", info.product_id()),
+                "isEdge": info.product_id() == protocol::EDGE_PID,
+            })
+        })
         .collect();
-    candidates.sort_by_key(|info| {
-        if matches!(info.bus_type(), BusType::Usb) {
+    items.sort_by_key(|item| {
+        if item["transport"] == "USB" {
             0
         } else {
             1
         }
     });
+    items
+}
+
+fn emit_device_list(api: &HidApi, proxy: &Sender<serde_json::Value>, selected: Option<&str>) {
+    emit(
+        proxy,
+        json!({
+            "type": "devices",
+            "items": list_devices(api),
+            "selected": selected,
+        }),
+    );
+}
+
+fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, String> {
+    let mut candidates: Vec<_> = api
+        .device_list()
+        .filter(|info| is_controller(info))
+        .collect();
+    candidates.sort_by_key(|info| {
+        let usb = matches!(info.bus_type(), BusType::Usb);
+        let preferred = wanted.is_some_and(|w| path_key(info) == w);
+        (!preferred, if usb { 0 } else { 1 })
+    });
+    if let Some(wanted) = wanted {
+        candidates.retain(|info| path_key(info) == wanted);
+        if candidates.is_empty() {
+            return Err(format!("Selected controller is no longer available: {wanted}"));
+        }
+    }
     let mut last_error = None;
     for info in candidates {
         match info.open_device(api) {
@@ -200,17 +323,18 @@ fn open_first(api: &HidApi) -> Result<Option<Connected>, String> {
                     _ => (None, None),
                 };
                 if matches!(info.bus_type(), BusType::Bluetooth) {
-                    // Feature 0x05 asks a fresh Bluetooth pad to switch from its
-                    // 10-byte compatibility input to the full 0x31 stream.
                     let mut feature = [0u8; 41];
                     feature[0] = 0x05;
                     let _ = hid.get_feature_report(&mut feature);
                 }
+                let display = path_key(info);
                 return Ok(Some(Connected {
                     hid,
                     path: info.path().to_bytes().to_vec(),
+                    path_display: display,
                     name: info.product_string().unwrap_or("DualSense").to_string(),
                     transport: info.bus_type(),
+                    product_id: info.product_id(),
                     rumble_flags: protocol::rumble_flags(
                         feature_version,
                         info.product_id() == protocol::EDGE_PID,
@@ -221,6 +345,7 @@ fn open_first(api: &HidApi) -> Result<Option<Connected>, String> {
                     rumble_active: false,
                     trigger_until: None,
                     rumble_until: None,
+                    haptic: None,
                     last_input_sent: Instant::now() - Duration::from_secs(1),
                     last_valid_report: Instant::now(),
                     panic_latched: false,
@@ -241,45 +366,220 @@ fn open_first(api: &HidApi) -> Result<Option<Connected>, String> {
     }
 }
 
+fn drop_device(
+    device: &mut Option<Connected>,
+    mouse: &mut MouseMapper,
+    xinput: &mut XInputBridge,
+    proxy: &Sender<serde_json::Value>,
+    message: &str,
+) {
+    mouse.set_enabled(false);
+    xinput.shutdown();
+    emit(proxy, json!({"type":"mouseMode","enabled":false}));
+    emit(proxy, json!({"type":"lightMode","battery":false}));
+    emit(proxy, xinput.status_event());
+    emit(
+        proxy,
+        json!({"type":"triggerLease","active":false,"durationMs":0}),
+    );
+    if let Some(mut old) = device.take() {
+        // Clear effects while the HID handle is still open (stall / soft disconnect).
+        let _ = old.reset();
+    }
+    emit(
+        proxy,
+        json!({"type":"device","connected":false,"message":message}),
+    );
+}
+
+fn emit_connected(proxy: &Sender<serde_json::Value>, found: &Connected) {
+    emit(
+        proxy,
+        json!({
+            "type": "device",
+            "connected": true,
+            "name": found.name,
+            "transport": if matches!(found.transport, BusType::Bluetooth) { "Bluetooth" } else { "USB" },
+            "firmware": found.firmware,
+            "path": found.path_display,
+            "productId": format!("{:04x}", found.product_id),
+            "isEdge": found.product_id == protocol::EDGE_PID,
+        }),
+    );
+}
+
 fn handle_command(
     command: DeviceCommand,
     device: &mut Option<Connected>,
     proxy: &Sender<serde_json::Value>,
     mouse: &mut MouseMapper,
+    gyro: &mut GyroAimMapper,
+    remap: &mut RemapMapper,
+    xinput: &mut XInputBridge,
+    api: &HidApi,
+    preferred_path: &mut Option<String>,
 ) -> bool {
-    if matches!(command, DeviceCommand::Shutdown) {
-        mouse.set_enabled(false);
-        if let Some(device) = device.as_mut() {
-            let _ = device.reset();
+    match command {
+        DeviceCommand::Shutdown => {
+            mouse.set_enabled(false);
+            remap.set(false, Vec::new());
+            gyro.set_config(GyroAimConfig::default());
+            let _ = xinput.set_enabled(false);
+            if let Some(device) = device.as_mut() {
+                let _ = device.reset();
+            }
+            return false;
         }
-        return false;
-    }
-    if matches!(command, DeviceCommand::Scan) {
-        return true;
-    }
-    if let DeviceCommand::SetTouchMouse { enabled } = command {
-        if enabled && device.is_none() {
+        DeviceCommand::Scan | DeviceCommand::ListDevices => {
+            emit_device_list(api, proxy, preferred_path.as_deref().or(device.as_ref().map(|d| d.path_display.as_str())));
+            if let Some(found) = device.as_ref() {
+                emit_connected(proxy, found);
+            }
+            return true;
+        }
+        DeviceCommand::SelectDevice { path } => {
+            if device.as_ref().is_some_and(|d| d.path_display == path) {
+                emit(proxy, json!({"type":"notice","message":"Already selected"}));
+                return true;
+            }
+            if let Some(mut old) = device.take() {
+                let _ = old.reset();
+            }
+            mouse.set_enabled(false);
+            *preferred_path = Some(path.clone());
+            match open_path(api, Some(&path)) {
+                Ok(Some(found)) => {
+                    emit_connected(proxy, &found);
+                    emit_device_list(api, proxy, Some(&found.path_display));
+                    *device = Some(found);
+                    emit(proxy, json!({"type":"notice","message":"Controller selected"}));
+                }
+                Ok(None) => {
+                    emit(proxy, json!({"type":"device","connected":false,"message":"Controller not found"}));
+                }
+                Err(error) => emit(proxy, json!({"type":"error","message":error})),
+            }
+            return true;
+        }
+        DeviceCommand::SetTouchMouse { enabled } => {
+            if enabled && device.is_none() {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Connect a controller first."}),
+                );
+                return true;
+            }
+            mouse.set_enabled(enabled);
+            emit(proxy, json!({"type":"mouseMode","enabled":enabled}));
             emit(
                 proxy,
-                json!({"type":"error","message":"Connect a DualSense before enabling touchpad mouse."}),
+                json!({"type":"notice","message":if enabled {"Touchpad mouse on"} else {"Touchpad mouse off"}}),
             );
             return true;
         }
-        mouse.set_enabled(enabled);
-        emit(proxy, json!({"type":"mouseMode","enabled":enabled}));
-        emit(
-            proxy,
-            json!({"type":"notice","message":if enabled {"Touchpad mouse enabled"} else {"Touchpad mouse disabled"}}),
-        );
-        return true;
+        DeviceCommand::SetTouchGestures { enabled } => {
+            mouse.set_gestures(enabled);
+            emit(proxy, json!({"type":"touchGestures","enabled":enabled}));
+            emit(
+                proxy,
+                json!({"type":"notice","message":if enabled {"Edge gestures on"} else {"Edge gestures off"}}),
+            );
+            return true;
+        }
+        DeviceCommand::SetGyroAim {
+            enabled,
+            sensitivity,
+            yaw_scale,
+            pitch_scale,
+            invert_y,
+            activation,
+        } => {
+            if enabled && device.is_none() {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Connect a controller first."}),
+                );
+                return true;
+            }
+            gyro.set_config(GyroAimConfig {
+                enabled,
+                sensitivity,
+                yaw_scale,
+                pitch_scale,
+                invert_y,
+                activation: GyroActivation::from_label(&activation),
+            });
+            emit(
+                proxy,
+                json!({"type":"gyroAim","enabled":enabled,"sensitivity":sensitivity,"activation":activation,"invertY":invert_y}),
+            );
+            emit(
+                proxy,
+                json!({"type":"notice","message":if enabled {"Gyro aim on"} else {"Gyro aim off"}}),
+            );
+            return true;
+        }
+        DeviceCommand::SetRemap { enabled, bindings } => {
+            let mapped = bindings
+                .into_iter()
+                .filter(|b| b.button < 23)
+                .map(|b| RemapBinding {
+                    button: b.button,
+                    vk: b.vk,
+                })
+                .collect();
+            remap.set(enabled, mapped);
+            emit(proxy, json!({"type":"remap","enabled":enabled}));
+            emit(
+                proxy,
+                json!({"type":"notice","message":if enabled {"Remap on"} else {"Remap off"}}),
+            );
+            return true;
+        }
+        DeviceCommand::SetXinput { enabled } => {
+            if enabled && device.is_none() {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Connect a controller first."}),
+                );
+                return true;
+            }
+            let event = xinput.set_enabled(enabled);
+            let ok = event["status"] == "active" || event["status"] == "disabled";
+            let message = event["message"].as_str().unwrap_or("XInput").to_string();
+            emit(proxy, event);
+            emit(
+                proxy,
+                json!({
+                    "type": if ok { "notice" } else { "error" },
+                    "message": message
+                }),
+            );
+            if enabled && ok {
+                let pointer_on = mouse.enabled() || gyro.config.enabled || remap.enabled();
+                if pointer_on {
+                    emit(
+                        proxy,
+                        json!({
+                            "type": "notice",
+                            "message": "XInput is on — hide the DualSense (e.g. HidHide) or turn off mouse/gyro/remap to avoid double input"
+                        }),
+                    );
+                }
+            }
+            return true;
+        }
+        _ => {}
     }
+
     let Some(device) = device.as_mut() else {
         emit(
             proxy,
-            json!({ "type": "notice", "message": "Connect a DualSense before sending an effect." }),
+            json!({ "type": "notice", "message": "Connect a controller first." }),
         );
         return true;
     };
+
     let result: Result<&str, String> = match command {
         DeviceCommand::ApplyTriggers { left, right } => {
             match (
@@ -310,9 +610,9 @@ fn handle_command(
                             active.then(|| Instant::now() + Duration::from_secs(15));
                         emit(proxy, json!({"type":"triggerLease","active":active,"durationMs":if active {15000} else {0}}));
                         if active {
-                            "Trigger effect applied for 15 seconds"
+                            "Triggers applied (15s)"
                         } else {
-                            "Triggers returned to neutral"
+                            "Triggers cleared"
                         }
                     })
                 }
@@ -339,7 +639,7 @@ fn handle_command(
                 emit(proxy, json!({"type":"lightMode","battery":false}));
                 device.light_active = true;
                 device.last_light = Some(rgb);
-                "Lightbar color applied"
+                "Lightbar set"
             })
         }
         DeviceCommand::ReleaseLightbar => {
@@ -351,57 +651,68 @@ fn handle_command(
             device.battery_light = enabled;
             emit(proxy, json!({"type":"lightMode","battery":enabled}));
             if enabled {
-                Ok("Battery lightbar mode enabled")
+                Ok("Battery light on")
             } else {
                 device
                     .release_lightbar()
-                    .map(|_| "Battery lightbar mode disabled")
+                    .map(|_| "Battery light off")
             }
+        }
+        DeviceCommand::PlayHaptic {
+            shape,
+            frequency,
+            attack,
+            release,
+            strength,
+            pan,
+        } => {
+            let clip = HapticClip::new(shape, frequency, attack, release, strength, pan);
+            let duration = clip.duration();
+            device.haptic = Some(clip);
+            device.rumble_until = Some(Instant::now() + duration);
+            Ok("Haptic playing")
         }
         DeviceCommand::Rumble {
             left,
             right,
             duration_ms,
         } => {
+            device.haptic = None;
             let duration = duration_ms.clamp(20, 500);
             let motors = [left.min(100), right.min(100)];
-            let result = if device.last_rumble == Some(motors) {
-                Ok(())
-            } else {
-                device.write(protocol::usb_report(
-                    device.rumble_flags.0,
-                    0,
-                    device.rumble_flags.1,
-                    None,
-                    None,
-                    None,
-                    Some(motors),
-                    false,
-                ))
-            };
-            result.map(|_| {
-                device.rumble_active = true;
-                device.last_rumble = Some(motors);
+            device.write_rumble(motors).map(|_| {
                 device.rumble_until = Some(Instant::now() + Duration::from_millis(duration));
-                "Rumble preview playing"
+                "Rumble playing"
             })
         }
         DeviceCommand::Reset => {
             mouse.set_enabled(false);
+            gyro.set_config(GyroAimConfig::default());
+            remap.set(false, Vec::new());
+            let xinput_event = xinput.set_enabled(false);
             device.battery_light = false;
             emit(proxy, json!({"type":"mouseMode","enabled":false}));
+            emit(proxy, json!({"type":"gyroAim","enabled":false}));
+            emit(proxy, json!({"type":"remap","enabled":false}));
+            emit(proxy, xinput_event);
             emit(proxy, json!({"type":"lightMode","battery":false}));
             device.reset().map(|_| {
                 emit(
                     proxy,
                     json!({"type":"triggerLease","active":false,"durationMs":0}),
                 );
-                "Controller effects reset"
+                "Effects reset"
             })
         }
-        DeviceCommand::Scan | DeviceCommand::Shutdown | DeviceCommand::SetTouchMouse { .. } => {
-            unreachable!()
-        }
+        DeviceCommand::Scan
+        | DeviceCommand::Shutdown
+        | DeviceCommand::ListDevices
+        | DeviceCommand::SelectDevice { .. }
+        | DeviceCommand::SetTouchMouse { .. }
+        | DeviceCommand::SetTouchGestures { .. }
+        | DeviceCommand::SetGyroAim { .. }
+        | DeviceCommand::SetRemap { .. }
+        | DeviceCommand::SetXinput { .. } => unreachable!(),
     };
     match result {
         Ok(message) => emit(proxy, json!({ "type": "notice", "message": message })),
@@ -423,6 +734,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     };
     let mut device: Option<Connected> = None;
     let mut mouse = MouseMapper::default();
+    let mut gyro = GyroAimMapper::default();
+    let mut remap = RemapMapper::default();
+    let mut xinput = XInputBridge::default();
+    emit(&proxy, xinput.status_event());
+    let mut preferred_path: Option<String> = None;
     let mut next_scan = Instant::now();
     let mut input_report = [0u8; 78];
     let mut next_process_check = Instant::now();
@@ -446,7 +762,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 emit(
                     &proxy,
                     json!({"type":"conflict","detected":!status.conflicts.is_empty(),
-                    "message":if status.conflicts.is_empty() { "No known competing controller tools detected.".to_string() }
+                    "message":if status.conflicts.is_empty() { "No conflicting tools.".to_string() }
                     else { status.conflicts.join(" ") } }),
                 );
                 last_conflicts = status.conflicts;
@@ -462,24 +778,24 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
         }
         loop {
             match rx.try_recv() {
-                Ok(DeviceCommand::Scan) => {
-                    next_scan = Instant::now();
-                    if let Some(found) = device.as_ref() {
-                        emit(
-                            &proxy,
-                            json!({ "type": "device", "connected": true, "name": found.name,
-                            "transport": if matches!(found.transport, BusType::Bluetooth) { "Bluetooth" } else { "USB" },
-                            "firmware":found.firmware }),
-                        );
-                    }
-                }
                 Ok(command) => {
-                    if !handle_command(command, &mut device, &proxy, &mut mouse) {
+                    if !handle_command(
+                        command,
+                        &mut device,
+                        &proxy,
+                        &mut mouse,
+                        &mut gyro,
+                        &mut remap,
+                        &mut xinput,
+                        &api,
+                        &mut preferred_path,
+                    ) {
                         return;
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
                     mouse.set_enabled(false);
+                    let _ = xinput.set_enabled(false);
                     if let Some(device) = device.as_mut() {
                         let _ = device.reset();
                     }
@@ -497,24 +813,19 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     .device_list()
                     .any(|info| is_controller(info) && info.path().to_bytes() == current.path);
                 if !present || current.last_valid_report.elapsed() > Duration::from_secs(4) {
-                    mouse.set_enabled(false);
-                    emit(&proxy, json!({"type":"mouseMode","enabled":false}));
-                    emit(&proxy, json!({"type":"lightMode","battery":false}));
-                    emit(
-                        &proxy,
-                        json!({"type":"triggerLease","active":false,"durationMs":0}),
-                    );
-                    emit(
-                        &proxy,
-                        json!({"type":"device","connected":false,"message":if present {"Input stream stalled; reconnecting"} else {"Controller disconnected"}}),
-                    );
-                    device = None;
+                    let message = if present {
+                        "Stream stalled — reconnecting"
+                    } else {
+                        "Disconnected"
+                    };
+                    drop_device(&mut device, &mut mouse, &mut xinput, &proxy, message);
                     next_scan = Instant::now();
                 } else if matches!(current.transport, BusType::Bluetooth)
+                    && preferred_path.is_none()
                     && api
                         .device_list()
                         .any(|info| is_controller(info) && matches!(info.bus_type(), BusType::Usb))
-                    && let Ok(Some(found)) = open_first(&api)
+                    && let Ok(Some(found)) = open_path(&api, None)
                     && found.path != current.path
                 {
                     mouse.set_enabled(false);
@@ -527,13 +838,18 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         &proxy,
                         json!({"type":"triggerLease","active":false,"durationMs":0}),
                     );
-                    emit(
-                        &proxy,
-                        json!({"type":"device","connected":true,"name":found.name,"transport":"USB","firmware":found.firmware}),
-                    );
+                    emit_connected(&proxy, &found);
+                    emit_device_list(&api, &proxy, Some(&found.path_display));
                     device = Some(found);
                 }
             }
+            emit_device_list(
+                &api,
+                &proxy,
+                preferred_path
+                    .as_deref()
+                    .or(device.as_ref().map(|d| d.path_display.as_str())),
+            );
         }
         if let Some(connected) = device.as_mut() {
             if connected
@@ -558,28 +874,29 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     );
                     emit(
                         &proxy,
-                        json!({ "type": "notice", "message": "Trigger test ended; resistance cleared" }),
+                        json!({ "type": "notice", "message": "Trigger lease ended" }),
                     );
                 }
             }
-            if connected
+            if let Some(clip) = connected.haptic.as_mut() {
+                if clip.due() {
+                    match clip.sample_motors() {
+                        Some(motors) => {
+                            let _ = connected.write_rumble(motors);
+                        }
+                        None => {
+                            let _ = connected.write_rumble([0, 0]);
+                            connected.haptic = None;
+                            connected.rumble_until = None;
+                        }
+                    }
+                }
+            } else if connected
                 .rumble_until
                 .is_some_and(|deadline| Instant::now() >= deadline)
             {
-                let report = protocol::usb_report(
-                    connected.rumble_flags.0,
-                    0,
-                    connected.rumble_flags.1,
-                    None,
-                    None,
-                    None,
-                    Some([0, 0]),
-                    false,
-                );
-                if connected.write(report).is_ok() {
-                    connected.rumble_active = false;
+                if connected.write_rumble([0, 0]).is_ok() {
                     connected.rumble_until = None;
-                    connected.last_rumble = None;
                 }
             }
             match connected.hid.read_timeout(&mut input_report, 20) {
@@ -615,10 +932,27 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                             }
                         }
                         mouse.update(&input);
+                        gyro.update(&input);
+                        remap.update(&input);
+                        if let Some(event) = xinput.update(&input) {
+                            emit(&proxy, event.clone());
+                            if let Some(message) = event["message"].as_str() {
+                                emit(
+                                    &proxy,
+                                    json!({ "type": "error", "message": message }),
+                                );
+                            }
+                        }
                         if input.panic_combo && !connected.panic_latched {
                             mouse.set_enabled(false);
+                            gyro.set_config(GyroAimConfig::default());
+                            remap.set(false, Vec::new());
+                            let xinput_event = xinput.set_enabled(false);
                             connected.battery_light = false;
                             emit(&proxy, json!({"type":"mouseMode","enabled":false}));
+                            emit(&proxy, json!({"type":"gyroAim","enabled":false}));
+                            emit(&proxy, json!({"type":"remap","enabled":false}));
+                            emit(&proxy, xinput_event);
                             emit(&proxy, json!({"type":"lightMode","battery":false}));
                             let _ = connected.reset();
                             emit(
@@ -627,7 +961,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                             );
                             emit(
                                 &proxy,
-                                json!({ "type": "notice", "message": "PS + Options: effects reset" }),
+                                json!({ "type": "notice", "message": "PS + Options — reset" }),
                             );
                         }
                         connected.panic_latched = input.panic_combo;
@@ -639,38 +973,32 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    mouse.set_enabled(false);
-                    emit(&proxy, json!({"type":"mouseMode","enabled":false}));
-                    emit(&proxy, json!({"type":"lightMode","battery":false}));
-                    emit(
+                    drop_device(
+                        &mut device,
+                        &mut mouse,
+                        &mut xinput,
                         &proxy,
-                        json!({"type":"triggerLease","active":false,"durationMs":0}),
+                        &format!("Controller disconnected: {error}"),
                     );
-                    emit(
-                        &proxy,
-                        json!({ "type": "device", "connected": false, "message": format!("Controller disconnected: {error}") }),
-                    );
-                    device = None;
                     next_scan = Instant::now() + Duration::from_secs(1);
                 }
             }
         } else {
             if Instant::now() >= next_scan {
                 let _ = api.refresh_devices();
-                match open_first(&api) {
+                match open_path(&api, preferred_path.as_deref()) {
                     Ok(Some(found)) => {
-                        emit(
-                            &proxy,
-                            json!({ "type": "device", "connected": true, "name": found.name,
-                            "transport": if matches!(found.transport, BusType::Bluetooth) { "Bluetooth" } else { "USB" },
-                            "firmware":found.firmware }),
-                        );
+                        emit_connected(&proxy, &found);
+                        emit_device_list(&api, &proxy, Some(&found.path_display));
                         device = Some(found);
                     }
-                    Ok(None) => emit(
-                        &proxy,
-                        json!({ "type": "device", "connected": false, "message": "No DualSense found" }),
-                    ),
+                    Ok(None) => {
+                        emit(
+                            &proxy,
+                            json!({ "type": "device", "connected": false, "message": "No DualSense found" }),
+                        );
+                        emit_device_list(&api, &proxy, preferred_path.as_deref());
+                    }
                     Err(error) => emit(
                         &proxy,
                         json!({ "type": "device", "connected": false, "message": error }),
