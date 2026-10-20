@@ -1,6 +1,6 @@
 [package]
 name = "aftertouch-protocol"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "Pure DualSense input and output report codec"
 
