@@ -1,0 +1,14 @@
+/target/
+/gen/
+/*.exe
+/.aftertouch-data/
+/.chrome-preview/
+/preview-native.html
+/preview-triggers.png
+/screen-test.png
+# Original browser mockups; the Tauri app is built from ui/.
+/index.html
+/style.css
+/app.js
+/favicon.svg
+/src/protocol.rs

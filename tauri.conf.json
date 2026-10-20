@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Aftertouch",
+  "version": "0.2.0",
+  "identifier": "studio.aftertouch.desktop",
+  "build": {
+    "frontendDist": "./ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "AFTERTOUCH  /  DEVICE STUDIO",
+        "width": 1510,
+        "height": 940,
+        "minWidth": 1060,
+        "minHeight": 690,
+        "backgroundColor": "#11151a"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": []
+  }
+}

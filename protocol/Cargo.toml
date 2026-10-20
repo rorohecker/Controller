@@ -1,0 +1,11 @@
+[package]
+name = "aftertouch-protocol"
+version = "0.2.0"
+edition = "2024"
+description = "Pure DualSense input and output report codec"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0"
