@@ -69,7 +69,7 @@ impl Bridge {
                 }
                 let _ = event_handle.emit(
                     "core-event",
-                    json!({"type":"device","connected":false,"message":"Device core stopped"}),
+                    json!({"type":"device","connected":false,"message":"Core stopped"}),
                 );
                 let _ = event_handle.emit(
                     "core-event",
@@ -128,7 +128,7 @@ impl Bridge {
             }
             let _ = self.handle.emit(
                 "core-event",
-                json!({"type":"core","status":"restarting","message":"Restarting device core…"}),
+                json!({"type":"core","status":"restarting","message":"Restarting core…"}),
             );
             thread::sleep(Duration::from_millis(350));
             if self.stopping.load(Ordering::SeqCst) {
@@ -144,11 +144,11 @@ impl Bridge {
                     }
                     let _ = self.handle.emit(
                         "core-event",
-                        json!({"type":"core","status":"ready","message":"Device core restarted"}),
+                        json!({"type":"core","status":"ready","message":"Core restarted"}),
                     );
                     let _ = self.handle.emit(
                         "core-event",
-                        json!({"type":"notice","message":"Device core restarted"}),
+                        json!({"type":"notice","message":"Core restarted"}),
                     );
                 }
                 Err(error) => {

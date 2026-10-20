@@ -430,7 +430,7 @@ fn handle_command(
         }
         DeviceCommand::SelectDevice { path } => {
             if device.as_ref().is_some_and(|d| d.path_display == path) {
-                emit(proxy, json!({"type":"notice","message":"Controller already selected"}));
+                emit(proxy, json!({"type":"notice","message":"Already selected"}));
                 return true;
             }
             if let Some(mut old) = device.take() {
@@ -446,7 +446,7 @@ fn handle_command(
                     emit(proxy, json!({"type":"notice","message":"Controller selected"}));
                 }
                 Ok(None) => {
-                    emit(proxy, json!({"type":"device","connected":false,"message":"Selected controller not found"}));
+                    emit(proxy, json!({"type":"device","connected":false,"message":"Controller not found"}));
                 }
                 Err(error) => emit(proxy, json!({"type":"error","message":error})),
             }
@@ -456,7 +456,7 @@ fn handle_command(
             if enabled && device.is_none() {
                 emit(
                     proxy,
-                    json!({"type":"error","message":"Connect a DualSense before enabling touchpad mouse."}),
+                    json!({"type":"error","message":"Connect a controller first."}),
                 );
                 return true;
             }
@@ -464,7 +464,7 @@ fn handle_command(
             emit(proxy, json!({"type":"mouseMode","enabled":enabled}));
             emit(
                 proxy,
-                json!({"type":"notice","message":if enabled {"Touchpad mouse enabled"} else {"Touchpad mouse disabled"}}),
+                json!({"type":"notice","message":if enabled {"Touchpad mouse on"} else {"Touchpad mouse off"}}),
             );
             return true;
         }
@@ -473,7 +473,7 @@ fn handle_command(
             emit(proxy, json!({"type":"touchGestures","enabled":enabled}));
             emit(
                 proxy,
-                json!({"type":"notice","message":if enabled {"Edge swipe gestures enabled"} else {"Edge swipe gestures disabled"}}),
+                json!({"type":"notice","message":if enabled {"Edge gestures on"} else {"Edge gestures off"}}),
             );
             return true;
         }
@@ -488,7 +488,7 @@ fn handle_command(
             if enabled && device.is_none() {
                 emit(
                     proxy,
-                    json!({"type":"error","message":"Connect a DualSense before enabling gyro aim."}),
+                    json!({"type":"error","message":"Connect a controller first."}),
                 );
                 return true;
             }
@@ -506,7 +506,7 @@ fn handle_command(
             );
             emit(
                 proxy,
-                json!({"type":"notice","message":if enabled {"Gyro aim enabled"} else {"Gyro aim disabled"}}),
+                json!({"type":"notice","message":if enabled {"Gyro aim on"} else {"Gyro aim off"}}),
             );
             return true;
         }
@@ -523,7 +523,7 @@ fn handle_command(
             emit(proxy, json!({"type":"remap","enabled":enabled}));
             emit(
                 proxy,
-                json!({"type":"notice","message":if enabled {"Keyboard remap layer armed"} else {"Keyboard remap layer cleared"}}),
+                json!({"type":"notice","message":if enabled {"Remap on"} else {"Remap off"}}),
             );
             return true;
         }
@@ -533,7 +533,7 @@ fn handle_command(
     let Some(device) = device.as_mut() else {
         emit(
             proxy,
-            json!({ "type": "notice", "message": "Connect a DualSense before sending an effect." }),
+            json!({ "type": "notice", "message": "Connect a controller first." }),
         );
         return true;
     };
@@ -568,9 +568,9 @@ fn handle_command(
                             active.then(|| Instant::now() + Duration::from_secs(15));
                         emit(proxy, json!({"type":"triggerLease","active":active,"durationMs":if active {15000} else {0}}));
                         if active {
-                            "Trigger effect applied for 15 seconds"
+                            "Triggers applied (15s)"
                         } else {
-                            "Triggers returned to neutral"
+                            "Triggers cleared"
                         }
                     })
                 }
@@ -597,7 +597,7 @@ fn handle_command(
                 emit(proxy, json!({"type":"lightMode","battery":false}));
                 device.light_active = true;
                 device.last_light = Some(rgb);
-                "Lightbar color applied"
+                "Lightbar set"
             })
         }
         DeviceCommand::ReleaseLightbar => {
@@ -609,11 +609,11 @@ fn handle_command(
             device.battery_light = enabled;
             emit(proxy, json!({"type":"lightMode","battery":enabled}));
             if enabled {
-                Ok("Battery lightbar mode enabled")
+                Ok("Battery light on")
             } else {
                 device
                     .release_lightbar()
-                    .map(|_| "Battery lightbar mode disabled")
+                    .map(|_| "Battery light off")
             }
         }
         DeviceCommand::PlayHaptic {
@@ -628,7 +628,7 @@ fn handle_command(
             let duration = clip.duration();
             device.haptic = Some(clip);
             device.rumble_until = Some(Instant::now() + duration);
-            Ok("Haptic envelope playing on motors")
+            Ok("Haptic playing")
         }
         DeviceCommand::Rumble {
             left,
@@ -640,7 +640,7 @@ fn handle_command(
             let motors = [left.min(100), right.min(100)];
             device.write_rumble(motors).map(|_| {
                 device.rumble_until = Some(Instant::now() + Duration::from_millis(duration));
-                "Rumble preview playing"
+                "Rumble playing"
             })
         }
         DeviceCommand::Reset => {
@@ -657,7 +657,7 @@ fn handle_command(
                     proxy,
                     json!({"type":"triggerLease","active":false,"durationMs":0}),
                 );
-                "Controller effects reset"
+                "Effects reset"
             })
         }
         DeviceCommand::Scan
@@ -715,7 +715,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 emit(
                     &proxy,
                     json!({"type":"conflict","detected":!status.conflicts.is_empty(),
-                    "message":if status.conflicts.is_empty() { "No known competing controller tools detected.".to_string() }
+                    "message":if status.conflicts.is_empty() { "No conflicting tools.".to_string() }
                     else { status.conflicts.join(" ") } }),
                 );
                 last_conflicts = status.conflicts;
@@ -765,9 +765,9 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     .any(|info| is_controller(info) && info.path().to_bytes() == current.path);
                 if !present || current.last_valid_report.elapsed() > Duration::from_secs(4) {
                     let message = if present {
-                        "Input stream stalled; reconnecting"
+                        "Stream stalled — reconnecting"
                     } else {
-                        "Controller disconnected"
+                        "Disconnected"
                     };
                     drop_device(&mut device, &mut mouse, &proxy, message);
                     next_scan = Instant::now();
@@ -825,7 +825,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     );
                     emit(
                         &proxy,
-                        json!({ "type": "notice", "message": "Trigger test ended; resistance cleared" }),
+                        json!({ "type": "notice", "message": "Trigger lease ended" }),
                     );
                 }
             }
@@ -901,7 +901,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                             );
                             emit(
                                 &proxy,
-                                json!({ "type": "notice", "message": "PS + Options: effects reset" }),
+                                json!({ "type": "notice", "message": "PS + Options — reset" }),
                             );
                         }
                         connected.panic_latched = input.panic_combo;
