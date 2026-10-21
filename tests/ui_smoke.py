@@ -157,6 +157,18 @@ def main():
         page.locator(".remap-row .remap-macro").first.fill("Q, R")
         page.locator("#profile-name").click()
         page.wait_for_function("window.saved?.schemaVersion===3 && window.saved.profiles.some(p=>p.remap.bindings.some(b=>b.behavior==='macro'&&b.sequence?.length===2))")
+        page.locator("#profile-match").fill("game.exe")
+        page.locator("#profile-match-title").fill("Rally")
+        page.locator("#profile-match-path").fill(r"C:\Games\game.exe")
+        page.locator("#save-profile").click()
+        page.wait_for_function("window.saved?.profiles.some(p=>p.matchTitle==='Rally'&&p.matchPath==='C:\\\\Games\\\\game.exe')")
+        page.locator("#new-profile").click()
+        page.locator("#profile-match").fill("game.exe")
+        page.locator("#save-profile").click()
+        page.evaluate("window.coreHandler({type:'foreground',exe:'game.exe',title:'Rally 2026',path:'C:\\\\Games\\\\game.exe'})")
+        assert page.locator("#profile-match-title").input_value() == "Rally"
+        page.evaluate("window.coreHandler({type:'foreground',exe:'game.exe',title:'Another game',path:'C:\\\\Games\\\\game.exe'})")
+        assert page.locator("#profile-match-title").input_value() == ""
         page.wait_for_timeout(450)
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "aftertouch-profiles-check.png"), full_page=True)
         for view in ("live", "triggers", "haptics", "touch", "lights", "profiles", "diagnostics"):

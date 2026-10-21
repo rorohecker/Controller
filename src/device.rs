@@ -1159,7 +1159,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     let mut next_process_check = Instant::now();
     let mut last_conflicts = Vec::<&'static str>::new();
     let mut first_process_check = true;
-    let mut last_foreground = None::<String>;
+    let mut last_foreground = (None::<String>, None::<String>, None::<String>);
     let mut raw_reports = 0u32;
     let mut sequence_gaps = 0u32;
     let mut invalid_reports = 0u32;
@@ -1213,12 +1213,17 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 last_conflicts = status.conflicts;
             }
             first_process_check = false;
-            if status.foreground_exe != last_foreground {
+            let foreground = (
+                status.foreground_exe,
+                status.foreground_title,
+                status.foreground_path,
+            );
+            if foreground != last_foreground {
                 emit(
                     &proxy,
-                    json!({"type":"foreground","exe":status.foreground_exe.as_deref().unwrap_or("")}),
+                    json!({"type":"foreground","exe":foreground.0.as_deref().unwrap_or(""),"title":foreground.1.as_deref().unwrap_or(""),"path":foreground.2.as_deref().unwrap_or("")}),
                 );
-                last_foreground = status.foreground_exe;
+                last_foreground = foreground;
             }
             next_process_check = Instant::now() + Duration::from_secs(2);
         }

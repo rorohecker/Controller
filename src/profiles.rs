@@ -28,6 +28,10 @@ struct Profile {
     tag: String,
     #[serde(default, alias = "match_exe")]
     match_exe: String,
+    #[serde(default)]
+    match_title: String,
+    #[serde(default)]
+    match_path: String,
     #[serde(default = "default_true")]
     auto_apply: bool,
     triggers: TriggerPair,
@@ -182,6 +186,11 @@ fn validate(data: Value) -> Result<Archive, String> {
             || p.tag.chars().count() > 40
             || p.match_exe.len() > 80
             || p.match_exe.contains(['/', '\\'])
+            || p.match_title.chars().count() > 120
+            || p.match_title.contains('\0')
+            || p.match_path.chars().count() > 1024
+            || p.match_path.contains('\0')
+            || (p.match_exe.is_empty() && (!p.match_title.is_empty() || !p.match_path.is_empty()))
         {
             return Err("Profile name, ID, description, or tag is invalid".into());
         }
@@ -384,8 +393,12 @@ mod tests {
     fn executable_match_survives_frontend_roundtrip_and_legacy_name() {
         let mut value = sample_profile();
         value["profiles"][0]["matchExe"] = "game.exe".into();
+        value["profiles"][0]["matchTitle"] = "Rally".into();
+        value["profiles"][0]["matchPath"] = r"C:\Games\game.exe".into();
         let saved = serde_json::to_value(validate(value.clone()).unwrap()).unwrap();
         assert_eq!(saved["profiles"][0]["matchExe"], "game.exe");
+        assert_eq!(saved["profiles"][0]["matchTitle"], "Rally");
+        assert_eq!(saved["profiles"][0]["matchPath"], r"C:\Games\game.exe");
         value["profiles"][0]
             .as_object_mut()
             .unwrap()
@@ -393,6 +406,15 @@ mod tests {
         value["profiles"][0]["match_exe"] = "legacy.exe".into();
         let migrated = serde_json::to_value(validate(value).unwrap()).unwrap();
         assert_eq!(migrated["profiles"][0]["matchExe"], "legacy.exe");
+    }
+
+    #[test]
+    fn refined_process_match_requires_executable_name() {
+        let mut value = sample_profile();
+        value["profiles"][0]["matchTitle"] = "Rally".into();
+        assert!(validate(value.clone()).is_err());
+        value["profiles"][0]["matchExe"] = "game.exe".into();
+        assert!(validate(value).is_ok());
     }
 
     #[test]

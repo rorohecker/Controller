@@ -52,7 +52,7 @@
     activity:Array(80).fill(0),lastInputAt:0,rate:0,devices:[],selectedPath:'',
     currentView:'live',playUntil:0,playStart:0,playDuration:0,lastExternalExe:'',
     leaseUntil:0,leaseDuration:0,fullReport:false,manualScan:false,
-    autoApply:true,coreStatus:'ready',foregroundExe:'',autoMatchId:'',autoSuppressed:false,
+    autoApply:true,coreStatus:'ready',foregroundExe:'',foregroundTitle:'',foregroundPath:'',lastExternalPath:'',autoMatchId:'',autoSuppressed:false,
     sequenceGaps:0,invalidReports:0,stickTest:null,batteryHistory:[],audioBridge:false,audioRoute:'off',telemetryOn:false,telemetryLast:0,inputEffectsActive:false,gyroCalibration:null,lowBatteryAlert:false,timerUntil:0
   };
   let toastTimeout, audioContext, dragging = -1, saveTimeout, saveChain=Promise.resolve(), scanTimeout;
@@ -75,6 +75,8 @@
     const n = clone(p);
     n.matchExe = n.matchExe || n.match_exe || '';
     delete n.match_exe;
+    n.matchTitle = n.matchTitle || '';
+    n.matchPath = n.matchPath || '';
     n.autoApply = n.autoApply !== false;
     n.gyroAim = Object.assign(defaultGyro(), n.gyroAim || {});
     n.remap = Object.assign(defaultRemap(), n.remap || {});
@@ -200,7 +202,10 @@
       && typeof p.name === 'string' && p.name.trim().length>0 && p.name.length<=40
       && typeof p.description==='string' && p.description.length<=180 && typeof p.tag==='string' && p.tag.length<=40
       && (!p.matchExe || (typeof p.matchExe==='string' && p.matchExe.length<=80 && !/[\\/]/.test(p.matchExe)))
-      && (!p.match_exe || (typeof p.match_exe==='string' && p.match_exe.length<=80 && !/[\\/]/.test(p.match_exe))) && p.triggers && ['left','right'].every(side => {
+      && (!p.match_exe || (typeof p.match_exe==='string' && p.match_exe.length<=80 && !/[\\/]/.test(p.match_exe)))
+      && (!p.matchTitle || (typeof p.matchTitle==='string' && p.matchTitle.length<=120 && !p.matchTitle.includes('\0')))
+      && (!p.matchPath || (typeof p.matchPath==='string' && p.matchPath.length<=1024 && !p.matchPath.includes('\0')))
+      && (!(p.matchTitle||p.matchPath) || !!(p.matchExe||p.match_exe)) && p.triggers && ['left','right'].every(side => {
       const t = p.triggers[side];
       return t && modeLabel[t.mode] && Number.isFinite(t.strength) && t.strength>=0 && t.strength<=100 && Array.isArray(t.curve) && t.curve.length===11 && t.curve.every(n=>Number.isFinite(n)&&n>=0&&n<=1);
     }) && p.haptics && ['sine','square','saw','noise'].includes(p.haptics.shape)
@@ -277,10 +282,17 @@
     if (announce) { state.autoSuppressed=false; toast(`Sent ${p.name} settings to controller`); log(`PROFILE / ${p.name} sent`); }
     return true;
   }
+  function matchesForeground(p){
+    if(!p.matchExe || p.matchExe.toLowerCase()!==state.foregroundExe.toLowerCase())return false;
+    if(p.matchTitle && !state.foregroundTitle.toLowerCase().includes(p.matchTitle.toLowerCase()))return false;
+    const path=s=>s.replaceAll('/','\\').toLowerCase();
+    if(p.matchPath && path(p.matchPath)!==path(state.foregroundPath))return false;
+    return true;
+  }
   setInterval(async () => {
     if (!state.connected || !state.autoApply || state.autoSuppressed || !state.autoMatchId ||
         state.profileId !== state.autoMatchId || !profile().autoApply ||
-        profile().matchExe?.toLowerCase() !== state.foregroundExe) return;
+        !matchesForeground(profile())) return;
     if (profile().triggers.left.mode==='off' && profile().triggers.right.mode==='off') return;
     if (state.leaseUntil>performance.now()) await send({action:'renewTriggers'});
     else await applyProfileHardware(false);
@@ -299,6 +311,7 @@
     toast(state.autoApply ? 'Auto-apply on' : 'Auto-apply off');
   });
 
+  $('#profile-match').insertAdjacentHTML('afterend','<label class="control-label" for="profile-match-title">Window title contains (optional)</label><input id="profile-match-title" type="text" maxlength="120" placeholder="Racing game"><label class="control-label" for="profile-match-path">Exact executable path (optional)</label><input id="profile-match-path" type="text" maxlength="1024" placeholder="C:\\Games\\game.exe" spellcheck="false"><button class="quiet-action learn-process" id="learn-process-path" type="button">Use last app path</button>');
   function renderProfiles() {
     $('#session-profile-name').textContent=profile().name;
     $('#profile-count').textContent = String(state.profiles.length).padStart(2,'0');
@@ -309,6 +322,7 @@
       $('strong',b).textContent=p.name; $('small',b).textContent=p.tag||'Custom'; list.append(b);
     });
     $('#profile-name').value=profile().name; $('#profile-description').value=profile().description||''; $('#profile-match').value=profile().matchExe||'';
+    $('#profile-match-title').value=profile().matchTitle||'';$('#profile-match-path').value=profile().matchPath||'';
     $('#profile-auto-apply').checked = profile().autoApply !== false;
     $('#remap-enabled').checked = !!profile().remap?.enabled;
   }
@@ -320,12 +334,12 @@
   });
   $('#new-profile').addEventListener('click',() => {
     if(state.profiles.length>=50){toast('50 profile limit.');return;}
-    const p=normalizeProfile(clone(profile())); p.id=`profile-${crypto.randomUUID()}`; p.name='Untitled'; p.description='';     p.tag='Custom'; p.matchExe=''; state.profiles.unshift(p); state.profileId=p.id;
+    const p=normalizeProfile(clone(profile())); p.id=`profile-${crypto.randomUUID()}`; p.name='Untitled'; p.description='';p.tag='Custom';p.matchExe='';p.matchTitle='';p.matchPath='';state.profiles.unshift(p); state.profileId=p.id;
     renderAllProfileControls(); saveProfiles(); $('#profile-name').focus(); $('#profile-name').select();
   });
   $('#duplicate-profile').addEventListener('click',() => {
     if(state.profiles.length>=50){toast('50 profile limit.');return;}
-    const p=normalizeProfile(clone(profile())); p.id=`profile-${crypto.randomUUID()}`; p.name=(p.name+' copy').slice(0,40); p.tag='Custom'; p.matchExe=''; state.profiles.unshift(p); state.profileId=p.id;
+    const p=normalizeProfile(clone(profile())); p.id=`profile-${crypto.randomUUID()}`; p.name=(p.name+' copy').slice(0,40); p.tag='Custom';p.matchExe='';p.matchTitle='';p.matchPath='';state.profiles.unshift(p); state.profileId=p.id;
     renderAllProfileControls(); saveProfiles(); toast('Duplicated');
   });
   $('#delete-profile').addEventListener('click',() => {
@@ -336,7 +350,10 @@
     const name=$('#profile-name').value.trim(); if(!name){toast('Enter a name.');return false;}
     const matchExe=$('#profile-match').value.trim().toLowerCase();
     if(matchExe && (!/^[\w. -]+\.exe$/.test(matchExe)||matchExe.length>80)){toast('Use a name like game.exe.');return false;}
-    profile().name=name.slice(0,40); profile().description=$('#profile-description').value.trim().slice(0,180); profile().matchExe=matchExe;
+    const matchTitle=$('#profile-match-title').value.trim();
+    const matchPath=$('#profile-match-path').value.trim();
+    if((matchTitle||matchPath)&&!matchExe){toast('Set an executable name before refining the match.');return false;}
+    profile().name=name.slice(0,40); profile().description=$('#profile-description').value.trim().slice(0,180); profile().matchExe=matchExe;profile().matchTitle=matchTitle;profile().matchPath=matchPath;
     profile().autoApply = $('#profile-auto-apply').checked;
     profile().remap.enabled = $('#remap-enabled').checked;
     const row=$('.profile-row.is-active strong');if(row)row.textContent=profile().name;
@@ -348,13 +365,14 @@
   }
   $('#save-profile').addEventListener('click',()=>commitProfileDraft(true));
   $('#apply-profile-now').addEventListener('click',async()=>{if(await commitProfileDraft(false))await applyProfileHardware(true);});
-  $$('#profile-name,#profile-description,#profile-match').forEach(el=>{
+  $$('#profile-name,#profile-description,#profile-match,#profile-match-title,#profile-match-path').forEach(el=>{
     el.addEventListener('input',()=>{$('#save-profile').textContent='Save •';});
     el.addEventListener('change',()=>commitProfileDraft(false));
   });
   $('#profile-auto-apply').addEventListener('change',()=>commitProfileDraft(false));
   $('#remap-enabled').addEventListener('change',()=>commitProfileDraft(false));
   $('#learn-process').addEventListener('click',()=>{if(!state.lastExternalExe){toast('Focus the game first.');return;}$('#profile-match').value=state.lastExternalExe;commitProfileDraft(true);});
+  $('#learn-process-path').addEventListener('click',()=>{if(!state.lastExternalExe||!state.lastExternalPath){toast('Focus the game first.');return;}$('#profile-match').value=state.lastExternalExe;$('#profile-match-path').value=state.lastExternalPath;commitProfileDraft(true);});
   $('#export-profiles').addEventListener('click',async () => {
     const data={schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:state.profiles};
     if(native) { try { const path=await invoke('export_profiles',{data}); toast(`Exported to ${path}`); } catch(error){toast(String(error));} }
@@ -929,18 +947,21 @@
       if(event.detected) log(`OUTPUT CONFLICT / ${event.message}`);
     }else if(event.type==='foreground'){
       const previous=state.foregroundExe;
+      const previousMatch=state.autoMatchId;
       state.foregroundExe=event.exe||'';
-      if(state.foregroundExe)state.lastExternalExe=state.foregroundExe;
+      state.foregroundTitle=event.title||'';
+      state.foregroundPath=event.path||'';
+      if(state.foregroundExe){state.lastExternalExe=state.foregroundExe;state.lastExternalPath=state.foregroundPath;}
       $('#detected-app').textContent=`Last app: ${state.lastExternalExe||'none'}`;
-      if(previous!==state.foregroundExe)state.autoSuppressed=false;
-      const match=state.foregroundExe?state.profiles.find(p=>p.matchExe?.toLowerCase()===state.foregroundExe):null;
+      const match=state.profiles.filter(matchesForeground).sort((a,b)=>(!!b.matchPath+!!b.matchTitle)-(!!a.matchPath+!!a.matchTitle))[0];
       state.autoMatchId=match?.id||'';
+      if(previous!==state.foregroundExe||previousMatch!==state.autoMatchId)state.autoSuppressed=false;
       if(match && match.id!==state.profileId){
         state.profileId=match.id;renderAllProfileControls();saveProfiles();
         log(`AUTO LOAD / ${match.name} FOR ${state.foregroundExe}`);
         toast(match.name);
         if (state.autoApply && match.autoApply !== false) applyProfileHardware(false);
-      } else if (match && state.autoApply && match.autoApply !== false) {
+      } else if (match && previousMatch!==match.id && state.autoApply && match.autoApply !== false) {
         applyProfileHardware(false);
       }
     }else if(event.type==='mouseMode'){
