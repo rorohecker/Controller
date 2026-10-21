@@ -9,6 +9,7 @@ use crate::{
     haptics::HapticClip,
     input_map::{
         GyroActivation, GyroAimConfig, GyroAimMapper, MouseMapper, RemapBinding, RemapMapper,
+        TouchCue,
     },
     processes,
     telemetry::{self, ForzaBridge, TelemetryCue},
@@ -1350,7 +1351,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                                 }
                             }
                         }
-                        mouse.update(&input);
+                        let touch_cue = mouse.update(&input);
                         gyro.update(&input);
                         remap.update(&input);
                         if let Some(event) = xinput.update(&input) {
@@ -1386,6 +1387,23 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                             );
                         }
                         connected.panic_latched = input.panic_combo;
+                        if !input.panic_combo
+                            && let Some(cue) = touch_cue
+                        {
+                            let pan = match cue {
+                                TouchCue::Left => -85,
+                                TouchCue::Right => 85,
+                                TouchCue::Top => 0,
+                            };
+                            let clip = VoiceClip::new("sine", 180, 2, 55, 18, pan);
+                            if !matches!(connected.transport, BusType::Usb)
+                                || connected.audio.play(clip).is_err()
+                            {
+                                let fallback = HapticClip::new("sine".into(), 180, 2, 55, 18, pan);
+                                connected.rumble_until = Some(Instant::now() + fallback.duration());
+                                connected.haptic = Some(fallback);
+                            }
+                        }
                         if !input.panic_combo
                             && let Err(error) = connected.update_input_effect(input.buttons[7])
                         {

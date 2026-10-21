@@ -187,6 +187,46 @@ pub struct MouseMapper {
     wheel_remainder: f32,
     left_down: bool,
     edge_anchor: Option<EdgeGesture>,
+    previous_zone: Option<TouchZone>,
+    last_zone_tick: Option<Instant>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TouchCue {
+    Left,
+    Right,
+    Top,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TouchZone {
+    Centre,
+    Left,
+    Right,
+    Top,
+}
+
+impl TouchZone {
+    fn at(point: TouchPoint) -> Self {
+        if point.y <= 0.10 {
+            Self::Top
+        } else if point.x <= 0.10 {
+            Self::Left
+        } else if point.x >= 0.90 {
+            Self::Right
+        } else {
+            Self::Centre
+        }
+    }
+
+    fn cue(self) -> Option<TouchCue> {
+        match self {
+            Self::Left => Some(TouchCue::Left),
+            Self::Right => Some(TouchCue::Right),
+            Self::Top => Some(TouchCue::Top),
+            Self::Centre => None,
+        }
+    }
 }
 
 struct EdgeGesture {
@@ -229,17 +269,48 @@ impl MouseMapper {
         self.wheel_remainder = 0.0;
         self.left_down = false;
         self.edge_anchor = None;
+        self.previous_zone = None;
+        self.last_zone_tick = None;
     }
 
     pub fn set_gestures(&mut self, gestures: bool) {
         self.gestures = gestures;
         self.edge_anchor = None;
+        self.previous_zone = None;
+        self.last_zone_tick = None;
     }
 
-    pub fn update(&mut self, input: &InputState) {
-        if !self.enabled {
-            return;
+    fn update_zone(&mut self, touch: [Option<TouchPoint>; 2]) -> Option<TouchCue> {
+        let point = match touch {
+            [Some(point), None] | [None, Some(point)] => point,
+            _ => {
+                self.previous_zone = None;
+                return None;
+            }
+        };
+        let zone = TouchZone::at(point);
+        let previous = self.previous_zone.replace(zone);
+        if previous.is_some_and(|prior| prior != zone)
+            && self
+                .last_zone_tick
+                .is_none_or(|at| at.elapsed() >= Duration::from_millis(150))
+            && let Some(cue) = zone.cue()
+        {
+            self.last_zone_tick = Some(Instant::now());
+            return Some(cue);
         }
+        None
+    }
+
+    pub fn update(&mut self, input: &InputState) -> Option<TouchCue> {
+        if !self.enabled {
+            return None;
+        }
+        let cue = if self.gestures {
+            self.update_zone(input.touch)
+        } else {
+            None
+        };
         match input.touch {
             [Some(a), Some(b)] => {
                 self.previous = None;
@@ -314,6 +385,7 @@ impl MouseMapper {
             );
             self.left_down = should_press;
         }
+        cue
     }
 }
 
@@ -400,5 +472,17 @@ mod tests {
         assert_eq!(gesture.arrow_key(), Some(VK_RIGHT));
         gesture.last.y = 0.8;
         assert_eq!(gesture.arrow_key(), None);
+    }
+
+    #[test]
+    fn touch_zone_tick_only_fires_on_a_new_zone() {
+        let mut mapper = MouseMapper::default();
+        let centre = TouchPoint { x: 0.5, y: 0.5 };
+        let left = TouchPoint { x: 0.05, y: 0.5 };
+        assert_eq!(mapper.update_zone([Some(centre), None]), None);
+        assert_eq!(mapper.update_zone([Some(left), None]), Some(TouchCue::Left));
+        assert_eq!(mapper.update_zone([Some(left), None]), None);
+        assert_eq!(mapper.update_zone([None, None]), None);
+        assert_eq!(mapper.update_zone([Some(left), None]), None);
     }
 }
