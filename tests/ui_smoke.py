@@ -109,6 +109,18 @@ def main():
         assert page.locator("#bridge-toggle").inner_text().lower() == "stop bridge"
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "aftertouch-haptics-new.png"), full_page=True)
         page.locator('[data-view="lights"]').click()
+        page.locator("#temperature-light").click()
+        assert page.evaluate("window.sent.at(-1).action") == "setTemperatureLightbar"
+        page.evaluate("window.coreHandler({type:'lightMode',battery:false,temperature:true})")
+        page.evaluate("window.coreHandler({type:'temperatureColor',temperatureC:41,rgb:[140,145,90]})")
+        assert "41°C" in page.locator("#temperature-light-status").inner_text()
+        page.evaluate("window.coreHandler({type:'lightMode',battery:false,temperature:false})")
+        page.locator("#screen-light").click()
+        assert page.evaluate("window.sent.at(-1).action") == "setScreenLightbar"
+        page.evaluate("window.coreHandler({type:'lightMode',battery:false,screen:true})")
+        page.evaluate("window.coreHandler({type:'screenColor',rgb:[30,90,150]})")
+        assert "#1E5A96" in page.locator("#screen-light-status").inner_text()
+        page.evaluate("window.coreHandler({type:'lightMode',battery:false,screen:false})")
         page.locator("#telemetry-toggle").click()
         assert page.evaluate("window.sent.at(-1).port") == 5300
         page.evaluate("window.coreHandler({type:'telemetryStatus',enabled:true,port:5300,message:'Listening'})")

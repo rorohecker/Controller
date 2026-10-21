@@ -47,7 +47,7 @@
     connected:false,name:'',transport:'',path:'',battery:null,charging:false,
     batteryInfo:null,buttons:Array(names.length).fill(0),axes:[0,0,0,0],touch:[null,null],gyro:[0,0,0],
     profileId:'standard',profiles:clone(defaultProfiles),side:'left',packet:0,
-    mouse:false,gestures:false,gyroAim:false,remapArmed:false,batteryLight:false,
+    mouse:false,gestures:false,gyroAim:false,remapArmed:false,batteryLight:false,temperatureLight:false,screenLight:false,
     xinput:false,xinputStatus:'disabled',xinputMessage:'ViGEm not connected',
     activity:Array(80).fill(0),lastInputAt:0,rate:0,devices:[],selectedPath:'',
     currentView:'live',playUntil:0,playStart:0,playDuration:0,lastExternalExe:'',
@@ -587,6 +587,11 @@
   $('#light-color').addEventListener('input',e=>setLightColor(e.target.value));
   $('#send-light').addEventListener('click',()=>{const h=$('#light-color').value;send({action:'setLightbar',rgb:[1,3,5].map(i=>parseInt(h.slice(i,i+2),16))});});
   $('#battery-light').addEventListener('click',()=>send({action:'batteryLightbar',enabled:!state.batteryLight}));
+  $('#battery-light').insertAdjacentHTML('afterend','<button class="quiet-action" id="screen-light" type="button" aria-pressed="false" disabled>Follow screen color: off</button><small class="screen-light-status" id="screen-light-status" role="status">Samples the primary display locally only while enabled.</small>');
+  $('#battery-light').insertAdjacentHTML('afterend','<button class="quiet-action" id="temperature-light" type="button" aria-pressed="false" disabled>Sensor color: off</button><small class="screen-light-status" id="temperature-light-status" role="status">Uses an uncalibrated sensor estimate when reported.</small>');
+  $('#temperature-light').addEventListener('click',()=>send({action:'setTemperatureLightbar',enabled:!state.temperatureLight}));
+  $('#screen-light').addEventListener('click',()=>send({action:'setScreenLightbar',enabled:!state.screenLight}));
+  $('#lights .page-heading p').textContent='Choose a fixed color or follow battery level, a sensor estimate, race telemetry, or your primary screen.';
   $('#release-light').addEventListener('click',()=>send({action:'releaseLightbar'}));
   document.querySelector('label[for="telemetry-port"]').insertAdjacentHTML('beforebegin','<label for="telemetry-format">Input format</label><select id="telemetry-format"><option value="forza">Forza Data Out · Dash</option><option value="json">Local JSON adapter</option></select><details id="telemetry-json-help" class="telemetry-schema" hidden><summary>JSON packet format</summary><code>{"rpm":6100,"maxRpm":8000,"speedKmh":108,"gear":4,"brake":150,"slip":1.4,"frontSlip":1.3,"kerb":[true,false,false,false]}</code><p>Send one UTF-8 JSON object per UDP datagram. Keep each under 512 bytes. Fields after maxRpm are optional.</p></details>');
   function renderTelemetryFormat(){
@@ -622,6 +627,8 @@
     if(!state.telemetryOn){$('#telemetry-status').textContent='Off';$('#race-speed').textContent='—';$('#race-gear').textContent='—';$('#race-rpm').textContent='—';$('#race-source').textContent='Waiting for telemetry';$('#race-slip').textContent='Brake slip —';$('#rev-fill').style.width='0%';}
   }
   function renderBatteryLight(){const b=$('#battery-light');b.textContent=`Battery color: ${state.batteryLight?'on':'off'}`;b.setAttribute('aria-pressed',String(state.batteryLight));b.classList.toggle('is-active',state.batteryLight);}
+  function renderTemperatureLight(){const b=$('#temperature-light');b.textContent=`Sensor color: ${state.temperatureLight?'on':'off'}`;b.setAttribute('aria-pressed',String(state.temperatureLight));b.classList.toggle('is-active',state.temperatureLight);$('#temperature-light-status').textContent=state.temperatureLight?'Waiting for the reported sensor estimate.':'Uses an uncalibrated sensor estimate when reported.';}
+  function renderScreenLight(){const b=$('#screen-light');b.textContent=`Follow screen color: ${state.screenLight?'on':'off'}`;b.setAttribute('aria-pressed',String(state.screenLight));b.classList.toggle('is-active',state.screenLight);$('#screen-light-status').textContent=state.screenLight?'Sampling the primary display locally every 400 ms.':'Samples the primary display locally only while enabled.';}
   $('#touch-mouse-toggle').addEventListener('click',()=>send({action:'setTouchMouse',enabled:!state.mouse}));
   function renderMouseSwitch(){const b=$('#touch-mouse-toggle');b.classList.toggle('is-active',state.mouse);b.setAttribute('aria-pressed',String(state.mouse));b.textContent=state.mouse?'On':'Off';renderGestureSwitch();}
   $('#touch-gesture-toggle').addEventListener('click',()=>send({action:'setTouchGestures',enabled:!state.gestures}));
@@ -757,9 +764,9 @@
     $('#diag-firmware').textContent=connected?(firmware||'Firmware unknown'):'Firmware —';
     $('#owner-status').textContent=connected?'Core writer':'No pad';
     $('#owner-square').classList.toggle('is-live',connected);
-    $$('#apply-triggers,#reset-effects,#touch-mouse-toggle,#gyro-aim-toggle,#xinput-toggle,#send-light,#release-light,#diag-reset,#quick-reset,#apply-profile-now,#alert-ping,#alert-low-battery,#alert-timer-start').forEach(b=>b.disabled=!connected);
+    $$('#apply-triggers,#reset-effects,#touch-mouse-toggle,#gyro-aim-toggle,#xinput-toggle,#send-light,#release-light,#temperature-light,#screen-light,#diag-reset,#quick-reset,#apply-profile-now,#alert-ping,#alert-low-battery,#alert-timer-start').forEach(b=>b.disabled=!connected);
     $('#speaker-chirp').disabled=!connected||transport!=='USB';
-    if(!connected){clearPadFocus();if(state.gyroCalibration)clearTimeout(state.gyroCalibration.timer);state.gyroCalibration=null;state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderInput();}
+    if(!connected){clearPadFocus();if(state.gyroCalibration)clearTimeout(state.gyroCalibration.timer);state.gyroCalibration=null;state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.temperatureLight=false;state.screenLight=false;state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderTemperatureLight();renderScreenLight();renderInput();}
     if(!connected){state.lowBatteryAlert=false;state.timerUntil=0;}
     renderAlerts();renderBridge();
     renderStickButtons();
@@ -1008,7 +1015,19 @@
     }else if(event.type==='remap'){
       state.remapArmed=!!event.enabled;
     }else if(event.type==='lightMode'){
-      state.batteryLight=!!event.battery;renderBatteryLight();
+      state.batteryLight=!!event.battery;state.temperatureLight=!!event.temperature;state.screenLight=!!event.screen;renderBatteryLight();renderTemperatureLight();renderScreenLight();
+    }else if(event.type==='temperatureColor'){
+      if(Array.isArray(event.rgb)){
+        const hex='#'+event.rgb.map(value=>Math.max(0,Math.min(255,value)).toString(16).padStart(2,'0')).join('').toUpperCase();
+        $('#light-arcs').style.setProperty('--light',hex);$('#light-hex').textContent=hex;
+        $('#temperature-light-status').textContent=`Reported sensor estimate · ${event.temperatureC}°C · ${hex}`;
+      }
+    }else if(event.type==='screenColor'){
+      if(Array.isArray(event.rgb)){
+        const hex='#'+event.rgb.map(value=>Math.max(0,Math.min(255,value)).toString(16).padStart(2,'0')).join('').toUpperCase();
+        $('#light-arcs').style.setProperty('--light',hex);$('#light-hex').textContent=hex;
+        $('#screen-light-status').textContent=`Live primary display color · ${hex}`;
+      }
     }else if(event.type==='triggerLease'){
       state.leaseDuration=event.active?event.durationMs:0;
       state.leaseUntil=event.active?performance.now()+event.durationMs:0;
@@ -1020,12 +1039,14 @@
       state.inputEffectsActive=false;$('#click-status').textContent='Not armed';
       state.lowBatteryAlert=false;state.timerUntil=0;renderAlerts();
       state.telemetryOn=false;renderTelemetry();
+      state.temperatureLight=false;state.screenLight=false;renderTemperatureLight();renderScreenLight();
       state.scriptEnabled=false;renderScript();$('#script-status').textContent='Script off';$('#script-output').textContent='Waiting for a signal';
       renderSession();
     }else if(event.type==='core'){
       state.coreStatus = event.status || 'ready';
       if(event.status==='restarting'||event.status==='stopped'){
         state.scriptEnabled=false;renderScript();$('#script-status').textContent='Core restarting · arm the rule again when ready';$('#script-output').textContent='Waiting for a signal';
+        state.temperatureLight=false;state.screenLight=false;renderTemperatureLight();renderScreenLight();
       }
       $('#core-status').textContent = event.status === 'restarting' ? 'Core: restarting'
         : event.status === 'stopped' ? 'Core: stopped'

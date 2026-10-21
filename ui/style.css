@@ -433,6 +433,7 @@ input[type=range]::-webkit-slider-thumb{appearance:none;width:14px;height:20px;b
 .light-presets button{width:36px;height:36px;border:2px solid var(--gold-soft);border-radius:8px;background:var(--color);transition:transform .15s}
 .light-presets button:hover{transform:translateY(-3px)}
 .light-controls .main-action{margin-top:24px}
+.light-controls .screen-light-status{display:block;margin:0 0 10px;color:rgba(243,236,222,.58);font:11px/1.4 var(--body)}
 .telemetry-panel{margin-top:18px;overflow:hidden}
 .telemetry-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(270px,380px);gap:28px;padding:25px;background:var(--parchment-2)}
 .telemetry-intro h2{font:600 31px var(--display);margin:0 0 8px}

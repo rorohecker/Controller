@@ -12,6 +12,7 @@ use crate::{
         RemapMapper, TouchCue,
     },
     processes,
+    screen_color::{self, ScreenSampler},
     script::{ScriptCue, ScriptProgram},
     telemetry::{self, TelemetryBridge, TelemetryCue},
     xinput_bridge::XInputBridge,
@@ -39,6 +40,12 @@ pub enum DeviceCommand {
     },
     ReleaseLightbar,
     BatteryLightbar {
+        enabled: bool,
+    },
+    SetTemperatureLightbar {
+        enabled: bool,
+    },
+    SetScreenLightbar {
         enabled: bool,
     },
     SetTouchMouse {
@@ -151,6 +158,28 @@ fn default_activation() -> String {
     "always".into()
 }
 
+fn temperature_color(temperature_c: u8) -> [u8; 3] {
+    fn blend(from: [u8; 3], to: [u8; 3], step: u8, span: u8) -> [u8; 3] {
+        std::array::from_fn(|index| {
+            ((u16::from(from[index]) * u16::from(span - step)
+                + u16::from(to[index]) * u16::from(step))
+                / u16::from(span)) as u8
+        })
+    }
+    if temperature_c <= 30 {
+        [60, 130, 200]
+    } else if temperature_c <= 45 {
+        blend([60, 130, 200], [230, 165, 45], temperature_c - 30, 15)
+    } else {
+        blend(
+            [230, 165, 45],
+            [220, 45, 50],
+            (temperature_c - 45).min(10),
+            10,
+        )
+    }
+}
+
 struct Connected {
     hid: HidDevice,
     path: Vec<u8>,
@@ -176,6 +205,10 @@ struct Connected {
     last_trigger: Option<([u8; 11], [u8; 11])>,
     last_light: Option<[u8; 3]>,
     battery_light: bool,
+    temperature_light: bool,
+    last_temperature: Option<u8>,
+    screen_light: bool,
+    screen_color: Option<[u8; 3]>,
     last_rumble: Option<[u8; 2]>,
     input_effect: Option<InputEffect>,
     input_effect_until: Option<Instant>,
@@ -267,6 +300,10 @@ impl Connected {
         self.low_battery_alert = false;
         self.low_battery_latched = false;
         self.haptic_timer = None;
+        self.screen_light = false;
+        self.screen_color = None;
+        self.temperature_light = false;
+        self.last_temperature = None;
         if !(self.trigger_active || self.light_active || self.rumble_active) {
             return Ok(());
         }
@@ -519,6 +556,10 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     last_trigger: None,
                     last_light: None,
                     battery_light: false,
+                    temperature_light: false,
+                    last_temperature: None,
+                    screen_light: false,
+                    screen_color: None,
                     last_rumble: None,
                     input_effect: None,
                     input_effect_until: None,
@@ -537,15 +578,18 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
     }
 }
 
+#[allow(clippy::too_many_arguments)] // Disconnect cleanup coordinates every active input and color worker.
 fn drop_device(
     device: &mut Option<Connected>,
     mouse: &mut MouseMapper,
     gyro: &mut GyroAimMapper,
     remap: &mut RemapMapper,
     xinput: &mut XInputBridge,
+    screen: &ScreenSampler,
     proxy: &Sender<serde_json::Value>,
     message: &str,
 ) {
+    screen.set_enabled(false);
     stop_input_mappers(mouse, gyro, remap, xinput, proxy);
     emit(proxy, json!({"type":"lightMode","battery":false}));
     emit(
@@ -607,6 +651,7 @@ fn handle_command(
     xinput: &mut XInputBridge,
     telemetry: &mut TelemetryBridge,
     script: &mut Option<ScriptProgram>,
+    screen: &ScreenSampler,
     telemetry_stale_latched: &mut bool,
     api: &HidApi,
     preferred_path: &mut Option<String>,
@@ -665,6 +710,7 @@ fn handle_command(
                 return true;
             }
             stop_input_mappers(mouse, gyro, remap, xinput, proxy);
+            screen.set_enabled(false);
             if let Some(mut old) = device.take() {
                 let _ = old.reset();
             }
@@ -878,11 +924,19 @@ fn handle_command(
             match telemetry.set_format(enabled, port, lan, &format) {
                 Ok(()) => {
                     if enabled {
+                        screen.set_enabled(false);
                         if let Some(connected) = device.as_mut() {
-                            if was_enabled && configuration_changed {
+                            if connected.temperature_light
+                                || connected.screen_light
+                                || (was_enabled && configuration_changed)
+                            {
                                 let _ = connected.release_lightbar();
                             }
                             connected.battery_light = false;
+                            connected.temperature_light = false;
+                            connected.last_temperature = None;
+                            connected.screen_light = false;
+                            connected.screen_color = None;
                         }
                         emit(proxy, json!({"type":"lightMode","battery":false}));
                         *telemetry_stale_latched = false;
@@ -973,6 +1027,11 @@ fn handle_command(
             return true;
         }
         DeviceCommand::SetLightbar { rgb } => {
+            screen.set_enabled(false);
+            device.screen_light = false;
+            device.screen_color = None;
+            device.temperature_light = false;
+            device.last_temperature = None;
             if telemetry.enabled() {
                 let _ = telemetry.set(false, 0, false);
                 emit(
@@ -1003,6 +1062,11 @@ fn handle_command(
             })
         }
         DeviceCommand::ReleaseLightbar => {
+            screen.set_enabled(false);
+            device.screen_light = false;
+            device.screen_color = None;
+            device.temperature_light = false;
+            device.last_temperature = None;
             if telemetry.enabled() {
                 let _ = telemetry.set(false, 0, false);
                 emit(
@@ -1015,6 +1079,18 @@ fn handle_command(
             device.release_lightbar().map(|_| "Lightbar released")
         }
         DeviceCommand::BatteryLightbar { enabled } => {
+            if !enabled && !device.battery_light {
+                emit(
+                    proxy,
+                    json!({"type":"lightMode","battery":false,"temperature":device.temperature_light,"screen":device.screen_light}),
+                );
+                return true;
+            }
+            screen.set_enabled(false);
+            device.screen_light = false;
+            device.screen_color = None;
+            device.temperature_light = false;
+            device.last_temperature = None;
             if enabled && telemetry.enabled() {
                 let _ = telemetry.set(false, 0, false);
                 emit(
@@ -1028,6 +1104,79 @@ fn handle_command(
                 Ok("Battery light on")
             } else {
                 device.release_lightbar().map(|_| "Battery light off")
+            }
+        }
+        DeviceCommand::SetScreenLightbar { enabled } => {
+            if !enabled && !device.screen_light {
+                emit(
+                    proxy,
+                    json!({"type":"lightMode","battery":device.battery_light,"temperature":device.temperature_light,"screen":false}),
+                );
+                return true;
+            }
+            if enabled {
+                if telemetry.enabled() {
+                    let _ = telemetry.set(false, 0, false);
+                    emit(
+                        proxy,
+                        json!({"type":"telemetryStatus","enabled":false,"message":"Telemetry light released for screen color"}),
+                    );
+                }
+                let _ = device.release_lightbar();
+                device.battery_light = false;
+                device.temperature_light = false;
+                device.last_temperature = None;
+                device.screen_light = true;
+                device.screen_color = None;
+                screen.set_enabled(true);
+                emit(
+                    proxy,
+                    json!({"type":"lightMode","battery":false,"screen":true}),
+                );
+                Ok("Following primary screen color")
+            } else {
+                screen.set_enabled(false);
+                device.screen_light = false;
+                device.screen_color = None;
+                emit(
+                    proxy,
+                    json!({"type":"lightMode","battery":false,"screen":false}),
+                );
+                device.release_lightbar().map(|_| "Screen color off")
+            }
+        }
+        DeviceCommand::SetTemperatureLightbar { enabled } => {
+            if !enabled && !device.temperature_light {
+                emit(
+                    proxy,
+                    json!({"type":"lightMode","battery":device.battery_light,"temperature":false,"screen":device.screen_light}),
+                );
+                return true;
+            }
+            screen.set_enabled(false);
+            device.screen_light = false;
+            device.screen_color = None;
+            if enabled && telemetry.enabled() {
+                let _ = telemetry.set(false, 0, false);
+                emit(
+                    proxy,
+                    json!({"type":"telemetryStatus","enabled":false,"message":"Telemetry light released for sensor color"}),
+                );
+            }
+            if enabled {
+                let _ = device.release_lightbar();
+            }
+            device.battery_light = false;
+            device.temperature_light = enabled;
+            device.last_temperature = None;
+            emit(
+                proxy,
+                json!({"type":"lightMode","battery":false,"temperature":enabled}),
+            );
+            if enabled {
+                Ok("Following the reported sensor estimate")
+            } else {
+                device.release_lightbar().map(|_| "Sensor color off")
             }
         }
         DeviceCommand::PlayHaptic {
@@ -1168,6 +1317,7 @@ fn handle_command(
             })
         }
         DeviceCommand::Reset => {
+            screen.set_enabled(false);
             let _ = telemetry.set(false, 0, false);
             *script = None;
             emit(
@@ -1229,6 +1379,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     let mut telemetry = TelemetryBridge::default();
     let mut script: Option<ScriptProgram> = None;
     let mut last_script_cue: Option<Instant> = None;
+    let screen = ScreenSampler::new();
     emit(&proxy, xinput.status_event());
     let mut preferred_path: Option<String> = None;
     let mut next_scan = Instant::now();
@@ -1317,6 +1468,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         &mut xinput,
                         &mut telemetry,
                         &mut script,
+                        &screen,
                         &mut telemetry_stale_latched,
                         &api,
                         &mut preferred_path,
@@ -1423,6 +1575,37 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 }
             }
         }
+        if let Some(result) = screen.take()
+            && let Some(connected) = device.as_mut()
+            && connected.screen_light
+        {
+            match result {
+                Ok(raw) => {
+                    let color = screen_color::smooth(connected.screen_color, raw);
+                    connected.screen_color = Some(color);
+                    if connected.last_light != Some(color) {
+                        let report =
+                            protocol::usb_report(0, 0x04, 0, None, None, Some(color), None, false);
+                        if connected.write(report).is_ok() {
+                            connected.last_light = Some(color);
+                            connected.light_active = true;
+                            emit(&proxy, json!({"type":"screenColor","rgb":color}));
+                        }
+                    }
+                }
+                Err(error) => {
+                    screen.set_enabled(false);
+                    connected.screen_light = false;
+                    connected.screen_color = None;
+                    let _ = connected.release_lightbar();
+                    emit(
+                        &proxy,
+                        json!({"type":"lightMode","battery":false,"screen":false}),
+                    );
+                    emit(&proxy, json!({"type":"error","message":error}));
+                }
+            }
+        }
         if device.is_some() && Instant::now() >= next_scan {
             next_scan = Instant::now() + Duration::from_secs(2);
             if api.refresh_devices().is_ok()
@@ -1443,6 +1626,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         &mut gyro,
                         &mut remap,
                         &mut xinput,
+                        &screen,
                         &proxy,
                         message,
                     );
@@ -1456,6 +1640,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     && found.path != current.path
                 {
                     stop_input_mappers(&mut mouse, &mut gyro, &mut remap, &mut xinput, &proxy);
+                    screen.set_enabled(false);
                     if let Some(old) = device.as_mut() {
                         let _ = old.reset();
                     }
@@ -1598,6 +1783,35 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                                 }
                             }
                         }
+                        if connected.temperature_light
+                            && let Some(temperature_c) = input.battery_info.temperature_c
+                        {
+                            let color = temperature_color(temperature_c);
+                            let changed = connected.last_temperature != Some(temperature_c);
+                            if connected.last_light != Some(color) {
+                                let report = protocol::usb_report(
+                                    0,
+                                    0x04,
+                                    0,
+                                    None,
+                                    None,
+                                    Some(color),
+                                    None,
+                                    false,
+                                );
+                                if connected.write(report).is_ok() {
+                                    connected.last_light = Some(color);
+                                    connected.light_active = true;
+                                }
+                            }
+                            if changed && connected.last_light == Some(color) {
+                                connected.last_temperature = Some(temperature_c);
+                                emit(
+                                    &proxy,
+                                    json!({"type":"temperatureColor","temperatureC":temperature_c,"rgb":color}),
+                                );
+                            }
+                        }
                         let touch_cue = mouse.update(&input);
                         gyro.update(&input);
                         remap.update(&input);
@@ -1608,6 +1822,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                             }
                         }
                         if input.panic_combo && !connected.panic_latched {
+                            screen.set_enabled(false);
                             let _ = telemetry.set(false, 0, false);
                             script = None;
                             emit(
@@ -1687,6 +1902,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         &mut gyro,
                         &mut remap,
                         &mut xinput,
+                        &screen,
                         &proxy,
                         &format!("Controller disconnected: {error}"),
                     );
@@ -1718,5 +1934,18 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
             }
             thread::sleep(Duration::from_millis(35));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::temperature_color;
+
+    #[test]
+    fn sensor_estimate_uses_cool_to_warm_colors() {
+        assert_eq!(temperature_color(25), [60, 130, 200]);
+        assert_eq!(temperature_color(45), [230, 165, 45]);
+        assert_eq!(temperature_color(55), [220, 45, 50]);
+        assert_eq!(temperature_color(70), [220, 45, 50]);
     }
 }
