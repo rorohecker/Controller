@@ -114,6 +114,14 @@ def main():
         page.evaluate("window.coreHandler({type:'telemetry',rpm:6100,maxRpm:8000,speedKmh:108,gear:4,source:'Horizon Dash',revColor:[200,160,30],estimatedBrakeSlip:true})")
         assert page.locator("#race-speed").inner_text() == "108"
         assert page.locator("#race-slip").inner_text().lower() == "brake slip estimated"
+        page.locator("#telemetry-format").select_option("json")
+        assert page.locator("#telemetry-json-help").is_visible()
+        page.locator("#telemetry-json-help summary").click()
+        assert page.locator("#telemetry-json-help code").is_visible()
+        assert page.evaluate("window.sent.at(-1).format") == "json"
+        page.evaluate("window.coreHandler({type:'telemetryStatus',enabled:true,port:5300,format:'json',message:'Listening'})")
+        page.evaluate("window.coreHandler({type:'telemetry',rpm:6200,maxRpm:8000,speedKmh:110,gear:5,source:'Local JSON',revColor:[220,170,30],estimatedBrakeSlip:false})")
+        assert page.locator("#race-source").text_content() == "Local JSON"
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "aftertouch-telemetry-new.png"), full_page=True)
         page.locator('[data-view="triggers"]').click()
         page.locator('[data-mode="bow"]').click()
@@ -186,6 +194,10 @@ def main():
             mobile.locator(f'[data-view="{view}"]').click()
             assert mobile.locator(f"#{view}").is_visible()
             assert mobile.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), view
+        mobile.locator('[data-view="lights"]').click()
+        mobile.locator("#telemetry-format").select_option("json")
+        mobile.locator("#telemetry-json-help summary").click()
+        assert mobile.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
         mobile.locator('[data-view="touch"]').click()
         mobile.wait_for_timeout(450)
         mobile.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "aftertouch-touch-mobile.png"), full_page=True)

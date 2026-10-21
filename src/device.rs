@@ -12,7 +12,7 @@ use crate::{
         RemapMapper, TouchCue,
     },
     processes,
-    telemetry::{self, ForzaBridge, TelemetryCue},
+    telemetry::{self, TelemetryBridge, TelemetryCue},
     xinput_bridge::XInputBridge,
 };
 use aftertouch_protocol::{self as protocol, TriggerSetting};
@@ -90,6 +90,8 @@ pub enum DeviceCommand {
         port: u16,
         #[serde(default)]
         lan: bool,
+        #[serde(default = "default_telemetry_format")]
+        format: String,
     },
     SetInputEffects {
         enabled: bool,
@@ -126,6 +128,10 @@ pub struct RemapBindingDto {
 
 fn default_remap_behavior() -> String {
     "hold".into()
+}
+
+fn default_telemetry_format() -> String {
+    "forza".into()
 }
 
 fn default_sens() -> f32 {
@@ -592,7 +598,8 @@ fn handle_command(
     gyro: &mut GyroAimMapper,
     remap: &mut RemapMapper,
     xinput: &mut XInputBridge,
-    telemetry: &mut ForzaBridge,
+    telemetry: &mut TelemetryBridge,
+    telemetry_stale_latched: &mut bool,
     api: &HidApi,
     preferred_path: &mut Option<String>,
 ) -> bool {
@@ -824,24 +831,41 @@ fn handle_command(
             }
             return true;
         }
-        DeviceCommand::SetTelemetry { enabled, port, lan } => {
+        DeviceCommand::SetTelemetry {
+            enabled,
+            port,
+            lan,
+            format,
+        } => {
             let was_enabled = telemetry.enabled();
-            match telemetry.set(enabled, port, lan) {
+            let configuration_changed =
+                telemetry.port() != port || telemetry.lan() != lan || telemetry.format() != format;
+            match telemetry.set_format(enabled, port, lan, &format) {
                 Ok(()) => {
                     if enabled {
                         if let Some(connected) = device.as_mut() {
+                            if was_enabled && configuration_changed {
+                                let _ = connected.release_lightbar();
+                            }
                             connected.battery_light = false;
                         }
                         emit(proxy, json!({"type":"lightMode","battery":false}));
+                        *telemetry_stale_latched = false;
                     } else if was_enabled && let Some(connected) = device.as_mut() {
                         let _ = connected.release_lightbar();
                     }
                     emit(
                         proxy,
-                        json!({"type":"telemetryStatus","enabled":enabled,"port":port,"lan":lan,"message":if enabled {if lan {format!("Listening for Forza Data Out on local network port {port}")} else {format!("Listening for Forza Data Out on 127.0.0.1:{port}")}} else {"Telemetry bridge off".into()}}),
+                        json!({"type":"telemetryStatus","enabled":enabled,"port":port,"lan":lan,"format":telemetry.format(),"message":if enabled {let source=if format=="json" {"Local JSON"} else {"Forza Data Out"};if lan {format!("Listening for {source} on local network port {port}")} else {format!("Listening for {source} on 127.0.0.1:{port}")}} else {"Telemetry bridge off".into()}}),
                     );
                 }
                 Err(error) => {
+                    if was_enabled
+                        && !telemetry.enabled()
+                        && let Some(connected) = device.as_mut()
+                    {
+                        let _ = connected.release_lightbar();
+                    }
                     emit(
                         proxy,
                         json!({"type":"telemetryStatus","enabled":telemetry.enabled(),"message":error}),
@@ -1151,7 +1175,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     let mut gyro = GyroAimMapper::default();
     let mut remap = RemapMapper::default();
     let mut xinput = XInputBridge::default();
-    let mut telemetry = ForzaBridge::default();
+    let mut telemetry = TelemetryBridge::default();
     emit(&proxy, xinput.status_event());
     let mut preferred_path: Option<String> = None;
     let mut next_scan = Instant::now();
@@ -1174,7 +1198,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 }
                 emit(
                     &proxy,
-                    json!({"type":"telemetryStatus","enabled":true,"port":telemetry.port(),"lan":telemetry.lan(),"message":"Listening, but no Forza packets arrived in the last second."}),
+                    json!({"type":"telemetryStatus","enabled":true,"port":telemetry.port(),"lan":telemetry.lan(),"format":telemetry.format(),"message":"Listening, but no valid telemetry arrived in the last second."}),
                 );
             }
             if let Some(connected) = device.as_mut() {
@@ -1239,6 +1263,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         &mut remap,
                         &mut xinput,
                         &mut telemetry,
+                        &mut telemetry_stale_latched,
                         &api,
                         &mut preferred_path,
                     ) {
@@ -1265,7 +1290,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
             }
             if let Some(connected) = device.as_mut() {
                 let color = telemetry::rev_color(tick.sample);
-                if connected.last_light != Some(color) {
+                if tick.emit_ui && connected.last_light != Some(color) {
                     let report =
                         protocol::usb_report(0, 0x04, 0, None, None, Some(color), None, false);
                     if connected.write(report).is_ok() {

@@ -90,11 +90,21 @@ def main():
                 sock.sendto(packet, ("127.0.0.1", port))
                 time.sleep(0.05)
         until(lambda e: e.get("type") == "telemetry" and e.get("rpm") == 6300.0, 3)
+        send("setTelemetry", enabled=True, port=port, lan=False, format="json")
+        until(lambda e: e.get("type") == "telemetryStatus" and e.get("enabled") is True and e.get("format") == "json")
+        adapter_packet = json.dumps({"rpm": 6400, "maxRpm": 8000, "speedKmh": 112,
+                                     "gear": 4, "brake": 160, "slip": 1.4,
+                                     "frontSlip": 1.3, "kerb": [True, False, False, False]}).encode()
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            for _ in range(3):
+                sock.sendto(adapter_packet, ("127.0.0.1", port))
+                time.sleep(0.05)
+        until(lambda e: e.get("type") == "telemetry" and e.get("source") == "Local JSON" and e.get("rpm") == 6400.0, 3)
         send("setTelemetry", enabled=False, port=port)
         until(lambda e: e.get("type") == "telemetryStatus" and e.get("enabled") is False)
         send("reset")
         until(lambda e: e.get("type") == "notice" and e.get("message") == "Effects reset")
-        print(f"Feature smoke passed: {audio['callbacks']} PCM callbacks; {sample['rpm']} RPM telemetry; input click armed and cleared")
+        print(f"Feature smoke passed: {audio['callbacks']} PCM callbacks; {sample['rpm']} RPM Forza and local JSON telemetry; input click armed and cleared")
     finally:
         core.stdin.close()
         try:

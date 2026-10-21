@@ -585,20 +585,31 @@
   $('#send-light').addEventListener('click',()=>{const h=$('#light-color').value;send({action:'setLightbar',rgb:[1,3,5].map(i=>parseInt(h.slice(i,i+2),16))});});
   $('#battery-light').addEventListener('click',()=>send({action:'batteryLightbar',enabled:!state.batteryLight}));
   $('#release-light').addEventListener('click',()=>send({action:'releaseLightbar'}));
+  document.querySelector('label[for="telemetry-port"]').insertAdjacentHTML('beforebegin','<label for="telemetry-format">Input format</label><select id="telemetry-format"><option value="forza">Forza Data Out · Dash</option><option value="json">Local JSON adapter</option></select><details id="telemetry-json-help" class="telemetry-schema" hidden><summary>JSON packet format</summary><code>{"rpm":6100,"maxRpm":8000,"speedKmh":108,"gear":4,"brake":150,"slip":1.4,"frontSlip":1.3,"kerb":[true,false,false,false]}</code><p>Send one UTF-8 JSON object per UDP datagram. Keep each under 512 bytes. Fields after maxRpm are optional.</p></details>');
+  function renderTelemetryFormat(){
+    const json=$('#telemetry-format').value==='json';
+    $('.telemetry-panel .panel-cap span').textContent=json?'Local adapter':'Forza Data Out';
+    $('#telemetry-json-help').hidden=!json;
+    $('.telemetry-intro p').textContent=json
+      ?'Receive bounded game signals from a local adapter. Revs drive the lightbar; gear changes, braking slip, tyre slip, and kerbs make short grip cues. Use localhost unless another trusted device sends the packets.'
+      :"Set Forza's Data Out format to Dash. Motorsport 2023 can send to 127.0.0.1; for Horizon 4/5 or a console, enable LAN listening and use this PC's IPv4 address in the game. Engine revs color the lightbar; gear changes make a short grip cue. The brake slip reading is an estimate from wheel slip, not a direct ABS signal.";
+  }
+  $('#telemetry-format').addEventListener('change',()=>{renderTelemetryFormat();if(state.telemetryOn)send({action:'setTelemetry',enabled:true,port:Number($('#telemetry-port').value),lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});});
+  renderTelemetryFormat();
   $('#telemetry-toggle').addEventListener('click',()=>{
     const port=Number($('#telemetry-port').value);
     if(!Number.isInteger(port)||port<1024||port>65535){toast('Choose a UDP port from 1024 to 65535.');return;}
-    send({action:'setTelemetry',enabled:!state.telemetryOn,port,lan:$('#telemetry-lan').checked});
+    send({action:'setTelemetry',enabled:!state.telemetryOn,port,lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});
   });
   $('#telemetry-port').addEventListener('change',()=>{
     const port=Number($('#telemetry-port').value);
-    if(state.telemetryOn&&Number.isInteger(port)&&port>=1024&&port<=65535)send({action:'setTelemetry',enabled:true,port,lan:$('#telemetry-lan').checked});
+    if(state.telemetryOn&&Number.isInteger(port)&&port>=1024&&port<=65535)send({action:'setTelemetry',enabled:true,port,lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});
   });
-  $('#telemetry-lan').addEventListener('change',()=>{if(state.telemetryOn)send({action:'setTelemetry',enabled:true,port:Number($('#telemetry-port').value),lan:$('#telemetry-lan').checked});});
+  $('#telemetry-lan').addEventListener('change',()=>{if(state.telemetryOn)send({action:'setTelemetry',enabled:true,port:Number($('#telemetry-port').value),lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});});
   function renderTelemetry(){
     $('#telemetry-toggle').textContent=state.telemetryOn?'Stop listening':'Start listening';
     $('#telemetry-toggle').setAttribute('aria-pressed',String(state.telemetryOn));
-    if(!state.telemetryOn){$('#telemetry-status').textContent='Off';$('#race-speed').textContent='—';$('#race-gear').textContent='—';$('#race-rpm').textContent='—';$('#race-source').textContent='Waiting for Dash';$('#race-slip').textContent='Brake slip —';$('#rev-fill').style.width='0%';}
+    if(!state.telemetryOn){$('#telemetry-status').textContent='Off';$('#race-speed').textContent='—';$('#race-gear').textContent='—';$('#race-rpm').textContent='—';$('#race-source').textContent='Waiting for telemetry';$('#race-slip').textContent='Brake slip —';$('#rev-fill').style.width='0%';}
   }
   function renderBatteryLight(){const b=$('#battery-light');b.textContent=`Battery color: ${state.batteryLight?'on':'off'}`;b.setAttribute('aria-pressed',String(state.batteryLight));b.classList.toggle('is-active',state.batteryLight);}
   $('#touch-mouse-toggle').addEventListener('click',()=>send({action:'setTouchMouse',enabled:!state.mouse}));
@@ -920,8 +931,9 @@
       state.telemetryOn=!!event.enabled;
       if(event.port)$('#telemetry-port').value=event.port;
       if(typeof event.lan==='boolean')$('#telemetry-lan').checked=event.lan;
+      if(event.enabled&&['forza','json'].includes(event.format)){$('#telemetry-format').value=event.format;renderTelemetryFormat();}
       renderTelemetry();
-      $('#telemetry-status').textContent=event.message||'Waiting for Forza Data Out';
+      $('#telemetry-status').textContent=event.message||'Waiting for telemetry';
     }else if(event.type==='telemetry'){
       state.telemetryLast=performance.now();
       $('#telemetry-status').textContent=`Live · ${event.source||'Data Out'}`;
@@ -998,7 +1010,7 @@
       toast(event.message);log(event.message);
     }
   }
-  let lastCanvas=0;function frame(now){if(now-lastCanvas>35){drawActivity();if(state.currentView==='haptics'||now<state.playUntil)drawWave(now);renderSession();if(state.currentView==='haptics'&&state.timerUntil)renderAlerts();updateStickTest(now);if(state.telemetryOn&&state.telemetryLast&&now-state.telemetryLast>1500)$('#telemetry-status').textContent='Listening · waiting for Data Out';lastCanvas=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
+  let lastCanvas=0;function frame(now){if(now-lastCanvas>35){drawActivity();if(state.currentView==='haptics'||now<state.playUntil)drawWave(now);renderSession();if(state.currentView==='haptics'&&state.timerUntil)renderAlerts();updateStickTest(now);if(state.telemetryOn&&state.telemetryLast&&now-state.telemetryLast>1500)$('#telemetry-status').textContent='Listening · waiting for telemetry';lastCanvas=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
   const keyMap={j:2,k:0,l:1,i:3,q:4,e:5,z:6,c:7,ArrowUp:12,ArrowDown:13,ArrowLeft:14,ArrowRight:15};
   const held=new Set();window.addEventListener('keydown',e=>{if(state.connected||e.target.matches('input,textarea,button,select'))return;if(!(e.key in keyMap))return;held.add(e.key);state.buttons[keyMap[e.key]]=1;renderInput();});
   window.addEventListener('keyup',e=>{if(!(e.key in keyMap)||state.connected)return;held.delete(e.key);state.buttons[keyMap[e.key]]=0;renderInput();});
