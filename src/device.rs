@@ -12,6 +12,7 @@ use crate::{
         RemapMapper, TouchCue,
     },
     processes,
+    script::{ScriptCue, ScriptProgram},
     telemetry::{self, TelemetryBridge, TelemetryCue},
     xinput_bridge::XInputBridge,
 };
@@ -80,6 +81,7 @@ pub enum DeviceCommand {
         strength: u8,
         pan: i16,
     },
+    PlaySpeakerChirp,
     SetAudioBridge {
         enabled: bool,
         gain: f32,
@@ -92,6 +94,11 @@ pub enum DeviceCommand {
         lan: bool,
         #[serde(default = "default_telemetry_format")]
         format: String,
+    },
+    SetScript {
+        enabled: bool,
+        #[serde(default)]
+        source: String,
     },
     SetInputEffects {
         enabled: bool,
@@ -599,6 +606,7 @@ fn handle_command(
     remap: &mut RemapMapper,
     xinput: &mut XInputBridge,
     telemetry: &mut TelemetryBridge,
+    script: &mut Option<ScriptProgram>,
     telemetry_stale_latched: &mut bool,
     api: &HidApi,
     preferred_path: &mut Option<String>,
@@ -610,6 +618,33 @@ fn handle_command(
                 let _ = device.reset();
             }
             return false;
+        }
+        DeviceCommand::SetScript { enabled, source } => {
+            if !enabled {
+                *script = None;
+                emit(
+                    proxy,
+                    json!({"type":"scriptStatus","enabled":false,"message":"Script off"}),
+                );
+            } else {
+                match ScriptProgram::compile(&source) {
+                    Ok(program) => {
+                        *script = Some(program);
+                        emit(
+                            proxy,
+                            json!({"type":"scriptStatus","enabled":true,"message":"Script armed · waiting for telemetry"}),
+                        );
+                    }
+                    Err(error) => {
+                        emit(
+                            proxy,
+                            json!({"type":"scriptStatus","enabled":script.is_some(),"message":error}),
+                        );
+                        emit(proxy, json!({"type":"error","message":error}));
+                    }
+                }
+            }
+            return true;
         }
         DeviceCommand::Scan | DeviceCommand::ListDevices => {
             emit_device_list(
@@ -1036,6 +1071,16 @@ fn handle_command(
                 Ok("Bluetooth motor haptic playing")
             }
         }
+        DeviceCommand::PlaySpeakerChirp => {
+            if !matches!(device.transport, BusType::Usb) {
+                Err("Controller speaker chirps require USB.".into())
+            } else {
+                device.audio.play_speaker_chirp().map(|endpoint| {
+                    emit(proxy, json!({"type":"speakerStatus","message":format!("Chirp sent to {endpoint}")}));
+                    "Controller speaker chirp playing"
+                })
+            }
+        }
         DeviceCommand::SetAudioBridge {
             enabled,
             gain,
@@ -1124,6 +1169,11 @@ fn handle_command(
         }
         DeviceCommand::Reset => {
             let _ = telemetry.set(false, 0, false);
+            *script = None;
+            emit(
+                proxy,
+                json!({"type":"scriptStatus","enabled":false,"message":"Script off"}),
+            );
             emit(
                 proxy,
                 json!({"type":"telemetryStatus","enabled":false,"message":"Telemetry bridge off"}),
@@ -1150,6 +1200,7 @@ fn handle_command(
         | DeviceCommand::SetRemap { .. }
         | DeviceCommand::SetXinput { .. }
         | DeviceCommand::SetTelemetry { .. }
+        | DeviceCommand::SetScript { .. }
         | DeviceCommand::SetUiFocused { .. } => unreachable!(),
     };
     match result {
@@ -1176,6 +1227,8 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     let mut remap = RemapMapper::default();
     let mut xinput = XInputBridge::default();
     let mut telemetry = TelemetryBridge::default();
+    let mut script: Option<ScriptProgram> = None;
+    let mut last_script_cue: Option<Instant> = None;
     emit(&proxy, xinput.status_event());
     let mut preferred_path: Option<String> = None;
     let mut next_scan = Instant::now();
@@ -1263,6 +1316,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         &mut remap,
                         &mut xinput,
                         &mut telemetry,
+                        &mut script,
                         &mut telemetry_stale_latched,
                         &api,
                         &mut preferred_path,
@@ -1282,14 +1336,45 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
         }
         if let Some(tick) = telemetry.poll() {
             telemetry_stale_latched = false;
+            let mut scripted = None;
+            if tick.emit_ui
+                && let Some(program) = script.as_ref()
+            {
+                match program.evaluate(tick.sample) {
+                    Ok(effect) => {
+                        if effect.light.is_some() || effect.cue.is_some() {
+                            let cue = effect.cue.map(|value| match value {
+                                ScriptCue::Pulse => "pulse",
+                                ScriptCue::Grit => "grit",
+                                ScriptCue::Shift => "shift",
+                            });
+                            emit(
+                                &proxy,
+                                json!({"type":"scriptOutput","light":effect.light,"cue":cue}),
+                            );
+                        }
+                        scripted = Some(effect);
+                    }
+                    Err(error) => {
+                        script = None;
+                        emit(
+                            &proxy,
+                            json!({"type":"scriptStatus","enabled":false,"message":error}),
+                        );
+                        emit(&proxy, json!({"type":"error","message":error}));
+                    }
+                }
+            }
+            let color = scripted
+                .and_then(|effect| effect.light)
+                .unwrap_or_else(|| telemetry::rev_color(tick.sample));
             if tick.emit_ui {
                 emit(
                     &proxy,
-                    json!({"type":"telemetry","rpm":tick.sample.rpm.round(),"maxRpm":tick.sample.max_rpm.round(),"speedKmh":tick.sample.speed_mps.map(|v|(v*3.6).round()),"gear":tick.sample.gear,"brake":tick.sample.brake,"slip":tick.sample.slip,"kerb":tick.sample.kerb,"source":tick.sample.source,"revColor":telemetry::rev_color(tick.sample),"estimatedBrakeSlip":tick.sample.brake_slip()}),
+                    json!({"type":"telemetry","rpm":tick.sample.rpm.round(),"maxRpm":tick.sample.max_rpm.round(),"speedKmh":tick.sample.speed_mps.map(|v|(v*3.6).round()),"gear":tick.sample.gear,"brake":tick.sample.brake,"slip":tick.sample.slip,"kerb":tick.sample.kerb,"source":tick.sample.source,"revColor":color,"estimatedBrakeSlip":tick.sample.brake_slip()}),
                 );
             }
             if let Some(connected) = device.as_mut() {
-                let color = telemetry::rev_color(tick.sample);
                 if tick.emit_ui && connected.last_light != Some(color) {
                     let report =
                         protocol::usb_report(0, 0x04, 0, None, None, Some(color), None, false);
@@ -1299,7 +1384,19 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         connected.battery_light = false;
                     }
                 }
-                if let Some(cue) = tick.cue {
+                if let Some(cue) = scripted.and_then(|effect| effect.cue) {
+                    let due =
+                        last_script_cue.is_none_or(|at| at.elapsed() >= Duration::from_millis(500));
+                    if due {
+                        let (shape, frequency, attack, release, strength) = match cue {
+                            ScriptCue::Pulse => ("sine", 125, 4, 90, 25),
+                            ScriptCue::Grit => ("noise", 95, 4, 100, 22),
+                            ScriptCue::Shift => ("saw", 115, 3, 85, 35),
+                        };
+                        connected.play_feedback(shape, frequency, attack, release, strength, 0);
+                        last_script_cue = Some(Instant::now());
+                    }
+                } else if let Some(cue) = tick.cue {
                     let (shape, frequency, attack, release, strength, pan) = match cue {
                         TelemetryCue::Shift => ("saw", 115, 3, 85, 55, 0),
                         TelemetryCue::BrakeSlip => ("square", 135, 2, 65, 32, 0),
@@ -1512,6 +1609,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         }
                         if input.panic_combo && !connected.panic_latched {
                             let _ = telemetry.set(false, 0, false);
+                            script = None;
+                            emit(
+                                &proxy,
+                                json!({"type":"scriptStatus","enabled":false,"message":"Script off"}),
+                            );
                             emit(
                                 &proxy,
                                 json!({"type":"telemetryStatus","enabled":false,"message":"Telemetry bridge off"}),

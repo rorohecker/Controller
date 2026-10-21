@@ -6,6 +6,7 @@ mod haptics;
 mod input_map;
 mod processes;
 mod profiles;
+mod script;
 mod telemetry;
 mod xinput_bridge;
 

@@ -312,6 +312,7 @@ pub struct MouseMapper {
     gestures: bool,
     previous: Option<TouchPoint>,
     previous_scroll: Option<f32>,
+    previous_angle: Option<f32>,
     wheel_remainder: f32,
     left_down: bool,
     edge_anchor: Option<EdgeGesture>,
@@ -357,6 +358,12 @@ impl TouchZone {
     }
 }
 
+fn circle_angle_delta(previous: f32, current: f32) -> Option<f32> {
+    let delta = (current - previous + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU)
+        - std::f32::consts::PI;
+    (delta.abs() <= 0.6).then_some(delta)
+}
+
 struct EdgeGesture {
     started: Instant,
     left: bool,
@@ -394,6 +401,7 @@ impl MouseMapper {
         self.enabled = enabled;
         self.previous = None;
         self.previous_scroll = None;
+        self.previous_angle = None;
         self.wheel_remainder = 0.0;
         self.left_down = false;
         self.edge_anchor = None;
@@ -403,6 +411,7 @@ impl MouseMapper {
 
     pub fn set_gestures(&mut self, gestures: bool) {
         self.gestures = gestures;
+        self.previous_angle = None;
         self.edge_anchor = None;
         self.previous_zone = None;
         self.last_zone_tick = None;
@@ -446,17 +455,32 @@ impl MouseMapper {
                 let centre = (a.y + b.y) * 0.5;
                 if let Some(previous) = self.previous_scroll {
                     self.wheel_remainder += (previous - centre) * 900.0;
-                    let detents = (self.wheel_remainder / 120.0).trunc() as i32;
-                    if detents != 0 {
-                        let wheel = detents.clamp(-2, 2) * 120;
-                        send_mouse(0, 0, wheel, MOUSEEVENTF_WHEEL);
-                        self.wheel_remainder -= wheel as f32;
-                    }
                 }
                 self.previous_scroll = Some(centre);
+                let dx = (b.x - a.x) * 1.9;
+                let dy = b.y - a.y;
+                let angle = dy.atan2(dx);
+                if self.gestures && dx.hypot(dy) >= 0.10 {
+                    if let Some(previous) = self.previous_angle {
+                        // Ignore jumps caused by touch IDs changing or a finger lifting.
+                        if let Some(delta) = circle_angle_delta(previous, angle) {
+                            self.wheel_remainder -= delta * 70.0;
+                        }
+                    }
+                    self.previous_angle = Some(angle);
+                } else {
+                    self.previous_angle = None;
+                }
+                let detents = (self.wheel_remainder / 120.0).trunc() as i32;
+                if detents != 0 {
+                    let wheel = detents.clamp(-2, 2) * 120;
+                    send_mouse(0, 0, wheel, MOUSEEVENTF_WHEEL);
+                    self.wheel_remainder -= wheel as f32;
+                }
             }
             [Some(point), None] | [None, Some(point)] => {
                 self.previous_scroll = None;
+                self.previous_angle = None;
                 if let Some(gesture) = self.edge_anchor.as_mut() {
                     gesture.last = point;
                     self.previous = None;
@@ -497,6 +521,7 @@ impl MouseMapper {
                 }
                 self.previous = None;
                 self.previous_scroll = None;
+                self.previous_angle = None;
             }
         }
         let should_press = input.buttons[17] > 0.5 && input.touch.iter().any(Option::is_some);
@@ -664,5 +689,38 @@ mod tests {
         assert_eq!(mapper.update_zone([Some(left), None]), None);
         assert_eq!(mapper.update_zone([None, None]), None);
         assert_eq!(mapper.update_zone([Some(left), None]), None);
+    }
+
+    #[test]
+    fn circle_scroll_wraps_angles_and_ignores_touch_id_jumps() {
+        let near = std::f32::consts::PI - 0.15;
+        let across = -std::f32::consts::PI + 0.15;
+        assert!((circle_angle_delta(near, across).unwrap() - 0.3).abs() < 0.001);
+        assert_eq!(circle_angle_delta(0.0, 2.0), None);
+
+        let mut mapper = MouseMapper::default();
+        mapper.set_enabled(true);
+        mapper.set_gestures(true);
+        let mut input = aftertouch_protocol::parse_input(&[0x01; 64]).unwrap();
+        for index in 0..4 {
+            let angle = index as f32 * 0.25;
+            let x = angle.cos() * 0.15 / 1.9;
+            let y = angle.sin() * 0.15;
+            input.touch = [
+                Some(TouchPoint {
+                    x: 0.5 - x,
+                    y: 0.5 - y,
+                }),
+                Some(TouchPoint {
+                    x: 0.5 + x,
+                    y: 0.5 + y,
+                }),
+            ];
+            mapper.update(&input);
+        }
+        assert!(mapper.wheel_remainder < -40.0);
+        input.touch = [None, None];
+        mapper.update(&input);
+        assert_eq!(mapper.previous_angle, None);
     }
 }

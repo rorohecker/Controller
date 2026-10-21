@@ -53,7 +53,7 @@
     currentView:'live',playUntil:0,playStart:0,playDuration:0,lastExternalExe:'',
     leaseUntil:0,leaseDuration:0,fullReport:false,manualScan:false,
     autoApply:true,coreStatus:'ready',foregroundExe:'',foregroundTitle:'',foregroundPath:'',lastExternalPath:'',autoMatchId:'',autoSuppressed:false,
-    sequenceGaps:0,invalidReports:0,stickTest:null,batteryHistory:[],audioBridge:false,audioRoute:'off',telemetryOn:false,telemetryLast:0,inputEffectsActive:false,gyroCalibration:null,lowBatteryAlert:false,timerUntil:0
+    sequenceGaps:0,invalidReports:0,stickTest:null,batteryHistory:[],audioBridge:false,audioRoute:'off',telemetryOn:false,telemetryLast:0,scriptEnabled:false,inputEffectsActive:false,gyroCalibration:null,lowBatteryAlert:false,timerUntil:0
   };
   let toastTimeout, audioContext, dragging = -1, saveTimeout, saveChain=Promise.resolve(), scanTimeout;
   const palettes=['dusk','cinder','tide','verdigris'];
@@ -573,6 +573,9 @@
     $('#alert-timer-cancel').disabled=!state.connected||remaining<=0;
   }
   $('#alert-ping').addEventListener('click',()=>send({action:'playHaptic',shape:'sine',frequency:125,attack:5,release:160,strength:26,pan:0}));
+  $('#alert-ping').insertAdjacentHTML('afterend','<button id="speaker-chirp" class="quiet-action" type="button" disabled title="Play a short, quiet chirp through the controller speaker over USB">Speaker chirp · USB</button>');
+  $('.alert-body > div > p').textContent='Use a short grip cue for a low battery or a finished timer. Find my pad taps the grips; Speaker chirp plays a quiet tone through the controller speaker when connected by USB. Reset, disconnect, and app exit stop the alerts.';
+  $('#speaker-chirp').addEventListener('click',()=>send({action:'playSpeakerChirp'}));
   $('#alert-low-battery').addEventListener('click',()=>send({action:'setLowBatteryAlert',enabled:!state.lowBatteryAlert}));
   $('#alert-timer-start').addEventListener('click',()=>send({action:'setHapticTimer',seconds:Number($('#alert-timer-minutes').value)*60}));
   $('#alert-timer-cancel').addEventListener('click',()=>send({action:'setHapticTimer',seconds:0}));
@@ -606,6 +609,13 @@
     if(state.telemetryOn&&Number.isInteger(port)&&port>=1024&&port<=65535)send({action:'setTelemetry',enabled:true,port,lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});
   });
   $('#telemetry-lan').addEventListener('change',()=>{if(state.telemetryOn)send({action:'setTelemetry',enabled:true,port:Number($('#telemetry-port').value),lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});});
+  $('.telemetry-panel').insertAdjacentHTML('afterend',`<div class="script-panel framed"><div class="panel-cap"><span>Signal score</span><span>LOCAL SCRIPT</span></div><div class="script-body"><div class="script-intro"><span class="script-kicker">01 / Compose</span><h2>Write the response.</h2><p>Shape the light and a brief grip cue from live race data. Rules run locally, at most ten times per second, after a valid telemetry packet. Only the listed signals and outputs are available.</p><div class="script-signals"><strong>Signals</strong><span>rpm · max_rpm · speed_kmh · gear · brake · slip · front_slip · kerb_left · kerb_right</span></div><div class="script-signals"><strong>Outputs</strong><span>light: [red, green, blue] · cue: "pulse", "grit", or "shift"</span></div><p class="script-boundary">A script can change only these effects. It cannot read files, use the network, send key presses, or change trigger settings. A runaway or invalid script stops automatically.</p></div><div class="script-editor"><label for="script-source">Effect rule <small>Rhai · 4 KB max</small></label><textarea id="script-source" maxlength="4096" spellcheck="false" rows="8" aria-describedby="script-status"></textarea><div class="script-actions"><button id="script-example" class="quiet-action" type="button">Load example</button><button id="script-toggle" class="main-action" type="button" aria-pressed="false">Arm rule</button></div><p id="script-status" role="status">Off · start telemetry to see a response</p><div class="script-monitor"><span>Last output</span><strong id="script-output">Waiting for a signal</strong></div></div></div></div>`);
+  const scriptExample='if rpm / max_rpm > 0.8 { #{ light: [220, 40, 20], cue: "pulse" } } else { #{ light: [40, 145, 130] } }';
+  try{$('#script-source').value=localStorage.getItem('aftertouch.script.v1')||scriptExample;}catch{$('#script-source').value=scriptExample;}
+  $('#script-source').addEventListener('input',()=>{try{localStorage.setItem('aftertouch.script.v1',$('#script-source').value);}catch{}});
+  $('#script-example').addEventListener('click',()=>{$('#script-source').value=scriptExample;$('#script-source').dispatchEvent(new Event('input'));});
+  $('#script-toggle').addEventListener('click',()=>send({action:'setScript',enabled:!state.scriptEnabled,source:$('#script-source').value}));
+  function renderScript(){const button=$('#script-toggle');button.textContent=state.scriptEnabled?'Disarm rule':'Arm rule';button.setAttribute('aria-pressed',String(state.scriptEnabled));button.classList.toggle('is-armed',state.scriptEnabled);$('#script-source').readOnly=state.scriptEnabled;$('#script-example').disabled=state.scriptEnabled;}
   function renderTelemetry(){
     $('#telemetry-toggle').textContent=state.telemetryOn?'Stop listening':'Start listening';
     $('#telemetry-toggle').setAttribute('aria-pressed',String(state.telemetryOn));
@@ -615,6 +625,8 @@
   $('#touch-mouse-toggle').addEventListener('click',()=>send({action:'setTouchMouse',enabled:!state.mouse}));
   function renderMouseSwitch(){const b=$('#touch-mouse-toggle');b.classList.toggle('is-active',state.mouse);b.setAttribute('aria-pressed',String(state.mouse));b.textContent=state.mouse?'On':'Off';renderGestureSwitch();}
   $('#touch-gesture-toggle').addEventListener('click',()=>send({action:'setTouchGestures',enabled:!state.gestures}));
+  $('#touch-gesture-toggle').parentElement.querySelector('strong').textContent='Edge and circle gestures';
+  $('#touch-gesture-toggle').parentElement.querySelector('p').textContent='Swipe inward from an edge for an arrow key. Rotate two fingers in a circle to scroll; moving both fingers up or down still scrolls normally. Entering an edge zone adds a soft grip tick. Touchpad mouse must be on.';
   function renderGestureSwitch(){const b=$('#touch-gesture-toggle');b.classList.toggle('is-active',state.gestures&&state.mouse);b.setAttribute('aria-pressed',String(state.gestures));b.disabled=!state.connected||!state.mouse;b.textContent=state.gestures?(state.mouse?'On':'Paused'):'Off';}
 
   function syncGyroCommand() {
@@ -746,6 +758,7 @@
     $('#owner-status').textContent=connected?'Core writer':'No pad';
     $('#owner-square').classList.toggle('is-live',connected);
     $$('#apply-triggers,#reset-effects,#touch-mouse-toggle,#gyro-aim-toggle,#xinput-toggle,#send-light,#release-light,#diag-reset,#quick-reset,#apply-profile-now,#alert-ping,#alert-low-battery,#alert-timer-start').forEach(b=>b.disabled=!connected);
+    $('#speaker-chirp').disabled=!connected||transport!=='USB';
     if(!connected){clearPadFocus();if(state.gyroCalibration)clearTimeout(state.gyroCalibration.timer);state.gyroCalibration=null;state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderInput();}
     if(!connected){state.lowBatteryAlert=false;state.timerUntil=0;}
     renderAlerts();renderBridge();
@@ -918,6 +931,8 @@
       renderBridge();
       if(event.message)$('#bridge-status').textContent=event.message;
       else if(event.reason)$('#bridge-status').textContent=`Motor fallback · ${event.reason}`;
+    }else if(event.type==='speakerStatus'){
+      log(event.message||'Controller speaker chirp playing');
     }else if(event.type==='inputEffects'){
       state.inputEffectsActive=!!event.enabled;
       $('#click-status').textContent=event.enabled?'Armed · release R2 to rearm':'Not armed';
@@ -934,6 +949,14 @@
       if(event.enabled&&['forza','json'].includes(event.format)){$('#telemetry-format').value=event.format;renderTelemetryFormat();}
       renderTelemetry();
       $('#telemetry-status').textContent=event.message||'Waiting for telemetry';
+    }else if(event.type==='scriptStatus'){
+      state.scriptEnabled=!!event.enabled;renderScript();
+      $('#script-status').textContent=event.message||'Script off';
+      if(!event.enabled)$('#script-output').textContent='Waiting for a signal';
+    }else if(event.type==='scriptOutput'){
+      const light=Array.isArray(event.light)?'#'+event.light.map(value=>Math.max(0,Math.min(255,value)).toString(16).padStart(2,'0')).join('').toUpperCase():null;
+      $('#script-output').textContent=[light,event.cue].filter(Boolean).join(' · ')||'No change';
+      if(light){$('#light-arcs').style.setProperty('--light',light);$('#light-hex').textContent=light;}
     }else if(event.type==='telemetry'){
       state.telemetryLast=performance.now();
       $('#telemetry-status').textContent=`Live · ${event.source||'Data Out'}`;
@@ -997,9 +1020,13 @@
       state.inputEffectsActive=false;$('#click-status').textContent='Not armed';
       state.lowBatteryAlert=false;state.timerUntil=0;renderAlerts();
       state.telemetryOn=false;renderTelemetry();
+      state.scriptEnabled=false;renderScript();$('#script-status').textContent='Script off';$('#script-output').textContent='Waiting for a signal';
       renderSession();
     }else if(event.type==='core'){
       state.coreStatus = event.status || 'ready';
+      if(event.status==='restarting'||event.status==='stopped'){
+        state.scriptEnabled=false;renderScript();$('#script-status').textContent='Core restarting · arm the rule again when ready';$('#script-output').textContent='Waiting for a signal';
+      }
       $('#core-status').textContent = event.status === 'restarting' ? 'Core: restarting'
         : event.status === 'stopped' ? 'Core: stopped'
         : 'Core: ready';

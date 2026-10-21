@@ -47,6 +47,8 @@ def main():
         send("setAudioBridge", enabled=True, gain=0.0, preset="gentle")
         until(lambda e: e.get("type") == "audioStatus" and e.get("bridge") is True)
         audio = until(lambda e: e.get("type") == "audioStatus" and e.get("callbacks", 0) > 0, 3)
+        send("playSpeakerChirp")
+        until(lambda e: e.get("type") == "speakerStatus" and "Chirp sent" in e.get("message", ""))
         send("setAudioBridge", enabled=False, gain=0.0, preset="gentle")
         until(lambda e: e.get("type") == "audioStatus" and e.get("bridge") is False)
         send("playHaptic", shape="sine", frequency=90, attack=4, release=80,
@@ -92,6 +94,8 @@ def main():
         until(lambda e: e.get("type") == "telemetry" and e.get("rpm") == 6300.0, 3)
         send("setTelemetry", enabled=True, port=port, lan=False, format="json")
         until(lambda e: e.get("type") == "telemetryStatus" and e.get("enabled") is True and e.get("format") == "json")
+        send("setScript", enabled=True, source='if rpm / max_rpm > 0.7 { #{ light: [200, 30, 30], cue: "pulse" } } else { #{} }')
+        until(lambda e: e.get("type") == "scriptStatus" and e.get("enabled") is True)
         adapter_packet = json.dumps({"rpm": 6400, "maxRpm": 8000, "speedKmh": 112,
                                      "gear": 4, "brake": 160, "slip": 1.4,
                                      "frontSlip": 1.3, "kerb": [True, False, False, False]}).encode()
@@ -99,7 +103,10 @@ def main():
             for _ in range(3):
                 sock.sendto(adapter_packet, ("127.0.0.1", port))
                 time.sleep(0.05)
-        until(lambda e: e.get("type") == "telemetry" and e.get("source") == "Local JSON" and e.get("rpm") == 6400.0, 3)
+        until(lambda e: e.get("type") == "scriptOutput" and e.get("light") == [200, 30, 30] and e.get("cue") == "pulse", 3)
+        until(lambda e: e.get("type") == "telemetry" and e.get("source") == "Local JSON" and e.get("rpm") == 6400.0 and e.get("revColor") == [200, 30, 30], 3)
+        send("setScript", enabled=False)
+        until(lambda e: e.get("type") == "scriptStatus" and e.get("enabled") is False)
         send("setTelemetry", enabled=False, port=port)
         until(lambda e: e.get("type") == "telemetryStatus" and e.get("enabled") is False)
         send("reset")

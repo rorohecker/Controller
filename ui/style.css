@@ -448,6 +448,28 @@ input[type=range]::-webkit-slider-thumb{appearance:none;width:14px;height:20px;b
 .telemetry-lan-row{display:flex!important;align-items:center;gap:8px;margin-top:10px!important;color:var(--ink-soft)!important;text-transform:none!important;letter-spacing:0!important;font:600 12px var(--body)!important}
 .telemetry-lan-row input{accent-color:var(--teal);width:15px;height:15px}
 .telemetry-intro .telemetry-status{margin:12px 0 0;color:var(--teal-deep);font-weight:700}
+.script-panel{margin-top:18px;overflow:hidden}
+.script-body{display:grid;grid-template-columns:minmax(0,.85fr) minmax(320px,1.15fr);gap:30px;padding:30px;background:var(--stage-mid);color:var(--cream);background-image:radial-gradient(circle at 5% 15%,rgba(212,168,75,.11),transparent 38%),repeating-linear-gradient(90deg,transparent 0,transparent 39px,rgba(212,168,75,.035) 40px)}
+.script-kicker{color:var(--gold);font:700 10px var(--body);letter-spacing:.18em;text-transform:uppercase}
+.script-intro h2{font:600 clamp(26px,3vw,40px)/1.05 var(--display);margin:12px 0 14px;max-width:340px}
+.script-intro>p{max-width:450px;color:rgba(243,236,222,.72);font:13px/1.55 var(--body)}
+.script-signals{border-top:1px solid rgba(212,168,75,.28);padding:13px 0;display:grid;grid-template-columns:72px 1fr;gap:12px;font:12px/1.5 var(--body)}
+.script-signals strong{color:var(--gold);font-size:10px;text-transform:uppercase;letter-spacing:.08em}
+.script-signals span{overflow-wrap:anywhere}
+.script-intro .script-boundary{font-size:11px;color:rgba(243,236,222,.5);margin-top:18px}
+.script-editor{min-width:0;border:1px solid rgba(212,168,75,.35);background:rgba(13,23,24,.48);padding:16px;box-shadow:8px 8px 0 rgba(7,14,13,.25)}
+.script-editor label{display:flex;justify-content:space-between;gap:10px;margin-bottom:10px;color:var(--gold);font:700 11px var(--body);letter-spacing:.08em;text-transform:uppercase}
+.script-editor label small{color:rgba(243,236,222,.5);font-weight:500}
+.script-editor textarea{display:block;width:100%;min-height:190px;resize:vertical;padding:14px 15px;background:#101e1e;color:#e6e9d4;border:1px solid rgba(212,168,75,.38);border-left:3px solid var(--teal);border-radius:2px;font:12px/1.65 ui-monospace,Consolas,monospace;tab-size:2}
+.script-editor textarea:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.script-editor textarea:read-only{border-left-color:var(--gold)}
+.script-actions{display:flex;gap:10px;margin-top:12px}
+.script-actions button{flex:1;min-width:0}
+.script-actions .is-armed{background:var(--teal-glow)}
+#script-status{min-height:18px;margin:12px 0;color:var(--teal-glow);font:12px/1.4 var(--body)}
+.script-monitor{display:flex;gap:12px;justify-content:space-between;align-items:center;border-top:1px solid rgba(212,168,75,.28);padding-top:12px;font:11px var(--body)}
+.script-monitor span{color:rgba(243,236,222,.5);text-transform:uppercase;letter-spacing:.08em}
+.script-monitor strong{font:600 12px ui-monospace,Consolas,monospace;color:var(--cream);text-align:right;overflow-wrap:anywhere}
 .race-readout{display:grid;grid-template-columns:1fr 70px 1fr;gap:0;background:var(--stage-mid);color:var(--cream);padding:17px 18px;align-items:end;position:relative;overflow:hidden}
 .race-readout:before{content:'';position:absolute;inset:0;background:repeating-linear-gradient(0deg,transparent 0 11px,rgba(255,255,255,.025) 12px);pointer-events:none}
 .race-readout>div:not(.rev-track):not(.race-meta){display:flex;flex-direction:column;gap:2px;z-index:1}
@@ -590,6 +612,7 @@ body[data-theme="cinder"] .workspace,body[data-theme="tide"] .workspace,body[dat
   .page-heading{grid-template-columns:1fr}.page-heading p{display:none}
 }
 @media(max-width:900px){
+  .script-body{grid-template-columns:1fr}
   .telemetry-body{grid-template-columns:1fr}
   .bridge-body{grid-template-columns:1fr;gap:20px}
   .alert-body{grid-template-columns:1fr;gap:20px}
@@ -600,6 +623,9 @@ body[data-theme="cinder"] .workspace,body[data-theme="tide"] .workspace,body[dat
   .telemetry-head,.telemetry-scope,.next-surface{grid-column:1/-1}
 }
 @media(max-width:650px){
+  .script-body{padding:18px;gap:20px}
+  .script-signals{grid-template-columns:1fr;gap:3px}
+  .script-actions{flex-wrap:wrap}
   .shell{display:block}
   .sidebar{position:sticky;top:0;z-index:30;width:100%;height:56px;flex-direction:row;border-right:0}
   .brand{padding:8px 10px;border-bottom:0;border-right:1px solid rgba(212,168,75,.25)}

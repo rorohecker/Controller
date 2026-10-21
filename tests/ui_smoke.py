@@ -87,6 +87,9 @@ def main():
         assert page.locator("body").get_attribute("data-theme") == "cinder"
         page.locator("#theme-select").select_option("dusk")
         page.locator('[data-view="haptics"]').click()
+        assert page.locator("#speaker-chirp").is_enabled()
+        page.locator("#speaker-chirp").click()
+        assert page.evaluate("window.sent.at(-1).action") == "playSpeakerChirp"
         page.locator("#alert-low-battery").click()
         assert page.evaluate("window.sent.at(-1).action") == "setLowBatteryAlert"
         page.evaluate("window.coreHandler({type:'hapticAlertStatus',lowBattery:true})")
@@ -122,6 +125,19 @@ def main():
         page.evaluate("window.coreHandler({type:'telemetryStatus',enabled:true,port:5300,format:'json',message:'Listening'})")
         page.evaluate("window.coreHandler({type:'telemetry',rpm:6200,maxRpm:8000,speedKmh:110,gear:5,source:'Local JSON',revColor:[220,170,30],estimatedBrakeSlip:false})")
         assert page.locator("#race-source").text_content() == "Local JSON"
+        page.locator("#script-source").fill('if rpm > 7000 { #{ light: [200, 30, 30] } } else { #{} }')
+        page.locator("#script-toggle").click()
+        assert page.evaluate("window.sent.at(-1).action") == "setScript"
+        page.evaluate("window.coreHandler({type:'scriptStatus',enabled:true,message:'Script armed'})")
+        assert page.locator("#script-source").get_attribute("readonly") is not None
+        page.evaluate("window.coreHandler({type:'scriptOutput',light:[200,30,30],cue:'pulse'})")
+        assert "#C81E1E" in page.locator("#script-output").inner_text()
+        page.locator("#script-toggle").click()
+        assert page.evaluate("window.sent.at(-1).enabled") is False
+        page.evaluate("window.coreHandler({type:'scriptStatus',enabled:false,message:'Script off'})")
+        page.evaluate("window.coreHandler({type:'scriptStatus',enabled:true,message:'Script armed'})")
+        page.evaluate("window.coreHandler({type:'core',status:'restarting'})")
+        assert page.locator("#script-source").get_attribute("readonly") is None
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "aftertouch-telemetry-new.png"), full_page=True)
         page.locator('[data-view="triggers"]').click()
         page.locator('[data-mode="bow"]').click()
@@ -134,6 +150,7 @@ def main():
         page.wait_for_function("window.sent.some(c=>c.action==='setInputEffects' && c.threshold===.78)")
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "aftertouch-trigger-new.png"), full_page=True)
         page.locator('[data-view="touch"]').click()
+        assert "circle" in page.locator("#touch-gesture-toggle").locator("xpath=..//p").inner_text().lower()
         page.locator("#gyro-calibrate").click()
         for _ in range(28):
             page.evaluate("window.coreHandler({type:'input',input:{buttons:Array(23).fill(0),axes:[0,0,0,0],touch:[null,null],gyro:[12,-5,35],battery:75,charging:false,fullReport:true}})")
