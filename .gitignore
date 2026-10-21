@@ -13,3 +13,5 @@
 /favicon.svg
 /src/protocol.rs
 /docs/planning-coverage.md
+__pycache__/
+*.pyc

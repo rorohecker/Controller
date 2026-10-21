@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audio_haptics;
 mod device;
 mod haptics;
 mod input_map;
 mod processes;
 mod profiles;
+mod telemetry;
 mod xinput_bridge;
 
 use std::{

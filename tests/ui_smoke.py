@@ -22,6 +22,13 @@ def mock_core(page):
     """)
 
 
+def pad_event(page, *pressed):
+    buttons = [1 if i in pressed else 0 for i in range(23)]
+    page.evaluate("""buttons => window.coreHandler({type:'input',input:{
+      buttons,axes:[0,0,0,0],touch:[null,null],gyro:[0,0,0],battery:75,
+      charging:false,fullReport:true}})""", buttons)
+
+
 def main():
     with sync_playwright() as playwright:
         chrome = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
@@ -45,6 +52,57 @@ def main():
           gyro:[0,0,0],battery:75,charging:false,fullReport:true}})""")
         assert "is-pressed" in page.locator('.hotspot[data-button="0"]').get_attribute("class")
         assert page.locator("#battery-history .battery-history-bar").count() == 1
+        assert page.evaluate("document.hasFocus()")
+        pad_event(page)
+        pad_event(page, 5)
+        assert page.locator("#triggers").is_visible()
+        assert page.locator(".pad-focused").count() == 1
+        pad_event(page)
+        pad_event(page, 13)
+        assert page.locator(".pad-focused").get_attribute("data-side") == "right"
+        pad_event(page)
+        pad_event(page, 0)
+        assert page.locator("#curve-side-label").inner_text() == "R2"
+        pad_event(page)
+        pad_event(page, 1)
+        assert page.locator("#live").is_visible()
+        pad_event(page)
+        pad_event(page, 13)
+        assert page.locator(".pad-focused").get_attribute("id") == "theme-select"
+        pad_event(page)
+        pad_event(page, 15)
+        assert page.locator("body").get_attribute("data-theme") == "cinder"
+        page.locator("#theme-select").select_option("dusk")
+        page.locator('[data-view="haptics"]').click()
+        assert page.locator("#bridge-toggle").is_enabled()
+        page.locator("#bridge-toggle").click()
+        assert page.evaluate("window.sent.at(-1).action") == "setAudioBridge"
+        page.evaluate("window.coreHandler({type:'audioStatus',route:'voiceCoil',bridge:true,message:'Audio bridge on'})")
+        assert page.locator("#bridge-toggle").inner_text().lower() == "stop bridge"
+        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "aftertouch-haptics-new.png"), full_page=True)
+        page.locator('[data-view="lights"]').click()
+        page.locator("#telemetry-toggle").click()
+        assert page.evaluate("window.sent.at(-1).port") == 5300
+        page.evaluate("window.coreHandler({type:'telemetryStatus',enabled:true,port:5300,message:'Listening'})")
+        page.locator("#telemetry-lan").check()
+        assert page.evaluate("window.sent.at(-1).lan") is True
+        page.evaluate("window.coreHandler({type:'telemetry',rpm:6100,maxRpm:8000,speedKmh:108,gear:4,source:'Horizon Dash',revColor:[200,160,30],estimatedBrakeSlip:true})")
+        assert page.locator("#race-speed").inner_text() == "108"
+        assert page.locator("#race-slip").inner_text().lower() == "brake slip estimated"
+        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "aftertouch-telemetry-new.png"), full_page=True)
+        page.locator('[data-view="triggers"]').click()
+        page.locator("#click-enabled").check()
+        page.locator("#click-threshold").fill("78")
+        page.locator("#apply-triggers").click()
+        page.wait_for_function("window.sent.some(c=>c.action==='setInputEffects' && c.threshold===.78)")
+        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "aftertouch-trigger-new.png"), full_page=True)
+        page.locator('[data-view="touch"]').click()
+        page.locator("#gyro-calibrate").click()
+        for _ in range(28):
+            page.evaluate("window.coreHandler({type:'input',input:{buttons:Array(23).fill(0),axes:[0,0,0,0],touch:[null,null],gyro:[12,-5,35],battery:75,charging:false,fullReport:true}})")
+        page.wait_for_timeout(2300)
+        assert "12 / -5 / 35" in page.locator("#gyro-calibration-status").inner_text()
+        assert page.evaluate("window.sent.some(c=>c.action==='setGyroAim' && c.bias?.[2]===35)")
         page.locator('[data-view="diagnostics"]').click()
         page.evaluate("window.coreHandler({type:'rate',reportsPerSecond:249,sequenceGaps:2,invalidReports:1})")
         assert page.locator("#diag-rate").inner_text() == "249 / S"
@@ -83,7 +141,7 @@ def main():
         assert mobile.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
         assert not mobile_errors, mobile_errors
         browser.close()
-        print("UI smoke passed: photograph, palettes, input, report health, battery, stick checks, remap, mobile")
+        print("UI smoke passed: photograph, controller navigation, palettes, input, report health, battery, stick checks, remap, mobile")
 
 
 if __name__ == "__main__":

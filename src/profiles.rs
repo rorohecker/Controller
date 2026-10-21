@@ -36,6 +36,8 @@ struct Profile {
     gyro_aim: GyroAimSettings,
     #[serde(default)]
     remap: RemapSettings,
+    #[serde(default)]
+    input_effects: InputEffectSettings,
 }
 
 fn default_true() -> bool {
@@ -73,6 +75,8 @@ struct GyroAimSettings {
     invert_y: bool,
     #[serde(default = "default_activation")]
     activation: String,
+    #[serde(default)]
+    bias: [i16; 3],
 }
 
 fn default_sens() -> f32 {
@@ -94,6 +98,7 @@ impl Default for GyroAimSettings {
             pitch_scale: 1.0,
             invert_y: false,
             activation: "always".into(),
+            bias: [0; 3],
         }
     }
 }
@@ -111,6 +116,32 @@ struct RemapSettings {
 struct RemapBinding {
     button: u8,
     vk: u16,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InputEffectSettings {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default = "default_click_threshold")]
+    threshold: f32,
+    #[serde(default = "default_click_strength")]
+    strength: u8,
+}
+fn default_click_threshold() -> f32 {
+    0.82
+}
+fn default_click_strength() -> u8 {
+    55
+}
+impl Default for InputEffectSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            threshold: default_click_threshold(),
+            strength: default_click_strength(),
+        }
+    }
 }
 
 fn path() -> Result<PathBuf, String> {
@@ -164,8 +195,12 @@ fn validate(data: Value) -> Result<Archive, String> {
                 g.activation.as_str(),
                 "always" | "l1" | "r1" | "l2" | "r2" | "touchpad"
             )
+            || g.bias.iter().any(|n| i32::from(*n).abs() > 4096)
         {
             return Err("Gyro aim settings are out of range".into());
+        }
+        if !(0.2..=0.95).contains(&p.input_effects.threshold) || p.input_effects.strength > 100 {
+            return Err("Input-driven trigger settings are out of range".into());
         }
         let mut mapped_buttons = std::collections::HashSet::new();
         if p.remap.bindings.len() > 23

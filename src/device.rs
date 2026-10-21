@@ -5,11 +5,13 @@ use std::{
 };
 
 use crate::{
+    audio_haptics::{AudioEngine, VoiceClip},
     haptics::HapticClip,
     input_map::{
         GyroActivation, GyroAimConfig, GyroAimMapper, MouseMapper, RemapBinding, RemapMapper,
     },
     processes,
+    telemetry::{self, ForzaBridge, TelemetryCue},
     xinput_bridge::XInputBridge,
 };
 use aftertouch_protocol::{self as protocol, TriggerSetting};
@@ -55,6 +57,8 @@ pub enum DeviceCommand {
         invert_y: bool,
         #[serde(default = "default_activation")]
         activation: String,
+        #[serde(default)]
+        bias: [i16; 3],
     },
     SetRemap {
         enabled: bool,
@@ -71,6 +75,22 @@ pub enum DeviceCommand {
         release: u16,
         strength: u8,
         pan: i16,
+    },
+    SetAudioBridge {
+        enabled: bool,
+        gain: f32,
+        preset: String,
+    },
+    SetTelemetry {
+        enabled: bool,
+        port: u16,
+        #[serde(default)]
+        lan: bool,
+    },
+    SetInputEffects {
+        enabled: bool,
+        threshold: f32,
+        strength: u8,
     },
     Rumble {
         left: u8,
@@ -114,7 +134,9 @@ struct Connected {
     trigger_until: Option<Instant>,
     rumble_until: Option<Instant>,
     haptic: Option<HapticClip>,
+    audio: AudioEngine,
     last_input_sent: Instant,
+    last_input_buttons: [bool; 23],
     last_valid_report: Instant,
     panic_latched: bool,
     firmware: Option<String>,
@@ -122,6 +144,14 @@ struct Connected {
     last_light: Option<[u8; 3]>,
     battery_light: bool,
     last_rumble: Option<[u8; 2]>,
+    input_effect: Option<InputEffect>,
+    input_effect_until: Option<Instant>,
+}
+
+struct InputEffect {
+    threshold: f32,
+    strength: u8,
+    armed: bool,
 }
 
 impl Connected {
@@ -177,6 +207,9 @@ impl Connected {
 
     fn reset(&mut self) -> Result<(), String> {
         self.haptic = None;
+        self.audio.stop();
+        self.input_effect = None;
+        self.input_effect_until = None;
         if !(self.trigger_active || self.light_active || self.rumble_active) {
             return Ok(());
         }
@@ -233,6 +266,79 @@ impl Connected {
         self.light_active = false;
         self.last_light = None;
         self.battery_light = false;
+        Ok(())
+    }
+
+    fn restore_input_effect(&mut self) -> Result<(), String> {
+        if self.input_effect_until.is_none() {
+            return Ok(());
+        }
+        let off = protocol::encode_trigger(&TriggerSetting {
+            mode: "off".into(),
+            strength: 0.0,
+            curve: vec![0.0; 11],
+        })
+        .unwrap();
+        let right = self.last_trigger.map(|(_, right)| right).unwrap_or(off);
+        self.write(protocol::usb_report(
+            0x04,
+            0,
+            0,
+            Some(right),
+            None,
+            None,
+            None,
+            false,
+        ))?;
+        self.input_effect_until = None;
+        self.trigger_active = self
+            .last_trigger
+            .is_some_and(|(l, r)| l[0] != 0x05 || r[0] != 0x05);
+        Ok(())
+    }
+
+    fn update_input_effect(&mut self, right_pull: f32) -> Result<(), String> {
+        if self.input_effect_until.is_some_and(|t| Instant::now() >= t) {
+            self.restore_input_effect()?;
+        }
+        let Some(effect) = self.input_effect.as_mut() else {
+            return Ok(());
+        };
+        if right_pull < effect.threshold - 0.08 {
+            effect.armed = true;
+        }
+        if !effect.armed || right_pull < effect.threshold || self.input_effect_until.is_some() {
+            return Ok(());
+        }
+        let threshold = effect.threshold;
+        let strength = effect.strength;
+        effect.armed = false;
+        let mut curve = vec![0.0; 11];
+        let zone = ((threshold * 10.0).round() as usize).clamp(2, 7);
+        curve[zone + 1..].fill(1.0);
+        let click = protocol::encode_trigger(&TriggerSetting {
+            mode: "weapon".into(),
+            strength: strength as f32,
+            curve,
+        })
+        .map_err(str::to_string)?;
+        self.write(protocol::usb_report(
+            0x04,
+            0,
+            0,
+            Some(click),
+            None,
+            None,
+            None,
+            false,
+        ))?;
+        self.trigger_active = true;
+        self.input_effect_until = Some(Instant::now() + Duration::from_millis(95));
+        let voice = VoiceClip::new("square", 145, 2, 75, (strength / 2).max(1), 45);
+        if !matches!(self.transport, BusType::Usb) || self.audio.play(voice).is_err() {
+            let _ = self.write_rumble([0, (strength / 2).max(1)]);
+            self.rumble_until = Some(Instant::now() + Duration::from_millis(75));
+        }
         Ok(())
     }
 }
@@ -347,7 +453,9 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     trigger_until: None,
                     rumble_until: None,
                     haptic: None,
+                    audio: AudioEngine::default(),
                     last_input_sent: Instant::now() - Duration::from_secs(1),
+                    last_input_buttons: [false; 23],
                     last_valid_report: Instant::now(),
                     panic_latched: false,
                     firmware,
@@ -355,6 +463,8 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     last_light: None,
                     battery_light: false,
                     last_rumble: None,
+                    input_effect: None,
+                    input_effect_until: None,
                 }));
             }
             Err(error) => last_error = Some(error.to_string()),
@@ -435,6 +545,7 @@ fn handle_command(
     gyro: &mut GyroAimMapper,
     remap: &mut RemapMapper,
     xinput: &mut XInputBridge,
+    telemetry: &mut ForzaBridge,
     api: &HidApi,
     preferred_path: &mut Option<String>,
 ) -> bool {
@@ -490,7 +601,9 @@ fn handle_command(
                         json!({"type":"device","connected":false,"message":"Controller not found"}),
                     );
                 }
-                Err(error) => emit(proxy, json!({"type":"error","message":error})),
+                Err(error) => {
+                    emit(proxy, json!({"type":"error","message":error}));
+                }
             }
             return true;
         }
@@ -533,6 +646,7 @@ fn handle_command(
             pitch_scale,
             invert_y,
             activation,
+            bias,
         } => {
             if enabled && device.is_none() {
                 emit(
@@ -551,6 +665,7 @@ fn handle_command(
             if !(0.05..=8.0).contains(&sensitivity)
                 || !(0.0..=4.0).contains(&yaw_scale)
                 || !(0.0..=4.0).contains(&pitch_scale)
+                || bias.iter().any(|n| i32::from(*n).abs() > 4096)
             {
                 emit(
                     proxy,
@@ -565,6 +680,7 @@ fn handle_command(
                 pitch_scale,
                 invert_y,
                 activation: activation_mode,
+                bias,
             });
             emit(
                 proxy,
@@ -644,6 +760,33 @@ fn handle_command(
             }
             return true;
         }
+        DeviceCommand::SetTelemetry { enabled, port, lan } => {
+            let was_enabled = telemetry.enabled();
+            match telemetry.set(enabled, port, lan) {
+                Ok(()) => {
+                    if enabled {
+                        if let Some(connected) = device.as_mut() {
+                            connected.battery_light = false;
+                        }
+                        emit(proxy, json!({"type":"lightMode","battery":false}));
+                    } else if was_enabled && let Some(connected) = device.as_mut() {
+                        let _ = connected.release_lightbar();
+                    }
+                    emit(
+                        proxy,
+                        json!({"type":"telemetryStatus","enabled":enabled,"port":port,"lan":lan,"message":if enabled {if lan {format!("Listening for Forza Data Out on local network port {port}")} else {format!("Listening for Forza Data Out on 127.0.0.1:{port}")}} else {"Telemetry bridge off".into()}}),
+                    );
+                }
+                Err(error) => {
+                    emit(
+                        proxy,
+                        json!({"type":"telemetryStatus","enabled":telemetry.enabled(),"message":error}),
+                    );
+                    emit(proxy, json!({"type":"error","message":error}));
+                }
+            }
+            return true;
+        }
         _ => {}
     }
 
@@ -663,7 +806,8 @@ fn handle_command(
             ) {
                 (Ok(left), Ok(right)) => {
                     let active = left[0] != 0x05 || right[0] != 0x05;
-                    let changed = device.last_trigger != Some((left, right));
+                    let changed = device.input_effect_until.is_some()
+                        || device.last_trigger != Some((left, right));
                     let result = if changed {
                         device.write(protocol::usb_report(
                             0x0c,
@@ -680,6 +824,7 @@ fn handle_command(
                     };
                     result.map(|_| {
                         device.last_trigger = Some((left, right));
+                        device.input_effect_until = None;
                         device.trigger_active = active;
                         device.trigger_until =
                             active.then(|| Instant::now() + Duration::from_secs(15));
@@ -705,6 +850,13 @@ fn handle_command(
             return true;
         }
         DeviceCommand::SetLightbar { rgb } => {
+            if telemetry.enabled() {
+                let _ = telemetry.set(false, 0, false);
+                emit(
+                    proxy,
+                    json!({"type":"telemetryStatus","enabled":false,"message":"Telemetry light released for manual color"}),
+                );
+            }
             let result = if device.last_light == Some(rgb) {
                 Ok(())
             } else {
@@ -728,11 +880,25 @@ fn handle_command(
             })
         }
         DeviceCommand::ReleaseLightbar => {
+            if telemetry.enabled() {
+                let _ = telemetry.set(false, 0, false);
+                emit(
+                    proxy,
+                    json!({"type":"telemetryStatus","enabled":false,"message":"Telemetry light released"}),
+                );
+            }
             device.battery_light = false;
             emit(proxy, json!({"type":"lightMode","battery":false}));
             device.release_lightbar().map(|_| "Lightbar released")
         }
         DeviceCommand::BatteryLightbar { enabled } => {
+            if enabled && telemetry.enabled() {
+                let _ = telemetry.set(false, 0, false);
+                emit(
+                    proxy,
+                    json!({"type":"telemetryStatus","enabled":false,"message":"Telemetry light released for battery color"}),
+                );
+            }
             device.battery_light = enabled;
             emit(proxy, json!({"type":"lightMode","battery":enabled}));
             if enabled {
@@ -749,11 +915,81 @@ fn handle_command(
             strength,
             pan,
         } => {
-            let clip = HapticClip::new(shape, frequency, attack, release, strength, pan);
-            let duration = clip.duration();
-            device.haptic = Some(clip);
-            device.rumble_until = Some(Instant::now() + duration);
-            Ok("Haptic playing")
+            let voice = VoiceClip::new(&shape, frequency, attack, release, strength, pan);
+            if matches!(device.transport, BusType::Usb) {
+                match device.audio.play(voice) {
+                    Ok(endpoint) => {
+                        emit(
+                            proxy,
+                            json!({"type":"audioStatus","route":"voiceCoil","endpoint":endpoint,"callbacks":device.audio.callbacks()}),
+                        );
+                        Ok("USB voice-coil haptic playing")
+                    }
+                    Err(error) => {
+                        emit(
+                            proxy,
+                            json!({"type":"audioStatus","route":"motor","reason":error}),
+                        );
+                        let clip =
+                            HapticClip::new(shape, frequency, attack, release, strength, pan);
+                        device.rumble_until = Some(Instant::now() + clip.duration());
+                        device.haptic = Some(clip);
+                        Ok("Haptic playing through motor fallback")
+                    }
+                }
+            } else {
+                emit(
+                    proxy,
+                    json!({"type":"audioStatus","route":"motor","reason":"Bluetooth voice-coil transport is not validated."}),
+                );
+                let clip = HapticClip::new(shape, frequency, attack, release, strength, pan);
+                device.rumble_until = Some(Instant::now() + clip.duration());
+                device.haptic = Some(clip);
+                Ok("Bluetooth motor haptic playing")
+            }
+        }
+        DeviceCommand::SetAudioBridge {
+            enabled,
+            gain,
+            preset,
+        } => {
+            if enabled && !matches!(device.transport, BusType::Usb) {
+                Err("System audio haptics require USB. Bluetooth motor fallback remains available in Haptic Lab.".into())
+            } else {
+                let result = device.audio.set_bridge(enabled, gain, &preset);
+                if let Ok(message) = &result {
+                    emit(
+                        proxy,
+                        json!({"type":"audioStatus","route":if enabled {"voiceCoil"} else {"off"},"bridge":enabled,"endpoint":device.audio.endpoint(),"message":message}),
+                    );
+                }
+                result.map(|_| {
+                    if enabled {
+                        "Audio bridge on"
+                    } else {
+                        "Audio bridge off"
+                    }
+                })
+            }
+        }
+        DeviceCommand::SetInputEffects {
+            enabled,
+            threshold,
+            strength,
+        } => {
+            if !threshold.is_finite()
+                || !(0.2..=0.95).contains(&threshold)
+                || strength > 100
+                || (enabled && strength == 0)
+            {
+                Err("Input click threshold or strength is out of range.".into())
+            } else {
+                device.restore_input_effect().map(|_| {
+                    device.input_effect = enabled.then_some(InputEffect {threshold,strength,armed:true});
+                    emit(proxy, json!({"type":"inputEffects","enabled":enabled,"threshold":threshold,"strength":strength}));
+                    if enabled {"Input click armed"} else {"Input click off"}
+                })
+            }
         }
         DeviceCommand::Rumble {
             left,
@@ -769,6 +1005,11 @@ fn handle_command(
             })
         }
         DeviceCommand::Reset => {
+            let _ = telemetry.set(false, 0, false);
+            emit(
+                proxy,
+                json!({"type":"telemetryStatus","enabled":false,"message":"Telemetry bridge off"}),
+            );
             stop_input_mappers(mouse, gyro, remap, xinput, proxy);
             emit(proxy, json!({"type":"safetyReset"}));
             device.battery_light = false;
@@ -789,7 +1030,8 @@ fn handle_command(
         | DeviceCommand::SetTouchGestures { .. }
         | DeviceCommand::SetGyroAim { .. }
         | DeviceCommand::SetRemap { .. }
-        | DeviceCommand::SetXinput { .. } => unreachable!(),
+        | DeviceCommand::SetXinput { .. }
+        | DeviceCommand::SetTelemetry { .. } => unreachable!(),
     };
     match result {
         Ok(message) => emit(proxy, json!({ "type": "notice", "message": message })),
@@ -814,6 +1056,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     let mut gyro = GyroAimMapper::default();
     let mut remap = RemapMapper::default();
     let mut xinput = XInputBridge::default();
+    let mut telemetry = ForzaBridge::default();
     emit(&proxy, xinput.status_event());
     let mut preferred_path: Option<String> = None;
     let mut next_scan = Instant::now();
@@ -826,8 +1069,34 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     let mut sequence_gaps = 0u32;
     let mut invalid_reports = 0u32;
     let mut next_rate = Instant::now() + Duration::from_secs(1);
+    let mut telemetry_stale_latched = false;
     loop {
         if Instant::now() >= next_rate {
+            if telemetry.stale() && !telemetry_stale_latched {
+                telemetry_stale_latched = true;
+                if let Some(connected) = device.as_mut() {
+                    let _ = connected.release_lightbar();
+                }
+                emit(
+                    &proxy,
+                    json!({"type":"telemetryStatus","enabled":true,"port":telemetry.port(),"lan":telemetry.lan(),"message":"Listening, but no Forza packets arrived in the last second."}),
+                );
+            }
+            if let Some(connected) = device.as_mut() {
+                if let Some(error) = connected.audio.take_error() {
+                    connected.audio.stop();
+                    emit(
+                        &proxy,
+                        json!({"type":"audioStatus","route":"off","bridge":false,"message":error}),
+                    );
+                    emit(&proxy, json!({"type":"error","message":error}));
+                } else if connected.audio.bridge_on() {
+                    emit(
+                        &proxy,
+                        json!({"type":"audioStatus","route":"voiceCoil","bridge":true,"endpoint":connected.audio.endpoint(),"callbacks":connected.audio.callbacks()}),
+                    );
+                }
+            }
             emit(
                 &proxy,
                 json!({"type":"rate","reportsPerSecond":raw_reports,"sequenceGaps":sequence_gaps,"invalidReports":invalid_reports}),
@@ -869,6 +1138,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         &mut gyro,
                         &mut remap,
                         &mut xinput,
+                        &mut telemetry,
                         &api,
                         &mut preferred_path,
                     ) {
@@ -883,6 +1153,52 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     return;
                 }
                 Err(TryRecvError::Empty) => break,
+            }
+        }
+        if let Some(tick) = telemetry.poll() {
+            telemetry_stale_latched = false;
+            if tick.emit_ui {
+                emit(
+                    &proxy,
+                    json!({"type":"telemetry","rpm":tick.sample.rpm.round(),"maxRpm":tick.sample.max_rpm.round(),"speedKmh":tick.sample.speed_mps.map(|v|(v*3.6).round()),"gear":tick.sample.gear,"brake":tick.sample.brake,"slip":tick.sample.slip,"kerb":tick.sample.kerb,"source":tick.sample.source,"revColor":telemetry::rev_color(tick.sample),"estimatedBrakeSlip":tick.sample.brake_slip()}),
+                );
+            }
+            if let Some(connected) = device.as_mut() {
+                let color = telemetry::rev_color(tick.sample);
+                if connected.last_light != Some(color) {
+                    let report =
+                        protocol::usb_report(0, 0x04, 0, None, None, Some(color), None, false);
+                    if connected.write(report).is_ok() {
+                        connected.last_light = Some(color);
+                        connected.light_active = true;
+                        connected.battery_light = false;
+                    }
+                }
+                if let Some(cue) = tick.cue {
+                    let (shape, frequency, attack, release, strength, pan) = match cue {
+                        TelemetryCue::Shift => ("saw", 115, 3, 85, 55, 0),
+                        TelemetryCue::BrakeSlip => ("square", 135, 2, 65, 32, 0),
+                        TelemetryCue::KerbLeft => ("noise", 90, 4, 95, 28, -80),
+                        TelemetryCue::KerbRight => ("noise", 90, 4, 95, 28, 80),
+                        TelemetryCue::KerbBoth => ("noise", 90, 4, 95, 28, 0),
+                        TelemetryCue::Slip => ("saw", 70, 6, 130, 20, 0),
+                    };
+                    let clip = VoiceClip::new(shape, frequency, attack, release, strength, pan);
+                    if !matches!(connected.transport, BusType::Usb)
+                        || connected.audio.play(clip).is_err()
+                    {
+                        let fallback = HapticClip::new(
+                            shape.into(),
+                            frequency,
+                            attack,
+                            release,
+                            strength,
+                            pan,
+                        );
+                        connected.rumble_until = Some(Instant::now() + fallback.duration());
+                        connected.haptic = Some(fallback);
+                    }
+                }
             }
         }
         if device.is_some() && Instant::now() >= next_scan {
@@ -940,6 +1256,13 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
             );
         }
         if let Some(connected) = device.as_mut() {
+            if connected
+                .input_effect_until
+                .is_some_and(|t| Instant::now() >= t)
+                && let Err(error) = connected.restore_input_effect()
+            {
+                emit(&proxy, json!({"type":"error","message":error}));
+            }
             if connected
                 .trigger_until
                 .is_some_and(|deadline| Instant::now() >= deadline)
@@ -1037,6 +1360,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                             }
                         }
                         if input.panic_combo && !connected.panic_latched {
+                            let _ = telemetry.set(false, 0, false);
+                            emit(
+                                &proxy,
+                                json!({"type":"telemetryStatus","enabled":false,"message":"Telemetry bridge off"}),
+                            );
                             emit(&proxy, json!({"type":"safetyReset"}));
                             stop_input_mappers(
                                 &mut mouse,
@@ -1058,7 +1386,22 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                             );
                         }
                         connected.panic_latched = input.panic_combo;
-                        if connected.last_input_sent.elapsed() >= Duration::from_millis(32) {
+                        if !input.panic_combo
+                            && let Err(error) = connected.update_input_effect(input.buttons[7])
+                        {
+                            emit(&proxy, json!({"type":"error","message":error}));
+                        }
+                        let mut button_changed = false;
+                        for (previous, value) in
+                            connected.last_input_buttons.iter_mut().zip(input.buttons)
+                        {
+                            let pressed = value > 0.5;
+                            button_changed |= *previous != pressed;
+                            *previous = pressed;
+                        }
+                        if button_changed
+                            || connected.last_input_sent.elapsed() >= Duration::from_millis(32)
+                        {
                             emit(&proxy, json!({ "type": "input", "input": input }));
                             connected.last_input_sent = Instant::now();
                         }

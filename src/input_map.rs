@@ -19,6 +19,7 @@ pub struct GyroAimConfig {
     pub pitch_scale: f32,
     pub invert_y: bool,
     pub activation: GyroActivation,
+    pub bias: [i16; 3],
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -91,8 +92,8 @@ impl GyroAimMapper {
         }
         // The Linux driver documents 1024 raw units per degree per second.
         // Integrating with elapsed time keeps pointer speed stable across USB and BT rates.
-        let yaw = input.gyro[2] as f32;
-        let pitch = input.gyro[0] as f32;
+        let yaw = (input.gyro[2] as i32 - self.config.bias[2] as i32) as f32;
+        let pitch = (input.gyro[0] as i32 - self.config.bias[0] as i32) as f32;
         let sens = self.config.sensitivity.clamp(0.05, 8.0);
         let to_pixels = |raw: f32| {
             if raw.abs() < 90.0 {
