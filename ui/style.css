@@ -97,7 +97,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,select:focus-vis
 }
 .brand{display:flex;align-items:center;gap:12px;padding:22px 18px;border-bottom:1px solid rgba(212,168,75,.22)}
 .brand img{width:36px;height:36px;border-radius:8px;box-shadow:0 0 0 1px var(--gold-deep)}
-.brand strong{display:block;font:700 22px/1 var(--display);letter-spacing:.01em;color:var(--gold-soft)}
+.brand strong{display:block;font:700 17px/1 var(--display);letter-spacing:.01em;color:var(--gold-soft)}
 .brand small{display:block;margin-top:6px;color:var(--teal-glow);font:600 10px/1 var(--body);letter-spacing:.08em;text-transform:uppercase}
 .side-caption{padding:22px 18px 8px;color:rgba(239,217,160,.55);font:600 10px var(--body);letter-spacing:.14em;text-transform:uppercase}
 #nav{display:flex;flex-direction:column;padding:0 10px;gap:4px}

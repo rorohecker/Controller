@@ -374,9 +374,10 @@
   $('#learn-process').addEventListener('click',()=>{if(!state.lastExternalExe){toast('Focus the game first.');return;}$('#profile-match').value=state.lastExternalExe;commitProfileDraft(true);});
   $('#learn-process-path').addEventListener('click',()=>{if(!state.lastExternalExe||!state.lastExternalPath){toast('Focus the game first.');return;}$('#profile-match').value=state.lastExternalExe;$('#profile-match-path').value=state.lastExternalPath;commitProfileDraft(true);});
   $('#export-profiles').addEventListener('click',async () => {
+    if(!await commitProfileDraft(false))return;
     const data={schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:state.profiles};
     if(native) { try { const path=await invoke('export_profiles',{data}); toast(`Exported to ${path}`); } catch(error){toast(String(error));} }
-    else { const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='aftertouch-profiles.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000); }
+    else { const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='CONTROLLER-profiles.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000); }
   });
   $('#import-profiles').addEventListener('click',()=>$('#import-file').click());
   $('#import-file').addEventListener('change',async e => {
@@ -385,7 +386,10 @@
       if(![1,2,3].includes(data.schemaVersion)||!Array.isArray(data.profiles)||!data.profiles.length||data.profiles.length>50||!data.profiles.every(validProfile))throw Error('Unsupported or invalid profile file');
       if(state.profiles.length+data.profiles.length>50)throw Error('50 profile limit');
       const imported=data.profiles.map(p=>{const c=normalizeProfile(p);c.id=`import-${crypto.randomUUID()}`;c.name=c.name.slice(0,40);c.description=String(c.description||'').slice(0,180);c.tag='IMPORTED';return c;});
-      state.profiles.unshift(...imported);state.profileId=imported[0].id;renderAllProfileControls();saveProfiles();toast(`Imported ${imported.length}`);
+      const previousProfiles=state.profiles.slice(),previousId=state.profileId;
+      state.profiles.unshift(...imported);state.profileId=imported[0].id;renderAllProfileControls();
+      if(await saveProfiles(true))toast(`Imported ${imported.length}`);
+      else{state.profiles=previousProfiles;state.profileId=previousId;renderAllProfileControls();}
     } catch(error){toast(`Import failed: ${error.message}`);} e.target.value='';
   });
 

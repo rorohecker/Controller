@@ -1,16 +1,16 @@
-# Aftertouch
+# CONTROLLER
 
-Aftertouch is a Windows tuning workbench for DualSense and DualSense Edge controllers, built in Rust with a Tauri 2 interface. It reads the controller directly, lets you shape adaptive triggers, and shows what the pad is reporting. Hardware output stays in one Rust process so a lightbar change, rumble cue, and trigger preview do not compete with one another inside the app.
+CONTROLLER is a Windows tuning workbench for DualSense and DualSense Edge controllers, built in Rust with a Tauri 2 interface. It reads the controller directly, lets you shape adaptive triggers, and shows what the pad is reporting. Hardware output stays in one Rust process so a lightbar change, rumble cue, and trigger preview do not compete with one another inside the app.
 
 ## Run
 
-Launch `dist/Aftertouch.exe` or build from source:
+Launch `dist/CONTROLLER.exe` or build from source:
 
 ```powershell
-cargo run --release --bin aftertouch
+cargo run --release --bin controller
 ```
 
-Windows 10 or 11 and WebView2 are required. Connect a controller over USB or Bluetooth. Aftertouch scans automatically, prefers USB if both transports appear, and lets you select another pad in Diagnostics. It does not install a driver or modify a game.
+Windows 10 or 11 and WebView2 are required. Connect a controller over USB or Bluetooth. CONTROLLER scans automatically, prefers USB if both transports appear, and lets you select another pad in Diagnostics. It does not install a driver or modify a game.
 
 See [Compatibility and test record](COMPATIBILITY.md) for the controller, transport, and game combinations actually checked.
 
@@ -73,9 +73,9 @@ On the Lightbar page, select **Follow screen color** to sample the primary displ
 
 The pure `protocol/` crate parses full USB and Bluetooth input, verifies Bluetooth input CRC32, and builds USB `0x02` or Bluetooth `0x31` control reports with the appropriate flags, sequence, and CRC32. On Bluetooth, the core requests full `0x31` input and can parse the short `0x01` fallback. Output reports are sent when state changes. The core resets effects before releasing a stalled handle, reconnects after unplug, and restarts if its subprocess exits. Audio streaming uses a separate Windows audio callback, so the HID input loop does not have to synthesize PCM. The output mixer bounds grip sample amplitude and average duty and limits its capture queue to 20 ms. The front speaker channels carry only an explicitly requested chirp.
 
-The protocol crate also contains an **experimental, test-only** encoder for the separate Bluetooth `0x32` advanced-haptics frame, based on [SAxense's public research](https://github.com/egormanga/SAxense). Aftertouch does not send those frames to hardware. Real Bluetooth voice-coil haptics would need a timed 3 kHz stereo PCM stream, a validated output path on a Bluetooth pad, and a driver-backed virtual audio endpoint if a Windows game must see controller haptics channels. The USB PCM path is implemented; Bluetooth voice-coil output is still unverified.
+The protocol crate also contains an **experimental, test-only** encoder for the separate Bluetooth `0x32` advanced-haptics frame, based on [SAxense's public research](https://github.com/egormanga/SAxense). CONTROLLER does not send those frames to hardware. Real Bluetooth voice-coil haptics would need a timed 3 kHz stereo PCM stream, a validated output path on a Bluetooth pad, and a driver-backed virtual audio endpoint if a Windows game must see controller haptics channels. The USB PCM path is implemented; Bluetooth voice-coil output is still unverified.
 
-The optional XInput bridge requires a user-installed [ViGEmBus](https://github.com/nefarius/ViGEmBus), whose upstream repository is archived. Aftertouch neither bundles nor installs it. Touch mouse, gyro aim, and keyboard remapping use Windows SendInput. A game may see both the physical and virtual pad unless the physical one is hidden by the user's separate setup.
+The optional XInput bridge requires a user-installed [ViGEmBus](https://github.com/nefarius/ViGEmBus), whose upstream repository is archived. CONTROLLER neither bundles nor installs it. Touch mouse, gyro aim, and keyboard remapping use Windows SendInput. A game may see both the physical and virtual pad unless the physical one is hidden by the user's separate setup.
 
 ## Verify and build
 
@@ -83,18 +83,18 @@ The optional XInput bridge requires a user-installed [ViGEmBus](https://github.c
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 python tests/ui_smoke.py
-cargo build --bin aftertouch
+cargo build --bin controller
 python tests/script_smoke.py
 python tests/core_smoke.py
 python tests/feature_smoke.py
 cargo run --bin audio_probe -- --smoke-silent
 cargo run --bin audio_probe -- --smoke-loopback
-cargo build --release --bin aftertouch
+cargo build --release --bin controller
 ```
 
 The UI test uses Playwright and a local Chrome installation. The core smoke test needs a connected controller; it enables and disables gyro aim, sends a low-force trigger command, and checks the live report stream. The feature smoke test uses a connected USB pad to open the silent PCM and WASAPI streams, arm and clear the input click, and decode a synthetic Forza UDP packet. On the available standard DualSense over USB, recent core runs read 232–233 reports per second with no observed sequence gaps or rejected reports, and the audio device requested PCM frames. These checks establish that Windows accepted the streams and reports; they do not measure physical haptic force or end-to-end latency. Bluetooth haptic output, Edge hardware, and prolonged hotplug cycling have not been measured on this machine.
 
-Profiles use schema v3 at `%APPDATA%\Aftertouch\profiles.json`; the app migrates older archives when it loads them. The UI can be opened in a browser for layout and keyboard-input preview, but device writes require the desktop app.
+Profiles use schema v3 at `%APPDATA%\CONTROLLER\profiles.json`. On first launch after the rename, the app reads an existing `%APPDATA%\Aftertouch\profiles.json`, copies the validated archive into the new folder, and leaves the original file in place. Saved palette, scripts, and battery history keep their existing local storage keys so those preferences survive the rename. The UI can be opened in a browser for layout and keyboard-input preview, but device writes require the desktop app.
 
 ## Protocol and art credits
 
@@ -102,6 +102,6 @@ Control-report layouts follow the [Linux hid-playstation driver](https://github.
 
 The system audio bridge uses the [Windows WASAPI loopback API](https://learn.microsoft.com/en-us/windows/win32/coreaudio/loopback-recording) through [CPAL](https://github.com/RustAudio/cpal). Forza Dash packet offsets were checked against the [forza-telemetry decoder](https://github.com/0x20F/forza-telemetry); no code from that project is included.
 
-Aftertouch is independent and is not affiliated with Sony Interactive Entertainment.
+CONTROLLER is independent and is not affiliated with Sony Interactive Entertainment.
 
 Figtree and Spectral are bundled for offline typography under the SIL Open Font License; their license files are in `ui/assets/fonts/`.

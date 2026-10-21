@@ -1,4 +1,4 @@
-"""Live USB smoke check after `cargo build --bin aftertouch`.
+"""Live USB smoke check after `cargo build --bin controller`.
 
 Requires a connected DualSense. Briefly sends a 10% trigger preview, then resets.
 """
@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
-    exe = ROOT / "target" / "debug" / "aftertouch.exe"
+    exe = ROOT / "target" / "debug" / "controller.exe"
     process = subprocess.Popen([str(exe), "--core"], cwd=ROOT, stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
     messages = queue.Queue()

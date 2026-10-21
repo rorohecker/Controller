@@ -12,6 +12,7 @@ def mock_core(page):
         core: {invoke: async (name, args) => {
           if (name === 'load_profiles') return null;
           if (name === 'save_profiles') window.saved = args.data;
+          if (name === 'export_profiles') { window.exported = args.data; return 'CONTROLLER-profiles.json'; }
           if (name === 'send_command') window.sent.push(args.command);
           return null;
         }},
@@ -41,6 +42,8 @@ def main():
         page.on("pageerror", lambda error: errors.append(str(error)))
         page.goto((ROOT / "ui" / "index.html").as_uri())
         page.wait_for_function("!!window.coreHandler")
+        assert page.title() == "CONTROLLER"
+        assert page.evaluate("document.querySelector('.brand strong').getBoundingClientRect().right <= document.querySelector('.sidebar').getBoundingClientRect().right")
         assert page.locator(".controller-photo").is_visible()
         assert page.locator("#connection-guide").is_visible()
         assert page.locator("#theme-select option").count() == 4
@@ -107,7 +110,7 @@ def main():
         assert page.evaluate("window.sent.at(-1).action") == "setAudioBridge"
         page.evaluate("window.coreHandler({type:'audioStatus',route:'voiceCoil',bridge:true,message:'Audio bridge on'})")
         assert page.locator("#bridge-toggle").inner_text().lower() == "stop bridge"
-        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "aftertouch-haptics-new.png"), full_page=True)
+        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-haptics-new.png"), full_page=True)
         page.locator('[data-view="lights"]').click()
         page.locator("#temperature-light").click()
         assert page.evaluate("window.sent.at(-1).action") == "setTemperatureLightbar"
@@ -150,7 +153,7 @@ def main():
         page.evaluate("window.coreHandler({type:'scriptStatus',enabled:true,message:'Script armed'})")
         page.evaluate("window.coreHandler({type:'core',status:'restarting'})")
         assert page.locator("#script-source").get_attribute("readonly") is None
-        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "aftertouch-telemetry-new.png"), full_page=True)
+        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-telemetry-new.png"), full_page=True)
         page.locator('[data-view="triggers"]').click()
         page.locator('[data-mode="bow"]').click()
         page.locator("#apply-triggers").click()
@@ -160,7 +163,7 @@ def main():
         page.locator("#click-threshold").fill("78")
         page.locator("#apply-triggers").click()
         page.wait_for_function("window.sent.some(c=>c.action==='setInputEffects' && c.threshold===.78)")
-        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "aftertouch-trigger-new.png"), full_page=True)
+        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-trigger-new.png"), full_page=True)
         page.locator('[data-view="touch"]').click()
         assert "circle" in page.locator("#touch-gesture-toggle").locator("xpath=..//p").inner_text().lower()
         page.locator("#gyro-calibrate").click()
@@ -185,6 +188,9 @@ def main():
         page.locator("#apply-profile-now").click()
         assert page.evaluate("window.sent.length") == before_apply
         page.locator("#profile-name").fill("Standard")
+        page.locator("#profile-description").fill("Export includes this unsaved note")
+        page.locator("#export-profiles").click()
+        page.wait_for_function("window.exported?.profiles.some(p=>p.description==='Export includes this unsaved note')")
         page.locator("#add-remap").click()
         page.locator("#add-remap").click()
         buttons = page.locator("#remap-bindings select:first-child")
@@ -207,7 +213,7 @@ def main():
         page.evaluate("window.coreHandler({type:'foreground',exe:'game.exe',title:'Another game',path:'C:\\\\Games\\\\game.exe'})")
         assert page.locator("#profile-match-title").input_value() == ""
         page.wait_for_timeout(450)
-        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "aftertouch-profiles-check.png"), full_page=True)
+        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-profiles-check.png"), full_page=True)
         for view in ("live", "triggers", "haptics", "touch", "lights", "profiles", "diagnostics"):
             page.locator(f'[data-view="{view}"]').click()
             assert page.locator(f"#{view}").is_visible()
@@ -229,7 +235,7 @@ def main():
         assert mobile.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
         mobile.locator('[data-view="touch"]').click()
         mobile.wait_for_timeout(450)
-        mobile.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "aftertouch-touch-mobile.png"), full_page=True)
+        mobile.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-touch-mobile.png"), full_page=True)
         assert mobile.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
         assert not mobile_errors, mobile_errors
         browser.close()

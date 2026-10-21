@@ -14,4 +14,6 @@ Version 0.8.0 adds local telemetry rules, an explicit USB speaker chirp, and two
 
 Version 0.9.0 adds opt-in primary-display color sampling and a color mode based on the uncalibrated controller sensor estimate. A live desktop test read pixels through Windows GDI and received a sample from the background worker. Unit tests checked the color mix, smoothing, and sensor-color scale. Playwright covered the Lightbar controls and status. No controller was attached to measure the actual lightbar output or USB/Bluetooth update timing.
 
+Version 0.10.0 renames the desktop app to CONTROLLER and copies valid profiles from the old Aftertouch data folder on first load. The migration test confirms the original archive remains intact. Cargo check, strict Clippy, Rust tests, the browser UI smoke test, and a controller-free core telemetry/script smoke test passed. The HID probe found no attached pad for this run, so live USB and Bluetooth writes, physical trigger force, and haptic output were not retested.
+
 The app reads HID reports, uses Windows audio loopback, and listens for published telemetry. It does not inject code into games. Steam Input or another controller tool may write to the same controller; Diagnostics reports likely conflicts, and Reset releases effects when this app owns them.

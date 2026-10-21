@@ -61,7 +61,7 @@ impl Bridge {
             .ok_or_else(|| io::Error::other("Core error pipe missing"))?;
         let event_handle = app.clone();
         thread::Builder::new()
-            .name("aftertouch-core-events".into())
+            .name("controller-core-events".into())
             .spawn(move || {
                 for line in BufReader::new(output).lines() {
                     match line {
@@ -80,7 +80,7 @@ impl Bridge {
                 let _ = event_handle.emit("core-event", json!({"type":"core","status":"stopped"}));
             })?;
         thread::Builder::new()
-            .name("aftertouch-core-errors".into())
+            .name("controller-core-errors".into())
             .spawn(move || {
                 for line in BufReader::new(errors).lines().map_while(Result::ok) {
                     eprintln!("core: {line}");
@@ -99,7 +99,7 @@ impl Bridge {
         });
         let watcher = Arc::clone(&bridge);
         thread::Builder::new()
-            .name("aftertouch-core-watch".into())
+            .name("controller-core-watch".into())
             .spawn(move || watcher.watch_and_respawn())
             .map_err(io::Error::other)?;
         Ok(bridge)
@@ -229,7 +229,7 @@ fn run_core() {
     let (events_tx, events_rx) = mpsc::channel();
     let command_errors = events_tx.clone();
     thread::Builder::new()
-        .name("aftertouch-core-input".into())
+        .name("controller-core-input".into())
         .spawn(move || {
             for line in io::stdin().lock().lines() {
                 match line {
@@ -261,7 +261,7 @@ fn run_core() {
         })
         .expect("core command reader");
     let output = thread::Builder::new()
-        .name("aftertouch-core-output".into())
+        .name("controller-core-output".into())
         .spawn(move || {
             let mut writer = BufWriter::new(io::stdout().lock());
             for event in events_rx {
@@ -296,7 +296,7 @@ fn main() {
             export_profiles
         ])
         .build(tauri::generate_context!())
-        .expect("Aftertouch desktop shell");
+        .expect("CONTROLLER desktop shell");
     app.run(|handle, event| {
         if let tauri::RunEvent::Exit = event
             && let Some(bridge) = handle.try_state::<Arc<Bridge>>()

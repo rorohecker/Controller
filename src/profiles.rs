@@ -158,9 +158,13 @@ impl Default for InputEffectSettings {
     }
 }
 
-fn path() -> Result<PathBuf, String> {
+fn paths() -> Result<(PathBuf, PathBuf), String> {
     let base = env::var_os("APPDATA").ok_or("APPDATA is unavailable")?;
-    Ok(PathBuf::from(base).join("Aftertouch").join("profiles.json"))
+    let base = PathBuf::from(base);
+    Ok((
+        base.join("CONTROLLER").join("profiles.json"),
+        base.join("Aftertouch").join("profiles.json"),
+    ))
 }
 
 fn validate(data: Value) -> Result<Archive, String> {
@@ -243,19 +247,40 @@ fn validate(data: Value) -> Result<Archive, String> {
 }
 
 pub fn load() -> Result<Option<Value>, String> {
-    let path = path()?;
-    if !path.exists() {
+    let (current, legacy) = paths()?;
+    load_from_paths(&current, &legacy)
+}
+
+fn load_from_paths(
+    current: &std::path::Path,
+    legacy: &std::path::Path,
+) -> Result<Option<Value>, String> {
+    let source = if current.exists() {
+        current
+    } else if legacy.exists() {
+        legacy
+    } else {
         return Ok(None);
-    }
-    let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+    };
+    let bytes = fs::read(source).map_err(|e| e.to_string())?;
     if bytes.len() > 1_000_000 {
         return Err("Profile archive is too large".into());
     }
     let data: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     let archive = validate(data)?;
-    Ok(Some(
-        serde_json::to_value(archive).map_err(|e| e.to_string())?,
-    ))
+    let result = serde_json::to_value(archive).map_err(|e| e.to_string())?;
+    if source == legacy {
+        // Keep the original archive intact. A failed copy must not hide usable profiles.
+        if let Some(folder) = current.parent()
+            && fs::create_dir_all(folder).is_ok()
+        {
+            let _ = write_archive(
+                current,
+                &serde_json::to_vec_pretty(&result).map_err(|e| e.to_string())?,
+            );
+        }
+    }
+    Ok(Some(result))
 }
 
 pub fn save(data: Value) -> Result<(), String> {
@@ -264,7 +289,7 @@ pub fn save(data: Value) -> Result<(), String> {
     if json.len() > 1_000_000 {
         return Err("Profile archive is too large".into());
     }
-    let file = path()?;
+    let (file, _) = paths()?;
     fs::create_dir_all(file.parent().ok_or("Profile folder is unavailable")?)
         .map_err(|e| e.to_string())?;
     write_archive(&file, &json)
@@ -304,9 +329,9 @@ pub fn export(data: Value) -> Result<String, String> {
         .as_secs();
     for suffix in 0..100 {
         let name = if suffix == 0 {
-            format!("aftertouch-profiles-{stamp}.json")
+            format!("CONTROLLER-profiles-{stamp}.json")
         } else {
-            format!("aftertouch-profiles-{stamp}-{suffix}.json")
+            format!("CONTROLLER-profiles-{stamp}-{suffix}.json")
         };
         let path = folder.join(name);
         match fs::OpenOptions::new()
@@ -427,5 +452,29 @@ mod tests {
         write_archive(&path, b"second").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"second");
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn legacy_archive_migrates_without_removing_original() {
+        let folder = std::env::temp_dir().join(format!(
+            "controller-profile-migration-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let old = folder.join("Aftertouch").join("profiles.json");
+        let new = folder.join("CONTROLLER").join("profiles.json");
+        fs::create_dir_all(old.parent().unwrap()).unwrap();
+        fs::write(&old, serde_json::to_vec(&sample_profile()).unwrap()).unwrap();
+        let loaded = load_from_paths(&new, &old).unwrap().unwrap();
+        assert_eq!(loaded["schemaVersion"], 3);
+        assert!(old.exists());
+        assert_eq!(
+            fs::read(new).unwrap(),
+            serde_json::to_vec_pretty(&loaded).unwrap()
+        );
+        fs::remove_dir_all(folder).unwrap();
     }
 }

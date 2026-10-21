@@ -48,7 +48,9 @@ pub fn inspect() -> ProcessState {
             .position(|&c| c == 0)
             .unwrap_or(entry.szExeFile.len());
         let exe = String::from_utf16_lossy(&entry.szExeFile[..end]).to_lowercase();
-        if entry.th32ProcessID == foreground && exe != "aftertouch.exe" {
+        if entry.th32ProcessID == foreground
+            && !matches!(exe.as_str(), "controller.exe" | "aftertouch.exe")
+        {
             state.foreground_exe = Some(exe.clone());
             let mut title = [0u16; 512];
             let title_len =

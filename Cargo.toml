@@ -1,9 +1,9 @@
 ﻿[package]
-name = "aftertouch"
-version = "0.9.0"
+name = "controller"
+version = "0.10.0"
 edition = "2024"
 build = "build.rs"
-description = "A native DualSense tuning studio"
+description = "CONTROLLER, a native DualSense tuning studio"
 
 [workspace]
 members = ["protocol"]
@@ -29,7 +29,7 @@ strip = true
 lto = "thin"
 
 [[bin]]
-name = "aftertouch"
+name = "controller"
 path = "src/main.rs"
 
 [[bin]]
