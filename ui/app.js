@@ -53,7 +53,7 @@
     currentView:'live',playUntil:0,playStart:0,playDuration:0,lastExternalExe:'',
     leaseUntil:0,leaseDuration:0,fullReport:false,manualScan:false,
     autoApply:true,coreStatus:'ready',foregroundExe:'',autoMatchId:'',autoSuppressed:false,
-    sequenceGaps:0,invalidReports:0,stickTest:null,batteryHistory:[],audioBridge:false,audioRoute:'off',telemetryOn:false,telemetryLast:0,inputEffectsActive:false,gyroCalibration:null
+    sequenceGaps:0,invalidReports:0,stickTest:null,batteryHistory:[],audioBridge:false,audioRoute:'off',telemetryOn:false,telemetryLast:0,inputEffectsActive:false,gyroCalibration:null,lowBatteryAlert:false,timerUntil:0
   };
   let toastTimeout, audioContext, dragging = -1, saveTimeout, saveChain=Promise.resolve(), scanTimeout;
   const palettes=['dusk','cinder','tide','verdigris'];
@@ -69,7 +69,7 @@
   const profile = () => state.profiles.find(p => p.id === state.profileId) || state.profiles[0];
   const trigger = () => profile().triggers[state.side];
   const timeLabel = () => new Date().toLocaleTimeString('en-US',{hour12:false});
-  const modeLabel = {off:'Off',resistance:'Resistance',weapon:'Weapon',vibration:'Vibration'};
+  const modeLabel = {off:'Off',resistance:'Resistance',weapon:'Weapon',vibration:'Vibration',bow:'Bow · experimental'};
 
   function normalizeProfile(p) {
     const n = clone(p);
@@ -79,7 +79,7 @@
     n.gyroAim = Object.assign(defaultGyro(), n.gyroAim || {});
     n.remap = Object.assign(defaultRemap(), n.remap || {});
     n.inputEffects = Object.assign(defaultInputEffects(), n.inputEffects || {});
-    n.remap.bindings = Array.isArray(n.remap.bindings) ? n.remap.bindings : [];
+    n.remap.bindings = Array.isArray(n.remap.bindings) ? n.remap.bindings.map(b=>({button:b.button,vk:b.vk,modifier:b.modifier??null,behavior:b.behavior||'hold',sequence:Array.isArray(b.sequence)?b.sequence:[]})) : [];
     return n;
   }
 
@@ -100,6 +100,12 @@
     try { await invoke('send_command',{command}); return true; }
     catch (error) { toast(String(error)); log(`CORE ERROR / ${error}`); return false; }
   }
+  function reportUiFocus(){
+    if(native)invoke('send_command',{command:{action:'setUiFocused',focused:document.hasFocus()&&!document.hidden}}).catch(()=>{});
+  }
+  window.addEventListener('focus',reportUiFocus);
+  window.addEventListener('blur',reportUiFocus);
+  document.addEventListener('visibilitychange',reportUiFocus);
   function navigate(view) {
     if (!$('#' + view)?.classList.contains('screen')) return;
     clearPadFocus();
@@ -170,7 +176,11 @@
       if(state.currentView!=='live')navigate('live');
       movePadFocus(1);
     }else if(pressed(12)||pressed(13)){
-      movePadFocus(pressed(13)?1:-1);
+      if(padFocus?.matches('[data-point]')){
+        const index=Number(padFocus.dataset.point);
+        trigger().curve[index]=Math.round(clamp(trigger().curve[index]+(pressed(12)?.02:-.02))*100)/100;
+        renderCurve();focusPadControl($(`#curve-points [data-point="${index}"]`));saveProfiles();
+      }else movePadFocus(pressed(13)?1:-1);
     }else if(pressed(14)||pressed(15)){
       if(!changePadValue(padFocus,pressed(15)?1:-1))movePadFocus(pressed(15)?1:-1);
     }else if(pressed(0)){
@@ -202,13 +212,17 @@
       && (!g.bias || (Array.isArray(g.bias)&&g.bias.length===3&&g.bias.every(n=>Number.isInteger(n)&&Math.abs(n)<=4096)))
       && Number.isFinite(c.threshold) && c.threshold>=.2 && c.threshold<=.95
       && Number.isInteger(c.strength) && c.strength>=0 && c.strength<=100
-      && bindings.length<=23 && bindings.every(b=>Number.isInteger(b.button)&&b.button>=0&&b.button<23&&Number.isInteger(b.vk)&&b.vk>=1&&b.vk<=255)
-      && new Set(bindings.map(b=>b.button)).size===bindings.length;
+      && bindings.length<=46 && bindings.every(b=>Number.isInteger(b.button)&&b.button>=0&&b.button<23&&Number.isInteger(b.vk)&&b.vk>=1&&b.vk<=255
+        && (b.modifier==null||(Number.isInteger(b.modifier)&&b.modifier>=0&&b.modifier<23&&b.modifier!==b.button))
+        && ['hold','tap','macro'].includes(b.behavior||'hold') && Array.isArray(b.sequence||[])
+        && (b.behavior==='macro'?(b.sequence?.length>=1&&b.sequence.length<=5):!(b.sequence?.length))
+        && (b.sequence||[]).every(vk=>Number.isInteger(vk)&&vk>=1&&vk<=255))
+      && new Set(bindings.map(b=>`${b.button}:${b.modifier??'base'}`)).size===bindings.length;
   }
   async function loadProfiles() {
     try {
-      const data = native ? await invoke('load_profiles') : JSON.parse(localStorage.getItem('aftertouch.profiles.v2') || 'null');
-      if (data && (data.schemaVersion === 1 || data.schemaVersion === 2) && Array.isArray(data.profiles) && data.profiles.length && data.profiles.every(validProfile)) {
+      const data = native ? await invoke('load_profiles') : JSON.parse(localStorage.getItem('aftertouch.profiles.v3') || localStorage.getItem('aftertouch.profiles.v2') || 'null');
+      if (data && [1,2,3].includes(data.schemaVersion) && Array.isArray(data.profiles) && data.profiles.length && data.profiles.every(validProfile)) {
         state.profiles = data.profiles.map(normalizeProfile);
         state.profileId = state.profiles.some(p=>p.id===data.activeId) ? data.activeId : state.profiles[0].id;
         state.autoApply = data.autoApply !== false;
@@ -218,10 +232,10 @@
     renderAllProfileControls();
   }
   function persistProfiles() {
-    const data={schemaVersion:2,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles)};
+    const data={schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles)};
     saveChain=saveChain.catch(()=>{}).then(async()=>{
       if(native) await invoke('save_profiles',{data});
-      else localStorage.setItem('aftertouch.profiles.v2',JSON.stringify(data));
+      else localStorage.setItem('aftertouch.profiles.v3',JSON.stringify(data));
     });
     return saveChain.then(()=>true).catch(error=>{toast(`Profile save failed: ${error}`);log(`PROFILE SAVE / ${error}`);return false;});
   }
@@ -257,7 +271,7 @@
       if (!await send({
         action:'setRemap',
         enabled: !!p.remap.enabled,
-        bindings: (p.remap.bindings||[]).map(b=>({button:+b.button,vk:+b.vk}))
+        bindings: (p.remap.bindings||[]).map(b=>({button:+b.button,vk:+b.vk,modifier:b.modifier??null,behavior:b.behavior||'hold',sequence:b.sequence||[]}))
       })) return false;
     }
     if (announce) { state.autoSuppressed=false; toast(`Sent ${p.name} settings to controller`); log(`PROFILE / ${p.name} sent`); }
@@ -318,20 +332,22 @@
     if(state.profiles.length===1){toast('Need one profile.');return;}
     state.profiles=state.profiles.filter(p=>p.id!==state.profileId); state.profileId=state.profiles[0].id; renderAllProfileControls();saveProfiles();toast('Deleted');
   });
-  function commitProfileDraft(announce=false) {
-    const name=$('#profile-name').value.trim(); if(!name){toast('Enter a name.');return;}
+  async function commitProfileDraft(announce=false) {
+    const name=$('#profile-name').value.trim(); if(!name){toast('Enter a name.');return false;}
     const matchExe=$('#profile-match').value.trim().toLowerCase();
-    if(matchExe && (!/^[\w. -]+\.exe$/.test(matchExe)||matchExe.length>80)){toast('Use a name like game.exe.');return;}
+    if(matchExe && (!/^[\w. -]+\.exe$/.test(matchExe)||matchExe.length>80)){toast('Use a name like game.exe.');return false;}
     profile().name=name.slice(0,40); profile().description=$('#profile-description').value.trim().slice(0,180); profile().matchExe=matchExe;
     profile().autoApply = $('#profile-auto-apply').checked;
     profile().remap.enabled = $('#remap-enabled').checked;
     const row=$('.profile-row.is-active strong');if(row)row.textContent=profile().name;
     $('#session-profile-name').textContent=profile().name;
     $('#save-profile').textContent='Save';
-    saveProfiles(true).then(saved=>{if(saved&&announce)toast('Saved');});
+    const saved=await saveProfiles(true);
+    if(saved&&announce)toast('Saved');
+    return saved;
   }
   $('#save-profile').addEventListener('click',()=>commitProfileDraft(true));
-  $('#apply-profile-now').addEventListener('click',()=>{commitProfileDraft(false);applyProfileHardware(true);});
+  $('#apply-profile-now').addEventListener('click',async()=>{if(await commitProfileDraft(false))await applyProfileHardware(true);});
   $$('#profile-name,#profile-description,#profile-match').forEach(el=>{
     el.addEventListener('input',()=>{$('#save-profile').textContent='Save •';});
     el.addEventListener('change',()=>commitProfileDraft(false));
@@ -340,7 +356,7 @@
   $('#remap-enabled').addEventListener('change',()=>commitProfileDraft(false));
   $('#learn-process').addEventListener('click',()=>{if(!state.lastExternalExe){toast('Focus the game first.');return;}$('#profile-match').value=state.lastExternalExe;commitProfileDraft(true);});
   $('#export-profiles').addEventListener('click',async () => {
-    const data={schemaVersion:2,activeId:state.profileId,autoApply:state.autoApply,profiles:state.profiles};
+    const data={schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:state.profiles};
     if(native) { try { const path=await invoke('export_profiles',{data}); toast(`Exported to ${path}`); } catch(error){toast(String(error));} }
     else { const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='aftertouch-profiles.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000); }
   });
@@ -348,7 +364,7 @@
   $('#import-file').addEventListener('change',async e => {
     const file=e.target.files[0]; if(!file)return;
     try { if(file.size>1_000_000)throw Error('File is too large'); const data=JSON.parse(await file.text());
-      if(!(data.schemaVersion===1||data.schemaVersion===2)||!Array.isArray(data.profiles)||!data.profiles.length||data.profiles.length>50||!data.profiles.every(validProfile))throw Error('Unsupported or invalid profile file');
+      if(![1,2,3].includes(data.schemaVersion)||!Array.isArray(data.profiles)||!data.profiles.length||data.profiles.length>50||!data.profiles.every(validProfile))throw Error('Unsupported or invalid profile file');
       if(state.profiles.length+data.profiles.length>50)throw Error('50 profile limit');
       const imported=data.profiles.map(p=>{const c=normalizeProfile(p);c.id=`import-${crypto.randomUUID()}`;c.name=c.name.slice(0,40);c.description=String(c.description||'').slice(0,180);c.tag='IMPORTED';return c;});
       state.profiles.unshift(...imported);state.profileId=imported[0].id;renderAllProfileControls();saveProfiles();toast(`Imported ${imported.length}`);
@@ -366,6 +382,7 @@
       const row = document.createElement('div');
       row.className = 'remap-row';
       const btnSelect = document.createElement('select');
+      btnSelect.setAttribute('aria-label',`Binding ${index+1} button`);
       names.forEach((name, i) => {
         const opt = document.createElement('option');
         opt.value = String(i); opt.textContent = name;
@@ -373,6 +390,7 @@
         btnSelect.append(opt);
       });
       const keySelect = document.createElement('select');
+      keySelect.setAttribute('aria-label',`Binding ${index+1} key`);
       vkChoices.forEach(choice => {
         const opt = document.createElement('option');
         opt.value = String(choice.vk); opt.textContent = choice.label;
@@ -380,24 +398,56 @@
         keySelect.append(opt);
       });
       const remove = document.createElement('button');
-      remove.type = 'button'; remove.textContent = '✕'; remove.className = 'remap-remove';
+      remove.type = 'button'; remove.textContent = '✕'; remove.className = 'remap-remove';remove.setAttribute('aria-label',`Remove binding ${index+1}`);
+      const modifierSelect=document.createElement('select');modifierSelect.className='remap-modifier';modifierSelect.setAttribute('aria-label',`Binding ${index+1} layer button`);
+      modifierSelect.add(new Option('Base layer',''));
+      names.forEach((name,i)=>{if(i!==+binding.button)modifierSelect.add(new Option(`While ${name}`,String(i)));});
+      modifierSelect.value=binding.modifier==null?'':String(binding.modifier);
+      const behaviorSelect=document.createElement('select');behaviorSelect.className='remap-behavior';behaviorSelect.setAttribute('aria-label',`Binding ${index+1} action`);
+      [['hold','Hold key'],['tap','Tap key'],['macro','Key sequence']].forEach(([value,label])=>behaviorSelect.add(new Option(label,value)));
+      behaviorSelect.value=binding.behavior||'hold';
+      const macroInput=document.createElement('input');macroInput.className='remap-macro';macroInput.type='text';macroInput.placeholder='Then: E, Space (up to five)';macroInput.maxLength=60;macroInput.setAttribute('aria-label',`Binding ${index+1} following macro keys`);
+      macroInput.value=(binding.sequence||[]).map(vk=>vkChoices.find(choice=>choice.vk===vk)?.label||String(vk)).join(', ');
+      macroInput.hidden=behaviorSelect.value!=='macro';
+      const pairTaken=(button,modifier)=>bindings.some((b,i)=>i!==index&&b.button===button&&(b.modifier??null)===modifier);
       btnSelect.addEventListener('change', () => {
         const next=+btnSelect.value;
-        if (bindings.some((b,i)=>i!==index&&b.button===next)) { toast('That button already has a binding.'); btnSelect.value=String(binding.button); return; }
-        binding.button=next; saveProfiles();
+        const modifier=binding.modifier===next?null:(binding.modifier??null);
+        if (pairTaken(next,modifier)) { toast('That button and layer already have a binding.'); btnSelect.value=String(binding.button); return; }
+        binding.button=next;binding.modifier=modifier;renderRemapEditor();saveProfiles();
       });
       keySelect.addEventListener('change', () => { binding.vk = +keySelect.value; saveProfiles(); });
+      modifierSelect.addEventListener('change',()=>{
+        const next=modifierSelect.value===''?null:+modifierSelect.value;
+        if(pairTaken(binding.button,next)){toast('That button and layer already have a binding.');modifierSelect.value=binding.modifier==null?'':String(binding.modifier);return;}
+        binding.modifier=next;saveProfiles();
+      });
+      behaviorSelect.addEventListener('change',()=>{
+        binding.behavior=behaviorSelect.value;
+        binding.sequence=binding.behavior==='macro'?(binding.sequence?.length?binding.sequence:[0x45]):[];
+        renderRemapEditor();saveProfiles();
+      });
+      macroInput.addEventListener('change',()=>{
+        const labels=macroInput.value.split(',').map(part=>part.trim().toLowerCase()).filter(Boolean);
+        const keys=labels.map(label=>vkChoices.find(choice=>choice.label.toLowerCase()===label)?.vk);
+        if(!labels.length||labels.length>5||keys.some(vk=>!vk)){toast('Enter one to five listed keys, separated by commas.');macroInput.value=(binding.sequence||[]).map(vk=>vkChoices.find(choice=>choice.vk===vk)?.label||String(vk)).join(', ');return;}
+        binding.sequence=keys;saveProfiles();
+      });
       remove.addEventListener('click', () => { profile().remap.bindings.splice(index, 1); renderRemapEditor(); saveProfiles(); });
-      row.append(btnSelect, keySelect, remove);
+      row.append(btnSelect, keySelect, remove, modifierSelect, behaviorSelect, macroInput);
       box.append(row);
     });
   }
   $('#add-remap').addEventListener('click', () => {
-    if (profile().remap.bindings.length >= 12) { toast('12 binding limit.'); return; }
-    const used=new Set(profile().remap.bindings.map(b=>b.button));
-    const button=names.findIndex((_,i)=>!used.has(i));
-    if(button<0){toast('Every button already has a binding.');return;}
-    profile().remap.bindings.push({button, vk:0x20});
+    if (profile().remap.bindings.length >= 46) { toast('46 binding limit.'); return; }
+    const used=new Set(profile().remap.bindings.map(b=>`${b.button}:${b.modifier??'base'}`));
+    let choice=null;
+    for(const modifier of [null,4,5,8,9,17,18]){
+      const button=names.findIndex((_,i)=>i!==modifier&&!used.has(`${i}:${modifier??'base'}`));
+      if(button>=0){choice={button,modifier};break;}
+    }
+    if(!choice){toast('No free binding pair.');return;}
+    profile().remap.bindings.push({...choice,vk:0x20,behavior:'hold',sequence:[]});
     renderRemapEditor(); saveProfiles();
   });
 
@@ -494,6 +544,20 @@
   $('#bridge-gain').addEventListener('input',e=>{$('#bridge-gain-value').textContent=`${e.target.value}%`;fillRange(e.target);});
   $('#bridge-gain').addEventListener('change',()=>{if(state.audioBridge)send({action:'setAudioBridge',enabled:true,gain:+$('#bridge-gain').value/100,preset:$('#bridge-preset').value});});
   $('#bridge-preset').addEventListener('change',()=>{if(state.audioBridge)send({action:'setAudioBridge',enabled:true,gain:+$('#bridge-gain').value/100,preset:$('#bridge-preset').value});});
+
+  function renderAlerts(){
+    const battery=$('#alert-low-battery');battery.textContent=`Low battery cue: ${state.lowBatteryAlert?'on':'off'}`;
+    battery.setAttribute('aria-pressed',String(state.lowBatteryAlert));battery.classList.toggle('is-active',state.lowBatteryAlert);
+    const remaining=Math.max(0,state.timerUntil-performance.now());
+    if(!remaining)state.timerUntil=0;
+    const seconds=Math.ceil(remaining/1000);
+    $('#alert-timer-status').textContent=remaining>0?`Timer · ${Math.floor(seconds/60)} min ${String(seconds%60).padStart(2,'0')} sec left`:'Timer off';
+    $('#alert-timer-cancel').disabled=!state.connected||remaining<=0;
+  }
+  $('#alert-ping').addEventListener('click',()=>send({action:'playHaptic',shape:'sine',frequency:125,attack:5,release:160,strength:26,pan:0}));
+  $('#alert-low-battery').addEventListener('click',()=>send({action:'setLowBatteryAlert',enabled:!state.lowBatteryAlert}));
+  $('#alert-timer-start').addEventListener('click',()=>send({action:'setHapticTimer',seconds:Number($('#alert-timer-minutes').value)*60}));
+  $('#alert-timer-cancel').addEventListener('click',()=>send({action:'setHapticTimer',seconds:0}));
 
   function setLightColor(hex){$('#light-color').value=hex;$('#light-hex').textContent=hex.toUpperCase();$('#light-arcs').style.setProperty('--light',hex);}
   const lightColors=['#d4a84b','#3d9b8c','#efd9a0','#5b8c7a','#c45c3e','#7ec9bc'];
@@ -616,6 +680,7 @@
   }
   $('#diag-scan').addEventListener('click',manualScan);
   $('#scan-button').addEventListener('click',manualScan);
+  $('#guide-scan').addEventListener('click',manualScan);
   $('#button-matrix').innerHTML=names.map((n,i)=>`<span data-matrix="${i}">${n}</span>`).join('');
 
   function renderDeviceList() {
@@ -645,14 +710,16 @@
     $('#photo-status').textContent=connected?`${transport} live`:'Waiting';
     $('#device-name').textContent=connected?name:'No controller';
     $('#device-subtitle').textContent=connected?`${transport} stream`:'USB or Bluetooth';
+    $('#connection-guide').hidden=connected;
     $('#diag-device-name').textContent=connected?name:'Waiting';
     $('#diag-transport').textContent=connected?`${transport} / 054C`:'USB / Bluetooth';
     $('#diag-firmware').textContent=connected?(firmware||'Firmware unknown'):'Firmware —';
     $('#owner-status').textContent=connected?'Core writer':'No pad';
     $('#owner-square').classList.toggle('is-live',connected);
-    $$('#apply-triggers,#reset-effects,#touch-mouse-toggle,#gyro-aim-toggle,#xinput-toggle,#send-light,#release-light,#diag-reset,#quick-reset,#apply-profile-now').forEach(b=>b.disabled=!connected);
-    if(!connected){if(state.gyroCalibration)clearTimeout(state.gyroCalibration.timer);state.gyroCalibration=null;state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderInput();}
-    renderBridge();
+    $$('#apply-triggers,#reset-effects,#touch-mouse-toggle,#gyro-aim-toggle,#xinput-toggle,#send-light,#release-light,#diag-reset,#quick-reset,#apply-profile-now,#alert-ping,#alert-low-battery,#alert-timer-start').forEach(b=>b.disabled=!connected);
+    if(!connected){clearPadFocus();if(state.gyroCalibration)clearTimeout(state.gyroCalibration.timer);state.gyroCalibration=null;state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderInput();}
+    if(!connected){state.lowBatteryAlert=false;state.timerUntil=0;}
+    renderAlerts();renderBridge();
     renderStickButtons();
     renderSession();
   }
@@ -825,6 +892,12 @@
     }else if(event.type==='inputEffects'){
       state.inputEffectsActive=!!event.enabled;
       $('#click-status').textContent=event.enabled?'Armed · release R2 to rearm':'Not armed';
+    }else if(event.type==='hapticAlertStatus'){
+      if(typeof event.lowBattery==='boolean')state.lowBatteryAlert=event.lowBattery;
+      if(typeof event.timerSeconds==='number')state.timerUntil=event.timerSeconds?performance.now()+event.timerSeconds*1000:0;
+      renderAlerts();
+    }else if(event.type==='hapticAlert'){
+      toast(event.message||'Haptic alert');log(event.message||'Haptic alert');
     }else if(event.type==='telemetryStatus'){
       state.telemetryOn=!!event.enabled;
       if(event.port)$('#telemetry-port').value=event.port;
@@ -889,6 +962,7 @@
       state.leaseUntil=0;
       state.audioBridge=false;state.audioRoute='off';renderBridge();
       state.inputEffectsActive=false;$('#click-status').textContent='Not armed';
+      state.lowBatteryAlert=false;state.timerUntil=0;renderAlerts();
       state.telemetryOn=false;renderTelemetry();
       renderSession();
     }else if(event.type==='core'){
@@ -898,11 +972,12 @@
         : 'Core: ready';
       $('#core-status').classList.toggle('is-warn', event.status === 'restarting' || event.status === 'stopped');
       if (event.message) log(event.message);
+      if(event.status==='ready')reportUiFocus();
     }else if(event.type==='notice'||event.type==='error'){
       toast(event.message);log(event.message);
     }
   }
-  let lastCanvas=0;function frame(now){if(now-lastCanvas>35){drawActivity();if(state.currentView==='haptics'||now<state.playUntil)drawWave(now);renderSession();updateStickTest(now);if(state.telemetryOn&&state.telemetryLast&&now-state.telemetryLast>1500)$('#telemetry-status').textContent='Listening · waiting for Data Out';lastCanvas=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
+  let lastCanvas=0;function frame(now){if(now-lastCanvas>35){drawActivity();if(state.currentView==='haptics'||now<state.playUntil)drawWave(now);renderSession();if(state.currentView==='haptics'&&state.timerUntil)renderAlerts();updateStickTest(now);if(state.telemetryOn&&state.telemetryLast&&now-state.telemetryLast>1500)$('#telemetry-status').textContent='Listening · waiting for Data Out';lastCanvas=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
   const keyMap={j:2,k:0,l:1,i:3,q:4,e:5,z:6,c:7,ArrowUp:12,ArrowDown:13,ArrowLeft:14,ArrowRight:15};
   const held=new Set();window.addEventListener('keydown',e=>{if(state.connected||e.target.matches('input,textarea,button,select'))return;if(!(e.key in keyMap))return;held.add(e.key);state.buttons[keyMap[e.key]]=1;renderInput();});
   window.addEventListener('keyup',e=>{if(!(e.key in keyMap)||state.connected)return;held.delete(e.key);state.buttons[keyMap[e.key]]=0;renderInput();});
@@ -912,7 +987,7 @@
     renderAllProfileControls();setLightColor('#d4a84b');setConnected(false);renderInput();renderDeviceList();renderGestureSwitch();renderXinput();navigate(location.hash.slice(1)||'live');
     await loadProfiles();
     if(native){
-      try{await window.__TAURI__.event.listen('core-event',e=>handleEvent(e.payload));await send({action:'listDevices'});log('Core ready');$('#core-status').textContent='Core: ready';}
+      try{await window.__TAURI__.event.listen('core-event',e=>handleEvent(e.payload));await send({action:'listDevices'});reportUiFocus();log('Core ready');$('#core-status').textContent='Core: ready';}
       catch(error){toast(`Core connection failed: ${error}`);log(String(error));$('#core-status').textContent='Core: error';$('#core-status').classList.add('is-warn');}
     }else{$('#core-status').textContent='Core: browser preview';log('Browser preview');}
   }

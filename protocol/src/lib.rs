@@ -31,7 +31,7 @@ impl TriggerSetting {
     pub fn validate(&self) -> Result<(), &'static str> {
         if !matches!(
             self.mode.as_str(),
-            "off" | "resistance" | "weapon" | "vibration"
+            "off" | "resistance" | "weapon" | "vibration" | "bow"
         ) {
             return Err("Unknown trigger mode");
         }
@@ -404,6 +404,23 @@ pub fn encode_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str
             block[3] =
                 ((setting.strength / 100.0 * MAX_TRIGGER_LEVEL as f32).round() as u8).max(1) - 1;
         }
+        "bow" => {
+            // Unofficial mode 0x22. Choose a start and peak from the authored curve;
+            // keep both force components below our normal six-level ceiling.
+            let peak = (1..=8)
+                .max_by(|&a, &b| setting.curve[a].total_cmp(&setting.curve[b]))
+                .unwrap_or(8);
+            let start = (0..peak)
+                .find(|&i| setting.curve[i] >= setting.curve[peak] * 0.15)
+                .unwrap_or(0);
+            let mask = (1u16 << start) | (1u16 << peak);
+            let force = ((setting.strength / 100.0 * MAX_TRIGGER_LEVEL as f32).round() as u8)
+                .clamp(1, MAX_TRIGGER_LEVEL);
+            let snap = (force / 2).max(1);
+            block[0] = 0x22;
+            block[1..3].copy_from_slice(&mask.to_le_bytes());
+            block[3] = (force - 1) | ((snap - 1) << 3);
+        }
         _ => unreachable!(),
     }
     Ok(block)
@@ -560,6 +577,17 @@ mod tests {
         assert_eq!(rumble_flags(Some(0x0214), false), (0x03, 0));
         assert_eq!(rumble_flags(Some(0x0215), false), (0x02, 0x04));
         assert_eq!(rumble_flags(None, true), (0x02, 0x04));
+    }
+
+    #[test]
+    fn bow_uses_two_zones_and_bounded_force() {
+        let mut setting = linear("bow");
+        setting.strength = 100.0;
+        let encoded = encode_trigger(&setting).unwrap();
+        assert_eq!(encoded[0], 0x22);
+        assert_eq!(u16::from_le_bytes([encoded[1], encoded[2]]).count_ones(), 2);
+        assert!(encoded[3] & 7 < MAX_TRIGGER_LEVEL);
+        assert!(encoded[3] >> 3 < MAX_TRIGGER_LEVEL);
     }
 
     #[test]

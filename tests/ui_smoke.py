@@ -42,11 +42,13 @@ def main():
         page.goto((ROOT / "ui" / "index.html").as_uri())
         page.wait_for_function("!!window.coreHandler")
         assert page.locator(".controller-photo").is_visible()
+        assert page.locator("#connection-guide").is_visible()
         assert page.locator("#theme-select option").count() == 4
         for palette in ("cinder", "tide", "verdigris", "dusk"):
             page.locator("#theme-select").select_option(palette)
             assert page.locator("body").get_attribute("data-theme") == palette
         page.evaluate("window.coreHandler({type:'device',connected:true,name:'DualSense',transport:'USB',path:'test'})")
+        assert not page.locator("#connection-guide").is_visible()
         page.evaluate("""window.coreHandler({type:'input',input:{
           buttons:[1,...Array(22).fill(0)],axes:[0.02,-0.01,0.03,0],touch:[null,null],
           gyro:[0,0,0],battery:75,charging:false,fullReport:true}})""")
@@ -63,6 +65,17 @@ def main():
         pad_event(page)
         pad_event(page, 0)
         assert page.locator("#curve-side-label").inner_text() == "R2"
+        for _ in range(40):
+            pad_event(page)
+            pad_event(page, 13)
+            if page.locator('.pad-focused[data-point]').count():
+                break
+        assert page.locator('.pad-focused[data-point]').count() == 1
+        point = page.locator('.pad-focused[data-point]')
+        old_cy = float(point.get_attribute('cy'))
+        pad_event(page)
+        pad_event(page, 12)
+        assert float(page.locator('.pad-focused[data-point]').get_attribute('cy')) < old_cy
         pad_event(page)
         pad_event(page, 1)
         assert page.locator("#live").is_visible()
@@ -74,6 +87,18 @@ def main():
         assert page.locator("body").get_attribute("data-theme") == "cinder"
         page.locator("#theme-select").select_option("dusk")
         page.locator('[data-view="haptics"]').click()
+        page.locator("#alert-low-battery").click()
+        assert page.evaluate("window.sent.at(-1).action") == "setLowBatteryAlert"
+        page.evaluate("window.coreHandler({type:'hapticAlertStatus',lowBattery:true})")
+        assert page.locator("#alert-low-battery").get_attribute("aria-pressed") == "true"
+        page.locator("#alert-timer-minutes").select_option("1")
+        page.locator("#alert-timer-start").click()
+        assert page.evaluate("window.sent.at(-1).seconds") == 60
+        page.evaluate("window.coreHandler({type:'hapticAlertStatus',timerSeconds:60})")
+        assert page.locator("#alert-timer-cancel").is_enabled()
+        page.locator("#alert-timer-cancel").click()
+        assert page.evaluate("window.sent.at(-1).seconds") == 0
+        page.evaluate("window.coreHandler({type:'hapticAlertStatus',timerSeconds:0})")
         assert page.locator("#bridge-toggle").is_enabled()
         page.locator("#bridge-toggle").click()
         assert page.evaluate("window.sent.at(-1).action") == "setAudioBridge"
@@ -91,6 +116,10 @@ def main():
         assert page.locator("#race-slip").inner_text().lower() == "brake slip estimated"
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "aftertouch-telemetry-new.png"), full_page=True)
         page.locator('[data-view="triggers"]').click()
+        page.locator('[data-mode="bow"]').click()
+        page.locator("#apply-triggers").click()
+        assert page.evaluate("window.sent.some(c=>c.action==='applyTriggers' && (c.left?.mode==='bow'||c.right?.mode==='bow'))")
+        page.locator('[data-mode="resistance"]').click()
         page.locator("#click-enabled").check()
         page.locator("#click-threshold").fill("78")
         page.locator("#apply-triggers").click()
@@ -113,11 +142,21 @@ def main():
         page.evaluate("window.coreHandler({type:'device',connected:false})")
         assert page.locator("#start-drift").is_disabled()
         page.locator('[data-view="profiles"]').click()
+        page.evaluate("window.coreHandler({type:'device',connected:true,name:'DualSense',transport:'USB',path:'test'})")
+        page.locator("#profile-name").fill("")
+        before_apply = page.evaluate("window.sent.length")
+        page.locator("#apply-profile-now").click()
+        assert page.evaluate("window.sent.length") == before_apply
+        page.locator("#profile-name").fill("Standard")
         page.locator("#add-remap").click()
         page.locator("#add-remap").click()
         buttons = page.locator("#remap-bindings select:first-child")
         assert buttons.count() == 2 and buttons.nth(0).input_value() != buttons.nth(1).input_value()
-        page.wait_for_function("!!window.saved")
+        page.locator(".remap-row .remap-modifier").first.select_option("4")
+        page.locator(".remap-row .remap-behavior").first.select_option("macro")
+        page.locator(".remap-row .remap-macro").first.fill("Q, R")
+        page.locator("#profile-name").click()
+        page.wait_for_function("window.saved?.schemaVersion===3 && window.saved.profiles.some(p=>p.remap.bindings.some(b=>b.behavior==='macro'&&b.sequence?.length===2))")
         page.wait_for_timeout(450)
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "aftertouch-profiles-check.png"), full_page=True)
         for view in ("live", "triggers", "haptics", "touch", "lights", "profiles", "diagnostics"):

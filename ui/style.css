@@ -233,6 +233,11 @@ main{padding:28px 36px 36px}
 .telemetry-main small{color:var(--gold);font:600 10px var(--body);letter-spacing:.1em;text-transform:uppercase}
 .telemetry-main strong{display:block;font:600 clamp(24px,2.8vw,36px)/1.05 var(--display);margin:10px 0 12px;word-break:break-word}
 .telemetry-main>span{color:rgba(243,236,222,.55);font:12px var(--body)}
+.connection-guide{padding:15px 18px;border-bottom:1px solid rgba(212,168,75,.28);background:rgba(8,15,25,.35)}
+.connection-guide strong{display:block;color:var(--gold-soft);font:600 19px var(--display)}
+.connection-guide p{margin:6px 0 12px;color:rgba(243,236,222,.78);font:12px/1.5 var(--body)}
+.connection-guide button{border:1px solid var(--gold);background:transparent;color:var(--gold-soft);border-radius:5px;padding:7px 12px;font:700 11px var(--body);text-transform:uppercase}
+.connection-guide button:hover{background:rgba(212,168,75,.16)}
 .battery-band{padding:16px 18px;border-bottom:1px solid rgba(212,168,75,.2)}
 .battery-band>div:first-child{display:flex;justify-content:space-between;align-items:center;color:rgba(243,236,222,.6);font:600 10px var(--body);text-transform:uppercase}
 .battery-band strong{color:var(--cream);font:700 30px var(--display)}
@@ -351,6 +356,17 @@ input[type=range]::-webkit-slider-thumb{appearance:none;width:14px;height:20px;b
 .bridge-controls select{border:1px solid var(--line);border-radius:4px;background:var(--parchment);color:var(--ink);padding:9px 10px;font:13px var(--body);margin-bottom:8px}
 .bridge-controls input{width:100%;margin:0 0 9px;accent-color:var(--teal)}
 .bridge-controls button{width:100%}
+.alert-panel{margin-top:18px;overflow:hidden}
+.alert-body{display:grid;grid-template-columns:minmax(0,1fr) minmax(220px,300px);gap:36px;padding:24px 28px;background:linear-gradient(125deg,rgba(212,168,75,.09),transparent 58%),var(--parchment-2)}
+.alert-body h2{margin:0 0 8px;font:600 clamp(23px,2.5vw,32px) var(--display);color:var(--ink)}
+.alert-body p{max-width:650px;margin:0;color:var(--ink-soft);font:13px/1.55 var(--body)}
+#alert-timer-status{display:inline-block;margin-top:18px;padding:6px 10px;border-left:3px solid var(--teal);background:rgba(61,155,140,.12);font-weight:700;color:var(--ink)}
+.alert-controls{display:flex;flex-direction:column;gap:8px;align-self:center}
+.alert-controls>label{text-transform:uppercase;letter-spacing:.08em;font:700 11px var(--body);color:var(--ink-soft);margin-top:6px}
+.alert-controls select{border:1px solid var(--line);border-radius:4px;background:var(--parchment);color:var(--ink);padding:9px 10px;font:13px var(--body)}
+.alert-controls .quiet-action{background:var(--parchment);border-color:var(--gold-deep);color:var(--ink)}
+.alert-controls .quiet-action:hover:not(:disabled){background:var(--gold-soft)}
+.alert-timer-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .input-click-block{border-top:1px solid rgba(212,168,75,.3);margin-top:18px;padding-top:16px}
 .input-click-block h3{font:600 21px var(--display);color:var(--cream);margin:0 0 6px}
 .input-click-block p{font:12px/1.45 var(--body);color:rgba(243,236,222,.58);margin:0 0 10px}
@@ -462,6 +478,9 @@ input[type=range]::-webkit-slider-thumb{appearance:none;width:14px;height:20px;b
 .remap-bindings{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
 .remap-row{display:grid;grid-template-columns:1fr 1fr 32px;gap:5px}
 .remap-row select{background:rgba(0,0,0,.28);color:var(--cream);border:1px solid rgba(212,168,75,.35);border-radius:6px;padding:7px;font:12px var(--body)}
+.remap-row .remap-modifier{grid-column:1}
+.remap-row .remap-behavior{grid-column:2}
+.remap-row .remap-macro{grid-column:1/-1;background:rgba(0,0,0,.28);color:var(--cream);border:1px solid rgba(212,168,75,.35);border-radius:6px;padding:7px;font:12px var(--body)}
 .remap-remove{border:1px solid rgba(212,168,75,.35);border-radius:6px;background:transparent;color:var(--cream)}
 .remap-empty{color:rgba(243,236,222,.45);font:12px var(--body);margin:0}
 
@@ -567,6 +586,7 @@ body[data-theme="cinder"] .workspace,body[data-theme="tide"] .workspace,body[dat
 @media(max-width:900px){
   .telemetry-body{grid-template-columns:1fr}
   .bridge-body{grid-template-columns:1fr;gap:20px}
+  .alert-body{grid-template-columns:1fr;gap:20px}
   .live-layout,.split-layout,.haptic-grid,.light-layout,.profile-layout,.diag-layout{grid-template-columns:1fr}
   .session-rail{grid-template-columns:1fr 1fr;padding:0 16px}
   .session-rail>button,.session-rail>div{border-bottom:1px solid rgba(139,115,85,.35)}

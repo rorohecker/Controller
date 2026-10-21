@@ -1,7 +1,7 @@
 //! Gyro aim, touch gestures, and button→keyboard remapping via SendInput.
 
 use aftertouch_protocol::{InputState, TouchPoint};
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN,
@@ -125,13 +125,39 @@ impl GyroAimMapper {
 pub struct RemapBinding {
     pub button: u8,
     pub vk: u16,
+    pub modifier: Option<u8>,
+    pub behavior: RemapBehavior,
+    pub sequence: Vec<u16>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemapBehavior {
+    Hold,
+    Tap,
+    Macro,
+}
+
+impl RemapBehavior {
+    pub fn from_label(value: &str) -> Option<Self> {
+        match value {
+            "hold" => Some(Self::Hold),
+            "tap" => Some(Self::Tap),
+            "macro" => Some(Self::Macro),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Default)]
 pub struct RemapMapper {
     enabled: bool,
+    suspended: bool,
     bindings: Vec<RemapBinding>,
     keys_down: HashSet<u16>,
+    taps_down: HashSet<(u8, Option<u8>)>,
+    macro_queue: VecDeque<u16>,
+    macro_held: Option<(u16, Instant)>,
+    next_macro_at: Option<Instant>,
 }
 
 impl RemapMapper {
@@ -143,38 +169,140 @@ impl RemapMapper {
         if self.enabled == enabled && self.bindings == bindings {
             return;
         }
-        for vk in self.keys_down.drain() {
-            send_key(vk, true);
-        }
+        self.release_all();
         self.enabled = enabled;
         self.bindings = bindings;
     }
 
-    pub fn update(&mut self, input: &InputState) {
-        if !self.enabled {
+    pub fn set_suspended(&mut self, suspended: bool) {
+        if self.suspended == suspended {
             return;
         }
+        if suspended {
+            self.release_all();
+        }
+        self.suspended = suspended;
+    }
+
+    fn release_all(&mut self) {
+        for vk in self.keys_down.drain() {
+            send_key(vk, true);
+        }
+        if let Some((vk, _)) = self.macro_held.take() {
+            send_key(vk, true);
+        }
+        self.taps_down.clear();
+        self.macro_queue.clear();
+        self.next_macro_at = None;
+    }
+
+    pub fn update(&mut self, input: &InputState) {
+        if !self.enabled || self.suspended {
+            return;
+        }
+        let selected = self.active_bindings(input);
         let active = self.active_keys(input);
         for vk in self.keys_down.difference(&active) {
-            send_key(*vk, true);
+            if self.macro_held.is_none_or(|(held, _)| held != *vk) {
+                send_key(*vk, true);
+            }
         }
         for vk in active.difference(&self.keys_down) {
             send_key(*vk, false);
         }
         self.keys_down = active;
+        let mut taps_down = HashSet::new();
+        for index in selected {
+            let binding = &self.bindings[index];
+            if binding.behavior == RemapBehavior::Hold {
+                continue;
+            }
+            let identity = (binding.button, binding.modifier);
+            taps_down.insert(identity);
+            if self.taps_down.contains(&identity) {
+                continue;
+            }
+            if binding.behavior == RemapBehavior::Tap {
+                if !self.keys_down.contains(&binding.vk) {
+                    tap_key(binding.vk);
+                }
+            } else if self.macro_queue.len() + binding.sequence.len() < 32 {
+                self.macro_queue.push_back(binding.vk);
+                self.macro_queue.extend(binding.sequence.iter().copied());
+            }
+        }
+        self.taps_down = taps_down;
+        self.advance_macro();
+    }
+
+    pub fn tick(&mut self) {
+        if self.enabled && !self.suspended {
+            self.advance_macro();
+        }
+    }
+
+    fn active_bindings(&self, input: &InputState) -> Vec<usize> {
+        let active_chords: Vec<&RemapBinding> = self
+            .bindings
+            .iter()
+            .filter(|binding| {
+                binding
+                    .modifier
+                    .is_some_and(|modifier| input.buttons[modifier as usize] > 0.5)
+                    && input.buttons[binding.button as usize] > 0.5
+            })
+            .collect();
+        let chorded: HashSet<u8> = active_chords.iter().map(|binding| binding.button).collect();
+        let engaged_modifiers: HashSet<u8> = active_chords
+            .iter()
+            .filter_map(|binding| binding.modifier)
+            .collect();
+        self.bindings
+            .iter()
+            .enumerate()
+            .filter(|(_, binding)| {
+                input.buttons[binding.button as usize] > 0.5
+                    && (binding.modifier.is_some() || !engaged_modifiers.contains(&binding.button))
+                    && binding
+                        .modifier
+                        .map_or(!chorded.contains(&binding.button), |modifier| {
+                            input.buttons[modifier as usize] > 0.5
+                        })
+            })
+            .map(|(index, _)| index)
+            .collect()
     }
 
     fn active_keys(&self, input: &InputState) -> HashSet<u16> {
-        self.bindings
+        self.active_bindings(input)
             .iter()
-            .filter(|binding| {
-                input
-                    .buttons
-                    .get(binding.button as usize)
-                    .is_some_and(|value| *value > 0.5)
-            })
+            .map(|&index| &self.bindings[index])
+            .filter(|binding| binding.behavior == RemapBehavior::Hold)
             .map(|binding| binding.vk)
             .collect()
+    }
+
+    fn advance_macro(&mut self) {
+        let now = Instant::now();
+        if let Some((vk, until)) = self.macro_held {
+            if now < until {
+                return;
+            }
+            if !self.keys_down.contains(&vk) {
+                send_key(vk, true);
+            }
+            self.macro_held = None;
+            self.next_macro_at = Some(now + Duration::from_millis(20));
+        }
+        if self.next_macro_at.is_some_and(|at| now < at) {
+            return;
+        }
+        if let Some(vk) = self.macro_queue.pop_front() {
+            if !self.keys_down.contains(&vk) {
+                send_key(vk, false);
+            }
+            self.macro_held = Some((vk, now + Duration::from_millis(45)));
+        }
     }
 }
 
@@ -440,8 +568,20 @@ mod tests {
         let mapper = RemapMapper {
             enabled: true,
             bindings: vec![
-                RemapBinding { button: 0, vk: 65 },
-                RemapBinding { button: 1, vk: 65 },
+                RemapBinding {
+                    button: 0,
+                    vk: 65,
+                    modifier: None,
+                    behavior: RemapBehavior::Hold,
+                    sequence: vec![],
+                },
+                RemapBinding {
+                    button: 1,
+                    vk: 65,
+                    modifier: None,
+                    behavior: RemapBehavior::Hold,
+                    sequence: vec![],
+                },
             ],
             ..Default::default()
         };
@@ -456,6 +596,46 @@ mod tests {
         report[8] = 0x08;
         let none = aftertouch_protocol::parse_input(&report).unwrap();
         assert!(mapper.active_keys(&none).is_empty());
+    }
+
+    #[test]
+    fn held_modifier_selects_layer_binding_over_base() {
+        let mapper = RemapMapper {
+            enabled: true,
+            bindings: vec![
+                RemapBinding {
+                    button: 0,
+                    vk: 65,
+                    modifier: None,
+                    behavior: RemapBehavior::Hold,
+                    sequence: vec![],
+                },
+                RemapBinding {
+                    button: 0,
+                    vk: 66,
+                    modifier: Some(4),
+                    behavior: RemapBehavior::Hold,
+                    sequence: vec![],
+                },
+                RemapBinding {
+                    button: 4,
+                    vk: 67,
+                    modifier: None,
+                    behavior: RemapBehavior::Hold,
+                    sequence: vec![],
+                },
+            ],
+            ..Default::default()
+        };
+        let mut report = [0u8; 64];
+        report[0] = 0x01;
+        let mut input = aftertouch_protocol::parse_input(&report).unwrap();
+        input.buttons[0] = 1.0;
+        assert_eq!(mapper.active_keys(&input), HashSet::from([65]));
+        input.buttons[4] = 1.0;
+        assert_eq!(mapper.active_keys(&input), HashSet::from([66]));
+        input.buttons[0] = 0.0;
+        assert_eq!(mapper.active_keys(&input), HashSet::from([67]));
     }
 
     #[test]

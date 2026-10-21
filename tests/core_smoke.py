@@ -63,9 +63,12 @@ def main():
             except queue.Empty:
                 pass
         curve = [i / 10 for i in range(11)]
+        process.stdin.write(json.dumps({"action": "setRemap", "enabled": False,
+                                        "bindings": [{"button": 0, "vk": 65, "modifier": 4,
+                                                      "behavior": "macro", "sequence": [66]}]}) + "\n")
         process.stdin.write(json.dumps({"action": "applyTriggers",
                                         "left": {"mode": "resistance", "strength": 10, "curve": curve},
-                                        "right": {"mode": "off", "strength": 0, "curve": [0] * 11}}) + "\n")
+                                        "right": {"mode": "bow", "strength": 10, "curve": curve}}) + "\n")
         process.stdin.write('{"action":"renewTriggers"}\n')
         process.stdin.write('{"action":"reset"}\n')
         process.stdin.flush()
@@ -81,6 +84,7 @@ def main():
         assert all("sequenceGaps" in m and "invalidReports" in m for m in rates)
         assert any(m.get("type") == "gyroAim" and m.get("enabled") is True for m in seen)
         assert any(m.get("type") == "gyroAim" and m.get("enabled") is False for m in seen)
+        assert any(m.get("type") == "remap" and m.get("enabled") is False for m in seen)
         assert any(m.get("type") == "triggerLease" and m.get("active") is True for m in seen)
         assert any(m.get("type") == "safetyReset" for m in seen)
         assert any(m.get("type") == "triggerLease" and m.get("active") is False for m in seen)

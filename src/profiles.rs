@@ -116,6 +116,16 @@ struct RemapSettings {
 struct RemapBinding {
     button: u8,
     vk: u16,
+    #[serde(default)]
+    modifier: Option<u8>,
+    #[serde(default = "default_hold")]
+    behavior: String,
+    #[serde(default)]
+    sequence: Vec<u16>,
+}
+
+fn default_hold() -> String {
+    "hold".into()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -151,11 +161,11 @@ fn path() -> Result<PathBuf, String> {
 
 fn validate(data: Value) -> Result<Archive, String> {
     let mut archive: Archive = serde_json::from_value(data).map_err(|e| e.to_string())?;
-    // Accept schema 1 (legacy) and 2 (auto-apply / gyro / remap fields).
-    if archive.schema_version == 1 {
-        archive.schema_version = 2;
+    // Older archives gain explicit remap layer and action defaults.
+    if matches!(archive.schema_version, 1 | 2) {
+        archive.schema_version = 3;
     }
-    if archive.schema_version != 2 || archive.profiles.is_empty() || archive.profiles.len() > 50 {
+    if archive.schema_version != 3 || archive.profiles.is_empty() || archive.profiles.len() > 50 {
         return Err("Unsupported profile schema or profile count".into());
     }
     if !archive.profiles.iter().any(|p| p.id == archive.active_id) {
@@ -203,9 +213,18 @@ fn validate(data: Value) -> Result<Archive, String> {
             return Err("Input-driven trigger settings are out of range".into());
         }
         let mut mapped_buttons = std::collections::HashSet::new();
-        if p.remap.bindings.len() > 23
+        if p.remap.bindings.len() > 46
             || p.remap.bindings.iter().any(|b| {
-                b.button >= 23 || b.vk == 0 || b.vk > 255 || !mapped_buttons.insert(b.button)
+                b.button >= 23
+                    || b.vk == 0
+                    || b.vk > 255
+                    || b.modifier
+                        .is_some_and(|modifier| modifier >= 23 || modifier == b.button)
+                    || !matches!(b.behavior.as_str(), "hold" | "tap" | "macro")
+                    || (b.behavior == "macro" && (b.sequence.is_empty() || b.sequence.len() > 5))
+                    || (b.behavior != "macro" && !b.sequence.is_empty())
+                    || b.sequence.iter().any(|&vk| vk == 0 || vk > 255)
+                    || !mapped_buttons.insert((b.button, b.modifier))
             })
         {
             return Err("Remap bindings are invalid".into());
@@ -333,11 +352,32 @@ mod tests {
     }
 
     #[test]
-    fn schema_one_migrates_to_two() {
+    fn layers_allow_same_button_but_reject_unsafe_sequences() {
         let mut value = sample_profile();
-        value["schemaVersion"] = 1.into();
-        let saved = serde_json::to_value(validate(value).unwrap()).unwrap();
-        assert_eq!(saved["schemaVersion"], 2);
+        value["profiles"][0]["remap"]["bindings"] = serde_json::json!([
+            {"button": 0, "vk": 65},
+            {"button": 0, "vk": 66, "modifier": 4, "behavior": "macro", "sequence": [67, 68]}
+        ]);
+        assert!(validate(value.clone()).is_ok());
+        value["profiles"][0]["remap"]["bindings"][1]["modifier"] = 0.into();
+        assert!(validate(value.clone()).is_err());
+        value["profiles"][0]["remap"]["bindings"][1]["modifier"] = 4.into();
+        value["profiles"][0]["remap"]["bindings"][1]["sequence"] = serde_json::json!([0]);
+        assert!(validate(value).is_err());
+    }
+
+    #[test]
+    fn old_schemas_migrate_to_three() {
+        let mut value = sample_profile();
+        for schema in [1, 2] {
+            value["schemaVersion"] = schema.into();
+            let saved = serde_json::to_value(validate(value.clone()).unwrap()).unwrap();
+            assert_eq!(saved["schemaVersion"], 3);
+            assert_eq!(
+                saved["profiles"][0]["remap"]["bindings"],
+                serde_json::json!([])
+            );
+        }
     }
 
     #[test]

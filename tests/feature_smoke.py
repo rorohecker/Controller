@@ -58,6 +58,14 @@ def main():
         send("setInputEffects", enabled=False, threshold=0.95, strength=10)
         until(lambda e: e.get("type") == "inputEffects" and e.get("enabled") is False)
 
+        send("setLowBatteryAlert", enabled=True)
+        until(lambda e: e.get("type") == "hapticAlertStatus" and e.get("lowBattery") is True)
+        send("setHapticTimer", seconds=1)
+        until(lambda e: e.get("type") == "hapticAlertStatus" and e.get("timerSeconds") == 1)
+        until(lambda e: e.get("type") == "hapticAlert" and "timer" in e.get("message", "").lower(), 3)
+        send("setLowBatteryAlert", enabled=False)
+        until(lambda e: e.get("type") == "hapticAlertStatus" and e.get("lowBattery") is False)
+
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
             sock.bind(("127.0.0.1", 0))
             port = sock.getsockname()[1]

@@ -8,8 +8,8 @@ use crate::{
     audio_haptics::{AudioEngine, VoiceClip},
     haptics::HapticClip,
     input_map::{
-        GyroActivation, GyroAimConfig, GyroAimMapper, MouseMapper, RemapBinding, RemapMapper,
-        TouchCue,
+        GyroActivation, GyroAimConfig, GyroAimMapper, MouseMapper, RemapBehavior, RemapBinding,
+        RemapMapper, TouchCue,
     },
     processes,
     telemetry::{self, ForzaBridge, TelemetryCue},
@@ -66,6 +66,9 @@ pub enum DeviceCommand {
         #[serde(default)]
         bindings: Vec<RemapBindingDto>,
     },
+    SetUiFocused {
+        focused: bool,
+    },
     SetXinput {
         enabled: bool,
     },
@@ -93,6 +96,12 @@ pub enum DeviceCommand {
         threshold: f32,
         strength: u8,
     },
+    SetLowBatteryAlert {
+        enabled: bool,
+    },
+    SetHapticTimer {
+        seconds: u32,
+    },
     Rumble {
         left: u8,
         right: u8,
@@ -107,6 +116,16 @@ pub enum DeviceCommand {
 pub struct RemapBindingDto {
     pub button: u8,
     pub vk: u16,
+    #[serde(default)]
+    pub modifier: Option<u8>,
+    #[serde(default = "default_remap_behavior")]
+    pub behavior: String,
+    #[serde(default)]
+    pub sequence: Vec<u16>,
+}
+
+fn default_remap_behavior() -> String {
+    "hold".into()
 }
 
 fn default_sens() -> f32 {
@@ -147,6 +166,9 @@ struct Connected {
     last_rumble: Option<[u8; 2]>,
     input_effect: Option<InputEffect>,
     input_effect_until: Option<Instant>,
+    low_battery_alert: bool,
+    low_battery_latched: bool,
+    haptic_timer: Option<Instant>,
 }
 
 struct InputEffect {
@@ -156,6 +178,24 @@ struct InputEffect {
 }
 
 impl Connected {
+    fn play_feedback(
+        &mut self,
+        shape: &str,
+        frequency: u16,
+        attack: u16,
+        release: u16,
+        strength: u8,
+        pan: i16,
+    ) {
+        let voice = VoiceClip::new(shape, frequency, attack, release, strength, pan);
+        if matches!(self.transport, BusType::Usb) && self.audio.play(voice).is_ok() {
+            return;
+        }
+        let fallback = HapticClip::new(shape.into(), frequency, attack, release, strength, pan);
+        self.rumble_until = Some(Instant::now() + fallback.duration());
+        self.haptic = Some(fallback);
+    }
+
     fn write(&mut self, report: [u8; protocol::USB_OUTPUT_LEN]) -> Result<(), String> {
         if matches!(self.transport, BusType::Bluetooth) {
             let bt = protocol::bt_report(&report, self.sequence);
@@ -211,6 +251,9 @@ impl Connected {
         self.audio.stop();
         self.input_effect = None;
         self.input_effect_until = None;
+        self.low_battery_alert = false;
+        self.low_battery_latched = false;
+        self.haptic_timer = None;
         if !(self.trigger_active || self.light_active || self.rumble_active) {
             return Ok(());
         }
@@ -466,6 +509,9 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     last_rumble: None,
                     input_effect: None,
                     input_effect_until: None,
+                    low_battery_alert: false,
+                    low_battery_latched: false,
+                    haptic_timer: None,
                 }));
             }
             Err(error) => last_error = Some(error.to_string()),
@@ -624,6 +670,10 @@ fn handle_command(
             );
             return true;
         }
+        DeviceCommand::SetUiFocused { focused } => {
+            remap.set_suspended(focused);
+            return true;
+        }
         DeviceCommand::SetTouchGestures { enabled } => {
             if enabled && (device.is_none() || !mouse.enabled()) {
                 emit(
@@ -702,14 +752,24 @@ fn handle_command(
                 return true;
             }
             let mut seen = std::collections::HashSet::new();
-            if bindings.len() > 23
-                || bindings
-                    .iter()
-                    .any(|b| b.button >= 23 || b.vk == 0 || b.vk > 255 || !seen.insert(b.button))
+            if bindings.len() > 46
+                || bindings.iter().any(|b| {
+                    b.button >= 23
+                        || b.vk == 0
+                        || b.vk > 255
+                        || b.modifier
+                            .is_some_and(|modifier| modifier >= 23 || modifier == b.button)
+                        || RemapBehavior::from_label(&b.behavior).is_none()
+                        || (b.behavior == "macro"
+                            && (b.sequence.is_empty() || b.sequence.len() > 5))
+                        || (b.behavior != "macro" && !b.sequence.is_empty())
+                        || b.sequence.iter().any(|&vk| vk == 0 || vk > 255)
+                        || !seen.insert((b.button, b.modifier))
+                })
             {
                 emit(
                     proxy,
-                    json!({"type":"error","message":"Remap bindings must use distinct buttons and valid Windows keys."}),
+                    json!({"type":"error","message":"Remap bindings need distinct button/layer pairs and valid key actions."}),
                 );
                 return true;
             }
@@ -718,6 +778,9 @@ fn handle_command(
                 .map(|b| RemapBinding {
                     button: b.button,
                     vk: b.vk,
+                    modifier: b.modifier,
+                    behavior: RemapBehavior::from_label(&b.behavior).unwrap_or(RemapBehavior::Hold),
+                    sequence: b.sequence,
                 })
                 .collect();
             remap.set(enabled, mapped);
@@ -992,6 +1055,36 @@ fn handle_command(
                 })
             }
         }
+        DeviceCommand::SetLowBatteryAlert { enabled } => {
+            device.low_battery_alert = enabled;
+            device.low_battery_latched = false;
+            emit(
+                proxy,
+                json!({"type":"hapticAlertStatus","lowBattery":enabled}),
+            );
+            Ok(if enabled {
+                "Low battery alert on"
+            } else {
+                "Low battery alert off"
+            })
+        }
+        DeviceCommand::SetHapticTimer { seconds } => {
+            if seconds > 3600 {
+                Err("Choose a timer up to 60 minutes.".into())
+            } else {
+                device.haptic_timer =
+                    (seconds > 0).then(|| Instant::now() + Duration::from_secs(u64::from(seconds)));
+                emit(
+                    proxy,
+                    json!({"type":"hapticAlertStatus","timerSeconds":seconds}),
+                );
+                Ok(if seconds > 0 {
+                    "Haptic timer started"
+                } else {
+                    "Haptic timer cleared"
+                })
+            }
+        }
         DeviceCommand::Rumble {
             left,
             right,
@@ -1032,7 +1125,8 @@ fn handle_command(
         | DeviceCommand::SetGyroAim { .. }
         | DeviceCommand::SetRemap { .. }
         | DeviceCommand::SetXinput { .. }
-        | DeviceCommand::SetTelemetry { .. } => unreachable!(),
+        | DeviceCommand::SetTelemetry { .. }
+        | DeviceCommand::SetUiFocused { .. } => unreachable!(),
     };
     match result {
         Ok(message) => emit(proxy, json!({ "type": "notice", "message": message })),
@@ -1256,7 +1350,20 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     .or(device.as_ref().map(|d| d.path_display.as_str())),
             );
         }
+        remap.tick();
         if let Some(connected) = device.as_mut() {
+            if connected
+                .haptic_timer
+                .is_some_and(|at| Instant::now() >= at)
+            {
+                connected.haptic_timer = None;
+                connected.play_feedback("sine", 95, 8, 250, 48, 0);
+                emit(&proxy, json!({"type":"hapticAlertStatus","timerSeconds":0}));
+                emit(
+                    &proxy,
+                    json!({"type":"hapticAlert","message":"Haptic timer finished"}),
+                );
+            }
             if connected
                 .input_effect_until
                 .is_some_and(|t| Instant::now() >= t)
@@ -1315,6 +1422,19 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     if let Some(input) = protocol::parse_input(&input_report[..length]) {
                         connected.last_valid_report = Instant::now();
                         raw_reports += 1;
+                        if input.charging || input.battery.is_some_and(|level| level >= 30) {
+                            connected.low_battery_latched = false;
+                        } else if connected.low_battery_alert
+                            && !connected.low_battery_latched
+                            && let Some(level) = input.battery.filter(|level| *level <= 20)
+                        {
+                            connected.low_battery_latched = true;
+                            connected.play_feedback("square", 155, 3, 120, 32, 0);
+                            emit(
+                                &proxy,
+                                json!({"type":"hapticAlert","message":format!("Battery low: {level}%")}),
+                            );
+                        }
                         if let Some(sequence) = input.sequence {
                             if let Some(previous) = connected.input_sequence {
                                 let delta = sequence.wrapping_sub(previous);
