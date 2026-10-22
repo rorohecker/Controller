@@ -11,13 +11,17 @@ def mock_core(page):
       window.__TAURI__ = {
         core: {invoke: async (name, args) => {
           if (name === 'load_profiles') return null;
+          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return window.mockUpdateVersion ? {version:window.mockUpdateVersion,currentVersion:'0.11.0'} : null; }
+          if (name === 'install_update') { window.installedUpdate=true; return null; }
+          if (name === 'send_demo_telemetry') { window.demoPort=args.port; return null; }
           if (name === 'save_profiles') window.saved = args.data;
           if (name === 'export_profiles') { window.exported = args.data; return 'CONTROLLER-profiles.json'; }
           if (name === 'send_command') window.sent.push(args.command);
           return null;
         }},
         event: {listen: async (name, callback) => {
-          window.coreHandler = payload => callback({payload});
+          if(name==='core-event')window.coreHandler = payload => callback({payload});
+          if(name==='update-progress')window.updateHandler = payload => callback({payload});
         }}
       };
     """)
@@ -46,6 +50,26 @@ def main():
         assert page.evaluate("document.querySelector('.brand strong').getBoundingClientRect().right <= document.querySelector('.sidebar').getBoundingClientRect().right")
         assert page.locator(".controller-photo").is_visible()
         assert page.locator("#connection-guide").is_visible()
+        assert "Studio ready without a pad" in page.locator("#connection-guide").inner_text()
+        page.locator('[data-goto="profiles"]').last.click()
+        page.locator("#profile-description").fill("Edited while disconnected")
+        page.locator("#save-profile").click()
+        page.wait_for_function("window.saved?.profiles.some(p=>p.description==='Edited while disconnected')")
+        page.locator("#profile-list .profile-row").nth(1).click()
+        assert "Connect a controller" not in page.locator("#toast").inner_text()
+        page.locator("#profile-list .profile-row").first.click()
+        page.locator('[data-view="haptics"]').click()
+        assert "PC audio preview" in page.locator("#haptic-route").inner_text()
+        page.locator("#play-haptic").click()
+        assert not page.evaluate("window.sent.some(c=>c.action==='playHaptic')")
+        page.locator('[data-view="diagnostics"]').click()
+        page.evaluate("window.mockUpdateVersion='0.12.0'")
+        page.locator("#check-update").click()
+        page.wait_for_function("document.querySelector('#install-update').textContent.includes('0.12.0')")
+        assert page.locator("#install-update").is_visible()
+        page.locator("#install-update").click()
+        page.wait_for_function("window.installedUpdate===true")
+        page.locator('[data-view="live"]').click()
         assert page.locator("#theme-select option").count() == 4
         for palette in ("cinder", "tide", "verdigris", "dusk"):
             page.locator("#theme-select").select_option(palette)
@@ -133,6 +157,8 @@ def main():
         assert page.locator("#race-speed").inner_text() == "108"
         assert page.locator("#race-slip").inner_text().lower() == "brake slip estimated"
         page.locator("#telemetry-format").select_option("json")
+        page.locator("#telemetry-demo").click()
+        assert page.evaluate("window.demoPort") == 5300
         assert page.locator("#telemetry-json-help").is_visible()
         page.locator("#telemetry-json-help summary").click()
         assert page.locator("#telemetry-json-help code").is_visible()

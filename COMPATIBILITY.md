@@ -16,4 +16,6 @@ Version 0.9.0 adds opt-in primary-display color sampling and a color mode based 
 
 Version 0.10.0 renames the desktop app to CONTROLLER and copies valid profiles from the old Aftertouch data folder on first load. The migration test confirms the original archive remains intact. Cargo check, strict Clippy, Rust tests, the browser UI smoke test, and a controller-free core telemetry/script smoke test passed. The HID probe found no attached pad for this run, so live USB and Bluetooth writes, physical trigger force, and haptic output were not retested.
 
+Version 0.11.0 adds signed Windows installer updates and a controller-free test lap for the Local JSON telemetry adapter. The release build produced an NSIS installer and updater signature; the generated `latest.json` points to that signed artifact. Rust tests, strict Clippy, Playwright UI smoke, and the controller-free core telemetry/script smoke passed. No GitHub release or update install has been performed yet, and hardware output remains untested for this version.
+
 The app reads HID reports, uses Windows audio loopback, and listens for published telemetry. It does not inject code into games. Steam Input or another controller tool may write to the same controller; Diagnostics reports likely conflicts, and Reset releases effects when this app owns them.

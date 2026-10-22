@@ -1,0 +1,60 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check tag and signing key
+        shell: pwsh
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          $version = (Get-Content tauri.conf.json | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw "Tag must match tauri.conf.json version v$version" }
+          if (-not $env:SIGNING_KEY) { throw 'TAURI_SIGNING_PRIVATE_KEY secret is required' }
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version 2.11.1 --locked
+      - name: Rust tests
+        run: cargo test --workspace
+      - name: Strict Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Build core smoke executable
+        run: cargo build --bin controller
+      - name: Controller-free core smoke
+        run: python tests/script_smoke.py
+      - name: Update manifest smoke
+        run: python tests/update_manifest_smoke.py
+      - name: Build signed installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: cargo tauri build --bundles nsis --ci
+      - name: Create update manifest
+        shell: pwsh
+        run: |
+          $version = (Get-Content tauri.conf.json | ConvertFrom-Json).version
+          python scripts/build_update_manifest.py $version target/release/bundle/nsis $env:GITHUB_REPOSITORY
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $bundle = 'target/release/bundle/nsis'
+          $installer = @(Get-ChildItem -LiteralPath $bundle -Filter '*-setup.exe')
+          if ($installer.Count -ne 1) { throw 'Expected one NSIS installer' }
+          $signature = "$($installer[0].FullName).sig"
+          if (-not (Test-Path -LiteralPath $signature)) { throw 'Installer signature missing' }
+          gh release create $env:GITHUB_REF_NAME $installer[0].FullName $signature (Join-Path $bundle 'latest.json') --title "CONTROLLER $env:GITHUB_REF_NAME" --generate-notes --verify-tag

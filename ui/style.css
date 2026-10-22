@@ -238,6 +238,13 @@ main{padding:28px 36px 36px}
 .connection-guide p{margin:6px 0 12px;color:rgba(243,236,222,.78);font:12px/1.5 var(--body)}
 .connection-guide button{border:1px solid var(--gold);background:transparent;color:var(--gold-soft);border-radius:5px;padding:7px 12px;font:700 11px var(--body);text-transform:uppercase}
 .connection-guide button:hover{background:rgba(212,168,75,.16)}
+.connection-guide button+button{margin-left:8px}
+.update-panel{border:1px solid rgba(212,168,75,.32);border-radius:7px;padding:14px;margin:14px 0;background:rgba(8,15,25,.24)}
+.update-panel strong{font:600 18px var(--display);color:var(--gold-soft)}
+.update-panel p{font:12px/1.45 var(--body);color:var(--cream);margin:8px 0 12px;overflow-wrap:anywhere}
+.update-actions{display:flex;gap:8px;flex-wrap:wrap}
+.update-actions button{flex:1;min-width:120px}
+.update-actions button[hidden]{display:none}
 .battery-band{padding:16px 18px;border-bottom:1px solid rgba(212,168,75,.2)}
 .battery-band>div:first-child{display:flex;justify-content:space-between;align-items:center;color:rgba(243,236,222,.6);font:600 10px var(--body);text-transform:uppercase}
 .battery-band strong{color:var(--cream);font:700 30px var(--display)}

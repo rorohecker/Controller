@@ -9,6 +9,7 @@ mod profiles;
 mod screen_color;
 mod script;
 mod telemetry;
+mod updates;
 mod xinput_bridge;
 
 use std::{
@@ -224,6 +225,21 @@ fn export_profiles(data: Value) -> Result<String, String> {
     profiles::export(data)
 }
 
+#[tauri::command]
+fn send_demo_telemetry(port: u16) -> Result<(), String> {
+    if port < 1024 {
+        return Err("Choose a telemetry port from 1024 to 65535".into());
+    }
+    let socket = std::net::UdpSocket::bind(("127.0.0.1", 0)).map_err(|e| e.to_string())?;
+    socket
+        .send_to(
+            br#"{"rpm":6800,"maxRpm":8000,"speedKmh":112,"gear":4,"brake":160,"slip":1.4,"frontSlip":1.3,"kerb":[true,false,false,false]}"#,
+            ("127.0.0.1", port),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 fn run_core() {
     let (commands_tx, commands_rx) = mpsc::channel();
     let (events_tx, events_rx) = mpsc::channel();
@@ -284,16 +300,21 @@ fn main() {
         return;
     }
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let bridge = Bridge::spawn(app.handle().clone())?;
             app.manage(bridge);
+            app.manage(updates::PendingUpdate::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             send_command,
             load_profiles,
             save_profiles,
-            export_profiles
+            export_profiles,
+            send_demo_telemetry,
+            updates::check_update,
+            updates::install_update
         ])
         .build(tauri::generate_context!())
         .expect("CONTROLLER desktop shell");

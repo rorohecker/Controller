@@ -12,6 +12,14 @@ cargo run --release --bin controller
 
 Windows 10 or 11 and WebView2 are required. Connect a controller over USB or Bluetooth. CONTROLLER scans automatically, prefers USB if both transports appear, and lets you select another pad in Diagnostics. It does not install a driver or modify a game.
 
+You can also work without a controller: edit and export profiles, design trigger curves, preview haptic sketches through the PC speakers, and receive local telemetry to test effect rules. To try a rule without a game, select **Local JSON adapter**, start listening, arm the rule, and select **Send test lap**. Hardware output controls become available when a pad connects. The Input page accepts J, K, L, and I as a face-button preview while disconnected.
+
+## Updates and releases
+
+The installed Windows app checks for updates shortly after launch and every twelve hours while open. Diagnostics has **Check now** and shows download progress when an update is available. Installation uses Tauri's signature verification and the Windows NSIS installer; it closes and restarts the app. The standalone `dist/CONTROLLER.exe` remains a portable build and does not use the installer update path. Updates start working once a signed GitHub release with `latest.json` has been published.
+
+Release builds use the private updater key generated at `%APPDATA%\CONTROLLER\updater.key`. Keep a secure backup of this key: later releases must use the same key. Add its contents as the repository's `TAURI_SIGNING_PRIVATE_KEY` Actions secret. The workflow in `.github/workflows/release.yml` runs on a `v<version>` tag, checks that the tag matches `tauri.conf.json`, verifies controller-free tests, builds a signed NSIS installer, and publishes the installer, signature, and update manifest. No release is published by this source change. For a local installer build, set `TAURI_SIGNING_PRIVATE_KEY` to that key's path in the PowerShell session and run `cargo tauri build --bundles nsis`.
+
 See [Compatibility and test record](COMPATIBILITY.md) for the controller, transport, and game combinations actually checked.
 
 ## The workbench
@@ -83,6 +91,7 @@ The optional XInput bridge requires a user-installed [ViGEmBus](https://github.c
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 python tests/ui_smoke.py
+python tests/update_manifest_smoke.py
 cargo build --bin controller
 python tests/script_smoke.py
 python tests/core_smoke.py

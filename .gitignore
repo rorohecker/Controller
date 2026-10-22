@@ -15,3 +15,5 @@
 /docs/planning-coverage.md
 __pycache__/
 *.pyc
+*.key
+*.key.pub

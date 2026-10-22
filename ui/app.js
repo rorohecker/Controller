@@ -56,6 +56,7 @@
     sequenceGaps:0,invalidReports:0,stickTest:null,batteryHistory:[],audioBridge:false,audioRoute:'off',telemetryOn:false,telemetryLast:0,scriptEnabled:false,inputEffectsActive:false,gyroCalibration:null,lowBatteryAlert:false,timerUntil:0
   };
   let toastTimeout, audioContext, dragging = -1, saveTimeout, saveChain=Promise.resolve(), scanTimeout;
+  let updateChecking=false, updateInstalling=false, availableVersion='';
   const palettes=['dusk','cinder','tide','verdigris'];
   function setPalette(palette){
     const choice=palettes.includes(palette)?palette:'dusk';
@@ -89,6 +90,63 @@
     const node = $('#toast'); node.textContent = String(message);
     node.classList.add('is-visible'); clearTimeout(toastTimeout);
     toastTimeout = setTimeout(() => node.classList.remove('is-visible'), 3400);
+  }
+  async function checkForUpdates(manual=false) {
+    if(!native || updateChecking || updateInstalling)return;
+    updateChecking=true;
+    $('#check-update').disabled=true;
+    $('#install-update').disabled=true;
+    $('#update-status').textContent='Checking for updates…';
+    try {
+      const update=await invoke('check_update');
+      availableVersion=update?.version||'';
+      $('#install-update').hidden=!availableVersion;
+      $('#install-update').textContent=availableVersion?`Install ${availableVersion}`:'Install update';
+      $('#update-status').textContent=availableVersion
+        ?`Version ${availableVersion} is ready. The app will restart during installation.`
+        :`Version ${update?.currentVersion||'0.11.0'} is current.`;
+      if(availableVersion){toast(`Update ${availableVersion} available`);log(`UPDATE / ${availableVersion} available`);}
+      else if(manual)toast('App is up to date.');
+    } catch(error) {
+      $('#update-status').textContent=String(error).includes('404')
+        ?'No published update feed yet.'
+        :`Update check unavailable: ${error}`;
+      if(manual)toast('Could not check for updates.');
+    } finally {
+      updateChecking=false;
+      $('#check-update').disabled=false;
+      $('#install-update').disabled=false;
+    }
+  }
+  $('#check-update').addEventListener('click',()=>checkForUpdates(true));
+  $('#install-update').addEventListener('click',async()=>{
+    if(!availableVersion||updateChecking||updateInstalling)return;
+    if(!await commitProfileDraft(false))return;
+    updateInstalling=true;
+    $('#check-update').disabled=true;
+    $('#install-update').disabled=true;
+    $('#update-status').textContent=`Downloading ${availableVersion}…`;
+    try {
+      await invoke('install_update');
+      $('#update-status').textContent='Update installed. Restarting…';
+    } catch(error) {
+      $('#update-status').textContent=`Update failed: ${error}`;
+      toast('Update failed. Check Diagnostics.');
+      log(`UPDATE ERROR / ${error}`);
+      availableVersion='';
+      $('#install-update').hidden=true;
+    } finally {
+      updateInstalling=false;
+      $('#check-update').disabled=false;
+      $('#install-update').disabled=false;
+    }
+  });
+  function handleUpdateProgress(progress) {
+    if(!updateInstalling)return;
+    if(progress.finished){$('#update-status').textContent='Download complete. Installing…';return;}
+    if(Number.isFinite(progress.total)&&progress.total>0){
+      $('#update-status').textContent=`Downloading ${availableVersion}: ${Math.min(100,Math.round(progress.downloaded/progress.total*100))}%`;
+    }
   }
   function log(message) {
     const list = $('#event-log'), item = document.createElement('li');
@@ -330,7 +388,7 @@
     const b=e.target.closest('[data-profile]'); if(!b)return;
     state.profileId=b.dataset.profile; renderAllProfileControls(); saveProfiles();
     toast(profile().name);
-    if (state.autoApply && profile().autoApply !== false) await applyProfileHardware(true);
+    if (state.connected && state.autoApply && profile().autoApply !== false) await applyProfileHardware(true);
   });
   $('#new-profile').addEventListener('click',() => {
     if(state.profiles.length>=50){toast('50 profile limit.');return;}
@@ -537,7 +595,7 @@
     const h=profile().haptics,duration=h.attack+h.release;
     if(state.connected) {
       send({action:'playHaptic',shape:h.shape,frequency:h.frequency,attack:h.attack,release:h.release,strength:h.strength,pan:h.pan});
-    } else if(native) toast('Connect a controller.');
+    }
     try{
       audioContext=audioContext||new(window.AudioContext||window.webkitAudioContext)();await audioContext.resume();const now=audioContext.currentTime;
       const gain=audioContext.createGain(),pan=audioContext.createStereoPanner();pan.pan.value=h.pan/100;
@@ -560,7 +618,7 @@
     if(!state.connected)status.textContent='Connect a controller to start the bridge.';
     else if(!available)status.textContent='USB is required for system audio haptics. Haptic previews use motor rumble over Bluetooth.';
     else if(!state.audioBridge)status.textContent='Bridge off · USB voice-coil output available on first playback.';
-    $('#haptic-route').textContent=!state.connected?'Route: connect a controller':state.audioRoute==='voiceCoil'?'Route: USB voice coils':state.transport==='Bluetooth'?'Route: Bluetooth motors':'Route: USB voice coils if available';
+    $('#haptic-route').textContent=!state.connected?'Route: PC audio preview':state.audioRoute==='voiceCoil'?'Route: USB voice coils':state.transport==='Bluetooth'?'Route: Bluetooth motors':'Route: USB voice coils if available';
   }
   $('#bridge-toggle').addEventListener('click',()=>send({action:'setAudioBridge',enabled:!state.audioBridge,gain:+$('#bridge-gain').value/100,preset:$('#bridge-preset').value}));
   $('#bridge-gain').addEventListener('input',e=>{$('#bridge-gain-value').textContent=`${e.target.value}%`;fillRange(e.target);});
@@ -606,7 +664,7 @@
       ?'Receive bounded game signals from a local adapter. Revs drive the lightbar; gear changes, braking slip, tyre slip, and kerbs make short grip cues. Use localhost unless another trusted device sends the packets.'
       :"Set Forza's Data Out format to Dash. Motorsport 2023 can send to 127.0.0.1; for Horizon 4/5 or a console, enable LAN listening and use this PC's IPv4 address in the game. Engine revs color the lightbar; gear changes make a short grip cue. The brake slip reading is an estimate from wheel slip, not a direct ABS signal.";
   }
-  $('#telemetry-format').addEventListener('change',()=>{renderTelemetryFormat();if(state.telemetryOn)send({action:'setTelemetry',enabled:true,port:Number($('#telemetry-port').value),lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});});
+  $('#telemetry-format').addEventListener('change',()=>{renderTelemetryFormat();renderTelemetry();if(state.telemetryOn)send({action:'setTelemetry',enabled:true,port:Number($('#telemetry-port').value),lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});});
   renderTelemetryFormat();
   $('#telemetry-toggle').addEventListener('click',()=>{
     const port=Number($('#telemetry-port').value);
@@ -618,14 +676,20 @@
     if(state.telemetryOn&&Number.isInteger(port)&&port>=1024&&port<=65535)send({action:'setTelemetry',enabled:true,port,lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});
   });
   $('#telemetry-lan').addEventListener('change',()=>{if(state.telemetryOn)send({action:'setTelemetry',enabled:true,port:Number($('#telemetry-port').value),lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});});
-  $('.telemetry-panel').insertAdjacentHTML('afterend',`<div class="script-panel framed"><div class="panel-cap"><span>Signal score</span><span>LOCAL SCRIPT</span></div><div class="script-body"><div class="script-intro"><span class="script-kicker">01 / Compose</span><h2>Write the response.</h2><p>Shape the light and a brief grip cue from live race data. Rules run locally, at most ten times per second, after a valid telemetry packet. Only the listed signals and outputs are available.</p><div class="script-signals"><strong>Signals</strong><span>rpm · max_rpm · speed_kmh · gear · brake · slip · front_slip · kerb_left · kerb_right</span></div><div class="script-signals"><strong>Outputs</strong><span>light: [red, green, blue] · cue: "pulse", "grit", or "shift"</span></div><p class="script-boundary">A script can change only these effects. It cannot read files, use the network, send key presses, or change trigger settings. A runaway or invalid script stops automatically.</p></div><div class="script-editor"><label for="script-source">Effect rule <small>Rhai · 4 KB max</small></label><textarea id="script-source" maxlength="4096" spellcheck="false" rows="8" aria-describedby="script-status"></textarea><div class="script-actions"><button id="script-example" class="quiet-action" type="button">Load example</button><button id="script-toggle" class="main-action" type="button" aria-pressed="false">Arm rule</button></div><p id="script-status" role="status">Off · start telemetry to see a response</p><div class="script-monitor"><span>Last output</span><strong id="script-output">Waiting for a signal</strong></div></div></div></div>`);
+  $('.telemetry-panel').insertAdjacentHTML('afterend',`<div class="script-panel framed"><div class="panel-cap"><span>Signal score</span><span>LOCAL SCRIPT</span></div><div class="script-body"><div class="script-intro"><span class="script-kicker">01 / Compose</span><h2>Write the response.</h2><p>Shape the light and a brief grip cue from live race data. Rules run locally, at most ten times per second, after a valid telemetry packet. Only the listed signals and outputs are available.</p><div class="script-signals"><strong>Signals</strong><span>rpm · max_rpm · speed_kmh · gear · brake · slip · front_slip · kerb_left · kerb_right</span></div><div class="script-signals"><strong>Outputs</strong><span>light: [red, green, blue] · cue: "pulse", "grit", or "shift"</span></div><p class="script-boundary">A script can change only these effects. It cannot read files, use the network, send key presses, or change trigger settings. A runaway or invalid script stops automatically.</p></div><div class="script-editor"><label for="script-source">Effect rule <small>Rhai · 4 KB max</small></label><textarea id="script-source" maxlength="4096" spellcheck="false" rows="8" aria-describedby="script-status"></textarea><div class="script-actions"><button id="script-example" class="quiet-action" type="button">Load example</button><button id="script-toggle" class="main-action" type="button" aria-pressed="false">Arm rule</button><button id="telemetry-demo" class="quiet-action" type="button" disabled>Send test lap</button></div><p id="script-status" role="status">Off · start telemetry to see a response</p><div class="script-monitor"><span>Last output</span><strong id="script-output">Waiting for a signal</strong></div></div></div></div>`);
   const scriptExample='if rpm / max_rpm > 0.8 { #{ light: [220, 40, 20], cue: "pulse" } } else { #{ light: [40, 145, 130] } }';
   try{$('#script-source').value=localStorage.getItem('aftertouch.script.v1')||scriptExample;}catch{$('#script-source').value=scriptExample;}
   $('#script-source').addEventListener('input',()=>{try{localStorage.setItem('aftertouch.script.v1',$('#script-source').value);}catch{}});
   $('#script-example').addEventListener('click',()=>{$('#script-source').value=scriptExample;$('#script-source').dispatchEvent(new Event('input'));});
   $('#script-toggle').addEventListener('click',()=>send({action:'setScript',enabled:!state.scriptEnabled,source:$('#script-source').value}));
+  $('#telemetry-demo').addEventListener('click',async()=>{
+    if(!native||!state.telemetryOn||$('#telemetry-format').value!=='json')return;
+    try{await invoke('send_demo_telemetry',{port:Number($('#telemetry-port').value)});}
+    catch(error){toast(`Test lap failed: ${error}`);}
+  });
   function renderScript(){const button=$('#script-toggle');button.textContent=state.scriptEnabled?'Disarm rule':'Arm rule';button.setAttribute('aria-pressed',String(state.scriptEnabled));button.classList.toggle('is-armed',state.scriptEnabled);$('#script-source').readOnly=state.scriptEnabled;$('#script-example').disabled=state.scriptEnabled;}
   function renderTelemetry(){
+    $('#telemetry-demo').disabled=!native||!state.telemetryOn||$('#telemetry-format').value!=='json';
     $('#telemetry-toggle').textContent=state.telemetryOn?'Stop listening':'Start listening';
     $('#telemetry-toggle').setAttribute('aria-pressed',String(state.telemetryOn));
     if(!state.telemetryOn){$('#telemetry-status').textContent='Off';$('#race-speed').textContent='—';$('#race-gear').textContent='—';$('#race-rpm').textContent='—';$('#race-source').textContent='Waiting for telemetry';$('#race-slip').textContent='Brake slip —';$('#rev-fill').style.width='0%';}
@@ -1072,9 +1136,11 @@
     renderAllProfileControls();setLightColor('#d4a84b');setConnected(false);renderInput();renderDeviceList();renderGestureSwitch();renderXinput();navigate(location.hash.slice(1)||'live');
     await loadProfiles();
     if(native){
-      try{await window.__TAURI__.event.listen('core-event',e=>handleEvent(e.payload));await send({action:'listDevices'});reportUiFocus();log('Core ready');$('#core-status').textContent='Core: ready';}
+      try{await window.__TAURI__.event.listen('core-event',e=>handleEvent(e.payload));await window.__TAURI__.event.listen('update-progress',e=>handleUpdateProgress(e.payload));await send({action:'listDevices'});reportUiFocus();log('Core ready');$('#core-status').textContent='Core: ready';}
       catch(error){toast(`Core connection failed: ${error}`);log(String(error));$('#core-status').textContent='Core: error';$('#core-status').classList.add('is-warn');}
-    }else{$('#core-status').textContent='Core: browser preview';log('Browser preview');}
+      setTimeout(()=>checkForUpdates(),2500);
+      setInterval(()=>checkForUpdates(),12*60*60*1000);
+    }else{$('#core-status').textContent='Core: browser preview';$('#update-status').textContent='Updates are available in the installed desktop app.';$('#check-update').disabled=true;log('Browser preview');}
   }
   start();
 })();
