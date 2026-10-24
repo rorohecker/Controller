@@ -1,5 +1,6 @@
 """Check that release metadata points to the signed installer."""
 
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -10,24 +11,27 @@ from build_update_manifest import create_manifest  # noqa: E402
 
 
 def main() -> None:
+    version = json.loads((ROOT / "tauri.conf.json").read_text(encoding="utf-8"))["version"]
+    major, minor, patch = map(int, version.split("."))
+    wrong_version = f"{major}.{minor}.{patch + 1}"
     with tempfile.TemporaryDirectory() as folder:
         bundle = Path(folder)
-        installer = bundle / "CONTROLLER_0.11.0_x64-setup.exe"
+        installer = bundle / f"CONTROLLER_{version}_x64-setup.exe"
         installer.write_bytes(b"installer")
         (bundle / (installer.name + ".sig")).write_text("signed-data\n", encoding="utf-8")
-        manifest = create_manifest("0.11.0", bundle, "rorohecker/Controller")
+        manifest = create_manifest(version, bundle, "rorohecker/Controller")
         target = manifest["platforms"]["windows-x86_64"]
         assert target["signature"] == "signed-data"
-        assert target["url"].endswith("/v0.11.0/CONTROLLER_0.11.0_x64-setup.exe")
+        assert target["url"].endswith(f"/v{version}/{installer.name}")
         try:
-            create_manifest("0.12.0", bundle, "rorohecker/Controller")
+            create_manifest(wrong_version, bundle, "rorohecker/Controller")
         except ValueError as error:
             assert "version" in str(error)
         else:
             raise AssertionError("mismatched installer version was accepted")
         (bundle / (installer.name + ".sig")).unlink()
         try:
-            create_manifest("0.11.0", bundle, "rorohecker/Controller")
+            create_manifest(version, bundle, "rorohecker/Controller")
         except ValueError as error:
             assert "signature" in str(error)
         else:

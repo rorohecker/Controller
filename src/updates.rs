@@ -11,7 +11,7 @@ pub struct PendingUpdate(pub Mutex<Option<Update>>);
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInfo {
-    version: String,
+    version: Option<String>,
     current_version: String,
 }
 
@@ -19,7 +19,7 @@ pub struct UpdateInfo {
 pub async fn check_update(
     app: AppHandle,
     pending: State<'_, PendingUpdate>,
-) -> Result<Option<UpdateInfo>, String> {
+) -> Result<UpdateInfo, String> {
     let before_exit = app.clone();
     let update = app
         .updater_builder()
@@ -33,10 +33,10 @@ pub async fn check_update(
         .check()
         .await
         .map_err(|error| error.to_string())?;
-    let info = update.as_ref().map(|update| UpdateInfo {
-        version: update.version.clone(),
-        current_version: update.current_version.clone(),
-    });
+    let info = UpdateInfo {
+        version: update.as_ref().map(|update| update.version.clone()),
+        current_version: app.package_info().version.to_string(),
+    };
     *pending
         .0
         .lock()

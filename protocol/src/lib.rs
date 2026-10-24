@@ -93,38 +93,6 @@ impl ChargeState {
             Self::Unknown => "Unknown",
         }
     }
-
-    pub fn is_fault(self) -> bool {
-        matches!(
-            self,
-            Self::VoltageOrTempFault | Self::TemperatureFault | Self::ChargingError
-        )
-    }
-}
-
-/// Derived pack health — DualSense has no native SoH; we combine charge faults + chip temp.
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum BatteryHealth {
-    Good,
-    Warm,
-    Hot,
-    Cold,
-    Fault,
-    Unknown,
-}
-
-impl BatteryHealth {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Good => "Good",
-            Self::Warm => "Warm",
-            Self::Hot => "Hot",
-            Self::Cold => "Cold",
-            Self::Fault => "Fault",
-            Self::Unknown => "Unknown",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -137,16 +105,14 @@ pub struct BatteryInfo {
     pub charging: bool,
     pub charge_state: ChargeState,
     pub charge_code: u8,
-    /// Sensor temperature byte at body[31] (°C). Absent on short Bluetooth reports.
-    pub temperature_c: Option<u8>,
-    pub health: BatteryHealth,
-    pub health_detail: String,
+    /// Uncalibrated, reserved byte at body[31]. Absent on short Bluetooth reports.
+    pub sensor_byte: Option<u8>,
     pub headphone_jack: bool,
     pub microphone_jack: bool,
 }
 
 impl BatteryInfo {
-    pub fn from_status(status0: u8, status1: u8, temperature_c: Option<u8>) -> Self {
+    pub fn from_status(status0: u8, status1: u8, sensor_byte: Option<u8>) -> Self {
         let level = status0 & 0x0f;
         let charge_code = status0 >> 4;
         let charge_state = ChargeState::from_code(charge_code);
@@ -158,16 +124,13 @@ impl BatteryInfo {
             }
             _ => (None, if level <= 10 { Some(level) } else { None }),
         };
-        let (health, health_detail) = derive_health(charge_state, charge_code, temperature_c);
         Self {
             percent,
             level_tenths,
             charging: matches!(charge_state, ChargeState::Charging),
             charge_state,
             charge_code,
-            temperature_c,
-            health,
-            health_detail,
+            sensor_byte,
             headphone_jack: status1 & 0x01 != 0,
             microphone_jack: status1 & 0x02 != 0,
         }
@@ -180,52 +143,10 @@ impl BatteryInfo {
             charging: false,
             charge_state: ChargeState::Unknown,
             charge_code: 0,
-            temperature_c: None,
-            health: BatteryHealth::Unknown,
-            health_detail: "No battery data in this report".into(),
+            sensor_byte: None,
             headphone_jack: false,
             microphone_jack: false,
         }
-    }
-}
-
-fn sanitize_temperature(raw: u8) -> Option<u8> {
-    // Plausible DualSense chip range; excludes 0 (unset) and wild glitches.
-    (1..=65).contains(&raw).then_some(raw)
-}
-
-fn derive_health(
-    charge_state: ChargeState,
-    charge_code: u8,
-    temperature_c: Option<u8>,
-) -> (BatteryHealth, String) {
-    if charge_state.is_fault() {
-        return (
-            BatteryHealth::Fault,
-            format!("{} (code {charge_code:#X})", charge_state.label()),
-        );
-    }
-    match temperature_c {
-        Some(t) if t >= 55 => (
-            BatteryHealth::Hot,
-            format!("{t} °C — high sensor temperature"),
-        ),
-        Some(t) if t >= 48 => (
-            BatteryHealth::Warm,
-            format!("{t} °C — elevated sensor temperature"),
-        ),
-        Some(t) if t <= 5 => (
-            BatteryHealth::Cold,
-            format!("{t} °C — low sensor temperature"),
-        ),
-        Some(t) => (
-            BatteryHealth::Good,
-            format!("{t} °C · {}", charge_state.label()),
-        ),
-        None => (
-            BatteryHealth::Unknown,
-            format!("{} · temperature unavailable", charge_state.label()),
-        ),
     }
 }
 
@@ -325,10 +246,8 @@ pub fn parse_input(data: &[u8]) -> Option<InputState> {
     let b1 = body[8];
     let b2 = body[9];
     let buttons = decode_buttons(b0, b1, b2, body[4], body[5]);
-    // body[31] is sensor temperature (°C) in community layouts; Linux labels it reserved2.
-    // 0 and out-of-band values are common on some links — treat as unavailable for health.
-    let temperature_c = sanitize_temperature(body[31]);
-    let battery_info = BatteryInfo::from_status(body[52], body[53], temperature_c);
+    // Linux labels body[31] reserved2. Expose the raw value without inferring degrees or health.
+    let battery_info = BatteryInfo::from_status(body[52], body[53], Some(body[31]));
     let gyro = [
         i16::from_le_bytes([body[15], body[16]]),
         i16::from_le_bytes([body[17], body[18]]),
@@ -600,7 +519,7 @@ mod tests {
         report[6] = 64;
         report[8] = 0x20;
         report[9] = 0x20;
-        report[32] = 38; // temperature °C at body[31]
+        report[32] = 38; // uncalibrated reserved byte at body[31]
         report[53] = 0x15; // charging, approximately 55%
         report[54] = 0x01; // headphone jack
         let state = parse_input(&report).unwrap();
@@ -610,8 +529,7 @@ mod tests {
         assert_eq!(state.battery, Some(55));
         assert!(state.charging);
         assert_eq!(state.battery_info.charge_state, ChargeState::Charging);
-        assert_eq!(state.battery_info.temperature_c, Some(38));
-        assert_eq!(state.battery_info.health, BatteryHealth::Good);
+        assert_eq!(state.battery_info.sensor_byte, Some(38));
         assert!(state.battery_info.headphone_jack);
         assert!(!state.battery_info.microphone_jack);
         assert_eq!(serde_json::to_value(&state).unwrap()["fullReport"], true);
@@ -622,32 +540,27 @@ mod tests {
     }
 
     #[test]
-    fn battery_fault_and_temperature_health() {
+    fn battery_fault_and_raw_sensor_byte() {
         let mut report = [0u8; 64];
         report[0] = 1;
         report[32] = 56;
         report[53] = 0xb0; // temperature fault
         let fault = parse_input(&report).unwrap();
         assert!(fault.battery.is_none());
-        assert_eq!(fault.battery_info.health, BatteryHealth::Fault);
+        assert_eq!(fault.battery_info.sensor_byte, Some(56));
         assert_eq!(
             fault.battery_info.charge_state,
             ChargeState::TemperatureFault
         );
 
         report[53] = 0x05; // discharging ~55%
-        report[32] = 56;
-        let hot = parse_input(&report).unwrap();
-        assert_eq!(hot.battery_info.health, BatteryHealth::Hot);
+        report[32] = 1;
+        let raw = parse_input(&report).unwrap();
+        assert_eq!(raw.battery_info.sensor_byte, Some(1));
 
-        report[32] = 4;
-        let cold = parse_input(&report).unwrap();
-        assert_eq!(cold.battery_info.health, BatteryHealth::Cold);
-
-        report[32] = 0; // unset / unreliable
-        let missing_temp = parse_input(&report).unwrap();
-        assert_eq!(missing_temp.battery_info.temperature_c, None);
-        assert_eq!(missing_temp.battery_info.health, BatteryHealth::Unknown);
+        report[32] = 0;
+        let zero = parse_input(&report).unwrap();
+        assert_eq!(zero.battery_info.sensor_byte, Some(0));
 
         report[53] = 0x20; // full
         report[32] = 40;

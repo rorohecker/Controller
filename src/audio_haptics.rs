@@ -120,6 +120,7 @@ struct Shared {
     preset: AtomicU32,
     bridge_on: AtomicBool,
     callbacks: AtomicU64,
+    glitches: AtomicU64,
     error: Mutex<Option<String>>,
 }
 
@@ -133,6 +134,7 @@ impl Default for Shared {
             preset: AtomicU32::new(3),
             bridge_on: AtomicBool::new(false),
             callbacks: AtomicU64::new(0),
+            glitches: AtomicU64::new(0),
             error: Mutex::new(None),
         }
     }
@@ -162,6 +164,9 @@ impl AudioEngine {
     }
     pub fn callbacks(&self) -> u64 {
         self.shared.callbacks.load(Ordering::Relaxed)
+    }
+    pub fn glitches(&self) -> u64 {
+        self.shared.glitches.load(Ordering::Relaxed)
     }
     pub fn bridge_on(&self) -> bool {
         self.shared.bridge_on.load(Ordering::Relaxed)
@@ -220,9 +225,7 @@ impl AudioEngine {
         let shared = self.shared.clone();
         let error_shared = shared.clone();
         let on_error = move |error: cpal::Error| {
-            if let Ok(mut slot) = error_shared.error.lock() {
-                *slot = Some(format!("USB haptic audio stopped: {error}"));
-            }
+            record_audio_error(&error_shared, error, "USB haptic audio");
         };
         let mut frame_position = 0u64;
         let mut duty = 0.0f32;
@@ -245,9 +248,7 @@ impl AudioEngine {
                         render_output_i16(data, &shared, &mut frame_position, &mut duty);
                     },
                     move |error| {
-                        if let Ok(mut slot) = error_shared.error.lock() {
-                            *slot = Some(format!("USB haptic audio stopped: {error}"));
-                        }
+                        record_audio_error(&error_shared, error, "USB haptic audio");
                     },
                     None,
                 )
@@ -303,6 +304,7 @@ impl AudioEngine {
             .store((gain * preset_gain).to_bits(), Ordering::Relaxed);
         self.shared.preset.store(preset_id, Ordering::Relaxed);
         if self.capture.is_none() {
+            self.shared.glitches.store(0, Ordering::Relaxed);
             self.capture = Some(build_loopback(self.shared.clone())?);
         }
         self.shared.bridge_on.store(true, Ordering::Relaxed);
@@ -326,6 +328,15 @@ impl AudioEngine {
         if let Ok(mut ring) = self.shared.bridge.lock() {
             ring.clear();
         }
+    }
+}
+
+fn record_audio_error(shared: &Shared, error: cpal::Error, route: &str) {
+    if error.kind() == cpal::ErrorKind::Xrun {
+        // CPAL continues streaming after a WASAPI discontinuity; a glitch is not a stopped stream.
+        shared.glitches.fetch_add(1, Ordering::Relaxed);
+    } else if let Ok(mut slot) = shared.error.lock() {
+        *slot = Some(format!("{route} stopped: {error}"));
     }
 }
 
@@ -517,9 +528,7 @@ fn build_loopback(shared: Arc<Shared>) -> Result<Stream, String> {
     let rate = config.sample_rate;
     let error_shared = shared.clone();
     let on_error = move |error: cpal::Error| {
-        if let Ok(mut slot) = error_shared.error.lock() {
-            *slot = Some(format!("System audio capture stopped: {error}"));
-        }
+        record_audio_error(&error_shared, error, "System audio capture");
     };
     let stream = match format.sample_format() {
         SampleFormat::F32 => {
@@ -544,7 +553,7 @@ fn build_loopback(shared: Arc<Shared>) -> Result<Stream, String> {
                     for frame in data.chunks_exact(channels) { dsp.frame([frame[0] as f32 / 32768.0, frame[channels.min(2)-1] as f32 / 32768.0], &mut ring); }
                 }
             }, move |error| {
-                if let Ok(mut slot) = error_shared.error.lock() { *slot = Some(format!("System audio capture stopped: {error}")); }
+                record_audio_error(&error_shared, error, "System audio capture");
             }, None)
         }
         other => return Err(format!("System audio uses unsupported sample format {other:?}. Choose a 16-bit or float output format in Windows.")),
@@ -558,6 +567,31 @@ fn build_loopback(shared: Arc<Shared>) -> Result<Stream, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn buffer_glitch_does_not_stop_a_running_stream() {
+        let shared = Shared::default();
+        record_audio_error(
+            &shared,
+            cpal::Error::new(cpal::ErrorKind::Xrun),
+            "System audio capture",
+        );
+        assert_eq!(shared.glitches.load(Ordering::Relaxed), 1);
+        assert!(shared.error.lock().unwrap().is_none());
+        record_audio_error(
+            &shared,
+            cpal::Error::new(cpal::ErrorKind::DeviceNotAvailable),
+            "System audio capture",
+        );
+        assert!(
+            shared
+                .error
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .contains("stopped")
+        );
+    }
     #[test]
     fn front_channels_silent_and_output_bounded() {
         let shared = Shared::default();

@@ -45,6 +45,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         thread::sleep(Duration::from_secs(2));
         println!("Output callbacks: {}", audio.callbacks());
+        println!("Buffer glitches: {}", audio.glitches());
         if let Some(error) = audio.take_error() {
             return Err(error.into());
         }

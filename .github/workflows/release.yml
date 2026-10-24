@@ -29,8 +29,15 @@ jobs:
         run: cargo install tauri-cli --version 2.11.1 --locked
       - name: Rust tests
         run: cargo test --workspace
+      - name: Cargo check
+        run: cargo check --workspace
       - name: Strict Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Browser UI smoke
+        run: |
+          python -m pip install playwright==1.64.0
+          python -m playwright install chromium
+          python tests/ui_smoke.py
       - name: Build core smoke executable
         run: cargo build --bin controller
       - name: Controller-free core smoke

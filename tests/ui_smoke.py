@@ -8,10 +8,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def mock_core(page):
     page.add_init_script("""
       window.sent = [];
+      Object.defineProperty(navigator, 'clipboard', {configurable:true,value:{writeText:async text => {window.copiedDiagnostics=text;}}});
       window.__TAURI__ = {
         core: {invoke: async (name, args) => {
           if (name === 'load_profiles') return null;
-          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return window.mockUpdateVersion ? {version:window.mockUpdateVersion,currentVersion:'0.11.0'} : null; }
+          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.11.1'}; }
           if (name === 'install_update') { window.installedUpdate=true; return null; }
           if (name === 'send_demo_telemetry') { window.demoPort=args.port; return null; }
           if (name === 'save_profiles') window.saved = args.data;
@@ -63,6 +64,9 @@ def main():
         page.locator("#play-haptic").click()
         assert not page.evaluate("window.sent.some(c=>c.action==='playHaptic')")
         page.locator('[data-view="diagnostics"]').click()
+        page.locator("#check-update").click()
+        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.11.1 is current')")
+        assert page.locator("#install-update").is_hidden()
         page.evaluate("window.mockUpdateVersion='0.12.0'")
         page.locator("#check-update").click()
         page.wait_for_function("document.querySelector('#install-update').textContent.includes('0.12.0')")
@@ -78,9 +82,12 @@ def main():
         assert not page.locator("#connection-guide").is_visible()
         page.evaluate("""window.coreHandler({type:'input',input:{
           buttons:[1,...Array(22).fill(0)],axes:[0.02,-0.01,0.03,0],touch:[null,null],
-          gyro:[0,0,0],battery:75,charging:false,fullReport:true}})""")
+          gyro:[0,0,0],battery:75,charging:false,
+          batteryInfo:{chargeState:'discharging',sensorByte:1},fullReport:true}})""")
         assert "is-pressed" in page.locator('.hotspot[data-button="0"]').get_attribute("class")
         assert page.locator("#battery-history .battery-history-bar").count() == 1
+        assert page.locator("#battery-health").inner_text() == "Health not reported"
+        assert page.locator("#battery-temp").inner_text() == "Sensor 1 raw"
         assert page.evaluate("document.hasFocus()")
         pad_event(page)
         pad_event(page, 5)
@@ -134,14 +141,16 @@ def main():
         assert page.evaluate("window.sent.at(-1).action") == "setAudioBridge"
         page.evaluate("window.coreHandler({type:'audioStatus',route:'voiceCoil',bridge:true,message:'Audio bridge on'})")
         assert page.locator("#bridge-toggle").inner_text().lower() == "stop bridge"
+        page.evaluate("window.coreHandler({type:'audioStatus',route:'voiceCoil',bridge:true,callbacks:10,glitches:2})")
+        assert "2 audio buffer glitches" in page.locator("#bridge-status").inner_text()
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-haptics-new.png"), full_page=True)
         page.locator('[data-view="lights"]').click()
         page.locator("#temperature-light").click()
         assert page.evaluate("window.sent.at(-1).action") == "setTemperatureLightbar"
-        page.evaluate("window.coreHandler({type:'lightMode',battery:false,temperature:true})")
-        page.evaluate("window.coreHandler({type:'temperatureColor',temperatureC:41,rgb:[140,145,90]})")
-        assert "41°C" in page.locator("#temperature-light-status").inner_text()
-        page.evaluate("window.coreHandler({type:'lightMode',battery:false,temperature:false})")
+        page.evaluate("window.coreHandler({type:'lightMode',battery:false,sensor:true})")
+        page.evaluate("window.coreHandler({type:'sensorColor',sensorByte:41,rgb:[140,145,90]})")
+        assert "byte 41" in page.locator("#temperature-light-status").inner_text()
+        page.evaluate("window.coreHandler({type:'lightMode',battery:false,sensor:false})")
         page.locator("#screen-light").click()
         assert page.evaluate("window.sent.at(-1).action") == "setScreenLightbar"
         page.evaluate("window.coreHandler({type:'lightMode',battery:false,screen:true})")
@@ -203,6 +212,9 @@ def main():
         assert page.locator("#diag-rate").inner_text() == "249 / S"
         assert page.locator("#diag-gaps").inner_text() == "2"
         assert page.locator("#diag-invalid").inner_text() == "1"
+        page.locator("#copy-diagnostics").click()
+        page.wait_for_function("window.copiedDiagnostics?.includes('249/s · gaps 2 · invalid 1')")
+        assert 'test' not in page.evaluate("window.copiedDiagnostics"), "Device paths should stay out of copied diagnostics"
         page.locator("#start-drift").click()
         assert page.locator("#start-circularity").is_disabled()
         page.evaluate("window.coreHandler({type:'device',connected:false})")
@@ -265,7 +277,7 @@ def main():
         assert mobile.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
         assert not mobile_errors, mobile_errors
         browser.close()
-        print("UI smoke passed: photograph, controller navigation, palettes, input, report health, battery, stick checks, remap, mobile")
+        print("UI smoke passed: photograph, controller navigation, palettes, input, report status, battery, stick checks, remap, mobile")
 
 
 if __name__ == "__main__":

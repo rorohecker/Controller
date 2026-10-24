@@ -158,7 +158,7 @@ fn default_activation() -> String {
     "always".into()
 }
 
-fn temperature_color(temperature_c: u8) -> [u8; 3] {
+fn sensor_color(sensor_byte: u8) -> [u8; 3] {
     fn blend(from: [u8; 3], to: [u8; 3], step: u8, span: u8) -> [u8; 3] {
         std::array::from_fn(|index| {
             ((u16::from(from[index]) * u16::from(span - step)
@@ -166,17 +166,11 @@ fn temperature_color(temperature_c: u8) -> [u8; 3] {
                 / u16::from(span)) as u8
         })
     }
-    if temperature_c <= 30 {
-        [60, 130, 200]
-    } else if temperature_c <= 45 {
-        blend([60, 130, 200], [230, 165, 45], temperature_c - 30, 15)
+    // A visual mapping of the raw byte, not a calibrated temperature scale.
+    if sensor_byte <= 127 {
+        blend([60, 130, 200], [230, 165, 45], sensor_byte, 127)
     } else {
-        blend(
-            [230, 165, 45],
-            [220, 45, 50],
-            (temperature_c - 45).min(10),
-            10,
-        )
+        blend([230, 165, 45], [220, 45, 50], sensor_byte - 127, 128)
     }
 }
 
@@ -205,8 +199,8 @@ struct Connected {
     last_trigger: Option<([u8; 11], [u8; 11])>,
     last_light: Option<[u8; 3]>,
     battery_light: bool,
-    temperature_light: bool,
-    last_temperature: Option<u8>,
+    sensor_light: bool,
+    last_sensor: Option<u8>,
     screen_light: bool,
     screen_color: Option<[u8; 3]>,
     last_rumble: Option<[u8; 2]>,
@@ -302,8 +296,8 @@ impl Connected {
         self.haptic_timer = None;
         self.screen_light = false;
         self.screen_color = None;
-        self.temperature_light = false;
-        self.last_temperature = None;
+        self.sensor_light = false;
+        self.last_sensor = None;
         if !(self.trigger_active || self.light_active || self.rumble_active) {
             return Ok(());
         }
@@ -556,8 +550,8 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     last_trigger: None,
                     last_light: None,
                     battery_light: false,
-                    temperature_light: false,
-                    last_temperature: None,
+                    sensor_light: false,
+                    last_sensor: None,
                     screen_light: false,
                     screen_color: None,
                     last_rumble: None,
@@ -926,15 +920,15 @@ fn handle_command(
                     if enabled {
                         screen.set_enabled(false);
                         if let Some(connected) = device.as_mut() {
-                            if connected.temperature_light
+                            if connected.sensor_light
                                 || connected.screen_light
                                 || (was_enabled && configuration_changed)
                             {
                                 let _ = connected.release_lightbar();
                             }
                             connected.battery_light = false;
-                            connected.temperature_light = false;
-                            connected.last_temperature = None;
+                            connected.sensor_light = false;
+                            connected.last_sensor = None;
                             connected.screen_light = false;
                             connected.screen_color = None;
                         }
@@ -1030,8 +1024,8 @@ fn handle_command(
             screen.set_enabled(false);
             device.screen_light = false;
             device.screen_color = None;
-            device.temperature_light = false;
-            device.last_temperature = None;
+            device.sensor_light = false;
+            device.last_sensor = None;
             if telemetry.enabled() {
                 let _ = telemetry.set(false, 0, false);
                 emit(
@@ -1065,8 +1059,8 @@ fn handle_command(
             screen.set_enabled(false);
             device.screen_light = false;
             device.screen_color = None;
-            device.temperature_light = false;
-            device.last_temperature = None;
+            device.sensor_light = false;
+            device.last_sensor = None;
             if telemetry.enabled() {
                 let _ = telemetry.set(false, 0, false);
                 emit(
@@ -1082,15 +1076,15 @@ fn handle_command(
             if !enabled && !device.battery_light {
                 emit(
                     proxy,
-                    json!({"type":"lightMode","battery":false,"temperature":device.temperature_light,"screen":device.screen_light}),
+                    json!({"type":"lightMode","battery":false,"sensor":device.sensor_light,"screen":device.screen_light}),
                 );
                 return true;
             }
             screen.set_enabled(false);
             device.screen_light = false;
             device.screen_color = None;
-            device.temperature_light = false;
-            device.last_temperature = None;
+            device.sensor_light = false;
+            device.last_sensor = None;
             if enabled && telemetry.enabled() {
                 let _ = telemetry.set(false, 0, false);
                 emit(
@@ -1110,7 +1104,7 @@ fn handle_command(
             if !enabled && !device.screen_light {
                 emit(
                     proxy,
-                    json!({"type":"lightMode","battery":device.battery_light,"temperature":device.temperature_light,"screen":false}),
+                    json!({"type":"lightMode","battery":device.battery_light,"sensor":device.sensor_light,"screen":false}),
                 );
                 return true;
             }
@@ -1124,8 +1118,8 @@ fn handle_command(
                 }
                 let _ = device.release_lightbar();
                 device.battery_light = false;
-                device.temperature_light = false;
-                device.last_temperature = None;
+                device.sensor_light = false;
+                device.last_sensor = None;
                 device.screen_light = true;
                 device.screen_color = None;
                 screen.set_enabled(true);
@@ -1146,10 +1140,10 @@ fn handle_command(
             }
         }
         DeviceCommand::SetTemperatureLightbar { enabled } => {
-            if !enabled && !device.temperature_light {
+            if !enabled && !device.sensor_light {
                 emit(
                     proxy,
-                    json!({"type":"lightMode","battery":device.battery_light,"temperature":false,"screen":device.screen_light}),
+                    json!({"type":"lightMode","battery":device.battery_light,"sensor":false,"screen":device.screen_light}),
                 );
                 return true;
             }
@@ -1167,14 +1161,14 @@ fn handle_command(
                 let _ = device.release_lightbar();
             }
             device.battery_light = false;
-            device.temperature_light = enabled;
-            device.last_temperature = None;
+            device.sensor_light = enabled;
+            device.last_sensor = None;
             emit(
                 proxy,
-                json!({"type":"lightMode","battery":false,"temperature":enabled}),
+                json!({"type":"lightMode","battery":false,"sensor":enabled}),
             );
             if enabled {
-                Ok("Following the reported sensor estimate")
+                Ok("Following the raw sensor byte")
             } else {
                 device.release_lightbar().map(|_| "Sensor color off")
             }
@@ -1416,7 +1410,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 } else if connected.audio.bridge_on() {
                     emit(
                         &proxy,
-                        json!({"type":"audioStatus","route":"voiceCoil","bridge":true,"endpoint":connected.audio.endpoint(),"callbacks":connected.audio.callbacks()}),
+                        json!({"type":"audioStatus","route":"voiceCoil","bridge":true,"endpoint":connected.audio.endpoint(),"callbacks":connected.audio.callbacks(),"glitches":connected.audio.glitches()}),
                     );
                 }
             }
@@ -1783,11 +1777,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                                 }
                             }
                         }
-                        if connected.temperature_light
-                            && let Some(temperature_c) = input.battery_info.temperature_c
+                        if connected.sensor_light
+                            && let Some(sensor_byte) = input.battery_info.sensor_byte
                         {
-                            let color = temperature_color(temperature_c);
-                            let changed = connected.last_temperature != Some(temperature_c);
+                            let color = sensor_color(sensor_byte);
+                            let changed = connected.last_sensor != Some(sensor_byte);
                             if connected.last_light != Some(color) {
                                 let report = protocol::usb_report(
                                     0,
@@ -1805,10 +1799,10 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                                 }
                             }
                             if changed && connected.last_light == Some(color) {
-                                connected.last_temperature = Some(temperature_c);
+                                connected.last_sensor = Some(sensor_byte);
                                 emit(
                                     &proxy,
-                                    json!({"type":"temperatureColor","temperatureC":temperature_c,"rgb":color}),
+                                    json!({"type":"sensorColor","sensorByte":sensor_byte,"rgb":color}),
                                 );
                             }
                         }
@@ -1939,13 +1933,12 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
 
 #[cfg(test)]
 mod tests {
-    use super::temperature_color;
+    use super::sensor_color;
 
     #[test]
-    fn sensor_estimate_uses_cool_to_warm_colors() {
-        assert_eq!(temperature_color(25), [60, 130, 200]);
-        assert_eq!(temperature_color(45), [230, 165, 45]);
-        assert_eq!(temperature_color(55), [220, 45, 50]);
-        assert_eq!(temperature_color(70), [220, 45, 50]);
+    fn raw_sensor_byte_spans_the_color_palette() {
+        assert_eq!(sensor_color(0), [60, 130, 200]);
+        assert_eq!(sensor_color(127), [230, 165, 45]);
+        assert_eq!(sensor_color(255), [220, 45, 50]);
     }
 }

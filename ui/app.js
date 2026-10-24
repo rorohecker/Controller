@@ -104,7 +104,7 @@
       $('#install-update').textContent=availableVersion?`Install ${availableVersion}`:'Install update';
       $('#update-status').textContent=availableVersion
         ?`Version ${availableVersion} is ready. The app will restart during installation.`
-        :`Version ${update?.currentVersion||'0.11.0'} is current.`;
+        :`Version ${update.currentVersion} is current.`;
       if(availableVersion){toast(`Update ${availableVersion} available`);log(`UPDATE / ${availableVersion} available`);}
       else if(manual)toast('App is up to date.');
     } catch(error) {
@@ -650,7 +650,7 @@
   $('#send-light').addEventListener('click',()=>{const h=$('#light-color').value;send({action:'setLightbar',rgb:[1,3,5].map(i=>parseInt(h.slice(i,i+2),16))});});
   $('#battery-light').addEventListener('click',()=>send({action:'batteryLightbar',enabled:!state.batteryLight}));
   $('#battery-light').insertAdjacentHTML('afterend','<button class="quiet-action" id="screen-light" type="button" aria-pressed="false" disabled>Follow screen color: off</button><small class="screen-light-status" id="screen-light-status" role="status">Samples the primary display locally only while enabled.</small>');
-  $('#battery-light').insertAdjacentHTML('afterend','<button class="quiet-action" id="temperature-light" type="button" aria-pressed="false" disabled>Sensor color: off</button><small class="screen-light-status" id="temperature-light-status" role="status">Uses an uncalibrated sensor estimate when reported.</small>');
+  $('#battery-light').insertAdjacentHTML('afterend','<button class="quiet-action" id="temperature-light" type="button" aria-pressed="false" disabled>Sensor color: off</button><small class="screen-light-status" id="temperature-light-status" role="status">Maps an uncalibrated raw byte to color.</small>');
   $('#temperature-light').addEventListener('click',()=>send({action:'setTemperatureLightbar',enabled:!state.temperatureLight}));
   $('#screen-light').addEventListener('click',()=>send({action:'setScreenLightbar',enabled:!state.screenLight}));
   $('#lights .page-heading p').textContent='Choose a fixed color or follow battery level, a sensor estimate, race telemetry, or your primary screen.';
@@ -695,7 +695,7 @@
     if(!state.telemetryOn){$('#telemetry-status').textContent='Off';$('#race-speed').textContent='—';$('#race-gear').textContent='—';$('#race-rpm').textContent='—';$('#race-source').textContent='Waiting for telemetry';$('#race-slip').textContent='Brake slip —';$('#rev-fill').style.width='0%';}
   }
   function renderBatteryLight(){const b=$('#battery-light');b.textContent=`Battery color: ${state.batteryLight?'on':'off'}`;b.setAttribute('aria-pressed',String(state.batteryLight));b.classList.toggle('is-active',state.batteryLight);}
-  function renderTemperatureLight(){const b=$('#temperature-light');b.textContent=`Sensor color: ${state.temperatureLight?'on':'off'}`;b.setAttribute('aria-pressed',String(state.temperatureLight));b.classList.toggle('is-active',state.temperatureLight);$('#temperature-light-status').textContent=state.temperatureLight?'Waiting for the reported sensor estimate.':'Uses an uncalibrated sensor estimate when reported.';}
+  function renderTemperatureLight(){const b=$('#temperature-light');b.textContent=`Sensor color: ${state.temperatureLight?'on':'off'}`;b.setAttribute('aria-pressed',String(state.temperatureLight));b.classList.toggle('is-active',state.temperatureLight);$('#temperature-light-status').textContent=state.temperatureLight?'Waiting for the raw sensor byte.':'Maps an uncalibrated raw byte to color.';}
   function renderScreenLight(){const b=$('#screen-light');b.textContent=`Follow screen color: ${state.screenLight?'on':'off'}`;b.setAttribute('aria-pressed',String(state.screenLight));b.classList.toggle('is-active',state.screenLight);$('#screen-light-status').textContent=state.screenLight?'Sampling the primary display locally every 400 ms.':'Samples the primary display locally only while enabled.';}
   $('#touch-mouse-toggle').addEventListener('click',()=>send({action:'setTouchMouse',enabled:!state.mouse}));
   function renderMouseSwitch(){const b=$('#touch-mouse-toggle');b.classList.toggle('is-active',state.mouse);b.setAttribute('aria-pressed',String(state.mouse));b.textContent=state.mouse?'On':'Off';renderGestureSwitch();}
@@ -797,6 +797,28 @@
   $('#diag-scan').addEventListener('click',manualScan);
   $('#scan-button').addEventListener('click',manualScan);
   $('#guide-scan').addEventListener('click',manualScan);
+  $('#copy-diagnostics').addEventListener('click',async()=>{
+    const report=[
+      'CONTROLLER diagnostics',
+      `Device: ${state.connected?`${state.name} (${state.transport})`:'Disconnected'}`,
+      `Firmware: ${$('#diag-firmware').textContent}`,
+      `Input: ${$('#session-signal').textContent}`,
+      `Rate: ${state.connected?`${state.rate}/s`:'—'} · gaps ${state.sequenceGaps} · invalid ${state.invalidReports}`,
+      `Battery: ${$('#diag-battery').textContent} · ${$('#diag-charge').textContent}`,
+      `Sensor byte: ${$('#diag-temp').textContent}`,
+      `XInput: ${$('#diag-xinput').textContent}`,
+      `Conflict: ${$('#conflict-message').textContent}`
+    ].join('\n');
+    try {
+      if(navigator.clipboard?.writeText) await navigator.clipboard.writeText(report);
+      else {
+        const field=document.createElement('textarea');field.value=report;field.style.position='fixed';field.style.opacity='0';document.body.append(field);field.select();
+        const copied=document.execCommand('copy');field.remove();
+        if(!copied)throw new Error('Clipboard unavailable');
+      }
+      toast('Diagnostics copied.');
+    } catch { toast('Could not copy diagnostics.'); }
+  });
   $('#button-matrix').innerHTML=names.map((n,i)=>`<span data-matrix="${i}">${n}</span>`).join('');
 
   function renderDeviceList() {
@@ -933,19 +955,17 @@
     $('#left-stick-mark i').style.transform=`translate(${a[0]*8}px,${a[1]*8}px)`;
     $('#right-stick-mark i').style.transform=`translate(${a[2]*8}px,${a[3]*8}px)`;
     const info=state.batteryInfo;
-    const healthNames={good:'Good',warm:'Warm',hot:'Hot',cold:'Cold',fault:'Fault',unknown:'Unknown'};
     const chargeNames={discharging:'Discharging',charging:'Charging',full:'Full',voltageOrTempFault:'Voltage / temp fault',temperatureFault:'Temperature fault',chargingError:'Charging error',unknown:'Unknown'};
-    const healthLabel=info?.health ? (healthNames[info.health]||info.health) : null;
     const chargeLabel=info?.chargeState ? (chargeNames[info.chargeState]||info.chargeState) : null;
-    const fault=info?.health==='fault';
+    const fault=['voltageOrTempFault','temperatureFault','chargingError'].includes(info?.chargeState);
     $('#battery-value').textContent=state.battery!=null?`${state.battery}%`:(fault?'Fault':'—');
     $('#diag-battery').textContent=state.battery!=null?`${state.battery}%`:(fault?'Fault':'—');
-    $('#battery-detail').textContent=!info?'—':fault?(info.healthDetail||'Charge fault'):state.charging?'Charging':(chargeLabel||'Battery');
-    $('#battery-health').textContent=healthLabel?`Condition ${healthLabel}`:'Condition —';
-    $('#battery-health').dataset.health=info?.health||'unknown';
-    $('#battery-temp').textContent=info?.temperatureC!=null?`Temp ${info.temperatureC} °C`:'Temp —';
-    $('#diag-health').textContent=healthLabel||'—';
-    $('#diag-temp').textContent=info?.temperatureC!=null?`${info.temperatureC}°`:'—';
+    $('#battery-detail').textContent=!info?'—':state.charging?'Charging':(chargeLabel||'Battery');
+    $('#battery-health').textContent=fault?'Charge fault':'Health not reported';
+    $('#battery-health').dataset.health=fault?'fault':'unknown';
+    $('#battery-temp').textContent=info?.sensorByte!=null?`Sensor ${info.sensorByte} raw`:'Sensor —';
+    $('#diag-health').textContent=fault?'Charge fault':'Not reported';
+    $('#diag-temp').textContent=info?.sensorByte!=null?String(info.sensorByte):'—';
     $('#diag-charge').textContent=chargeLabel||'—';
     const jackParts=[];
     if(info?.headphoneJack)jackParts.push('Headphone');
@@ -1006,6 +1026,7 @@
       renderBridge();
       if(event.message)$('#bridge-status').textContent=event.message;
       else if(event.reason)$('#bridge-status').textContent=`Motor fallback · ${event.reason}`;
+      else if(event.bridge&&Number.isInteger(event.glitches))$('#bridge-status').textContent=event.glitches?`Bridge active · ${event.glitches} audio buffer glitch${event.glitches===1?'':'es'}`:'Bridge active · audio stream healthy';
     }else if(event.type==='speakerStatus'){
       log(event.message||'Controller speaker chirp playing');
     }else if(event.type==='inputEffects'){
@@ -1083,12 +1104,12 @@
     }else if(event.type==='remap'){
       state.remapArmed=!!event.enabled;
     }else if(event.type==='lightMode'){
-      state.batteryLight=!!event.battery;state.temperatureLight=!!event.temperature;state.screenLight=!!event.screen;renderBatteryLight();renderTemperatureLight();renderScreenLight();
-    }else if(event.type==='temperatureColor'){
+      state.batteryLight=!!event.battery;state.temperatureLight=!!event.sensor;state.screenLight=!!event.screen;renderBatteryLight();renderTemperatureLight();renderScreenLight();
+    }else if(event.type==='sensorColor'){
       if(Array.isArray(event.rgb)){
         const hex='#'+event.rgb.map(value=>Math.max(0,Math.min(255,value)).toString(16).padStart(2,'0')).join('').toUpperCase();
         $('#light-arcs').style.setProperty('--light',hex);$('#light-hex').textContent=hex;
-        $('#temperature-light-status').textContent=`Reported sensor estimate · ${event.temperatureC}°C · ${hex}`;
+        $('#temperature-light-status').textContent=`Raw sensor byte ${event.sensorByte} · ${hex}`;
       }
     }else if(event.type==='screenColor'){
       if(Array.isArray(event.rgb)){

@@ -252,10 +252,7 @@ main{padding:28px 36px 36px}
 .battery-segments i{height:14px;border-radius:2px;background:rgba(0,0,0,.3);transition:background .2s}
 .battery-segments i.is-full{background:var(--teal)}
 .battery-meta{display:grid;gap:4px;font:11px var(--body);color:rgba(243,236,222,.5)}
-.battery-meta [data-health="fault"],.battery-meta [data-health="hot"]{color:#ff6b6b}
-.battery-meta [data-health="warm"]{color:var(--gold)}
-.battery-meta [data-health="cold"]{color:#7ec9bc}
-.battery-meta [data-health="good"]{color:rgba(126,201,188,.9)}
+.battery-meta [data-health="fault"]{color:#ff6b6b}
 .battery-segments i.is-charging.is-full{background:var(--gold)}
 .battery-band.is-fault .battery-segments i{background:rgba(255,107,107,.35)}
 .battery-band.is-fault .battery-segments i.is-fault{background:#ff6b6b}

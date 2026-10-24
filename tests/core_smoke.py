@@ -5,6 +5,7 @@ Requires a connected DualSense. Briefly sends a 10% trigger preview, then resets
 import json
 import queue
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -14,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
-    exe = ROOT / "target" / "debug" / "controller.exe"
+    exe = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / "target" / "debug" / "controller.exe"
     process = subprocess.Popen([str(exe), "--core"], cwd=ROOT, stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
     messages = queue.Queue()
