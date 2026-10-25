@@ -25,6 +25,14 @@ jobs:
           $version = (Get-Content tauri.conf.json | ConvertFrom-Json).version
           if ($env:GITHUB_REF_NAME -ne "v$version") { throw "Tag must match tauri.conf.json version v$version" }
           if (-not $env:SIGNING_KEY) { throw 'TAURI_SIGNING_PRIVATE_KEY secret is required' }
+      - name: Verify bundled ViGEmBus setup
+        shell: pwsh
+        run: |
+          $asset = 'resources/ViGEmBus_1.22.0_x64_x86_arm64.exe'
+          $expected = '89220A7865076B342892F98865F3499FB7C4CFD673159E89D352C360FD014C6A'
+          if ((Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash -ne $expected) { throw 'Bundled ViGEmBus hash changed' }
+          $signature = Get-AuthenticodeSignature -LiteralPath $asset
+          if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*Nefarius Software Solutions*') { throw 'Bundled ViGEmBus signature is invalid' }
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version 2.11.1 --locked
       - name: Rust tests
@@ -60,7 +68,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $bundle = 'target/release/bundle/nsis'
-          $installer = @(Get-ChildItem -LiteralPath $bundle -Filter '*-setup.exe')
+          $version = (Get-Content tauri.conf.json | ConvertFrom-Json).version
+          $installer = @(Get-ChildItem -LiteralPath $bundle -Filter "*_${version}_*-setup.exe")
           if ($installer.Count -ne 1) { throw 'Expected one NSIS installer' }
           $signature = "$($installer[0].FullName).sig"
           if (-not (Test-Path -LiteralPath $signature)) { throw 'Installer signature missing' }

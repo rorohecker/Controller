@@ -27,6 +27,8 @@ pub struct TriggerSetting {
     pub strength: f32,
     pub curve: Vec<f32>,
     #[serde(default)]
+    pub zone_forces: Option<Vec<f32>>,
+    #[serde(default)]
     pub start_zone: Option<u8>,
     #[serde(default)]
     pub end_zone: Option<u8>,
@@ -52,6 +54,14 @@ impl TriggerSetting {
                 .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
         {
             return Err("Curve must have eleven points between 0 and 1");
+        }
+        if self.zone_forces.as_ref().is_some_and(|zones| {
+            zones.len() != 10
+                || zones
+                    .iter()
+                    .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+        }) {
+            return Err("Zone forces must have ten values between 0 and 1");
         }
         if self
             .snap_strength
@@ -312,10 +322,17 @@ pub fn encode_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str
     }
     let mut levels = [0u8; 10];
     for (i, level) in levels.iter_mut().enumerate() {
-        let midpoint = (setting.curve[i] + setting.curve[i + 1]) / 2.0;
+        let midpoint = setting
+            .zone_forces
+            .as_ref()
+            .map_or((setting.curve[i] + setting.curve[i + 1]) / 2.0, |zones| {
+                zones[i]
+            });
         *level = (midpoint * setting.strength / 100.0 * MAX_TRIGGER_LEVEL as f32).round() as u8;
     }
-    if setting.mode != "weapon" && levels.iter().all(|&level| level == 0) {
+    if matches!(setting.mode.as_str(), "resistance" | "vibration")
+        && levels.iter().all(|&level| level == 0)
+    {
         block[0] = 0x05;
         return Ok(block);
     }
@@ -433,6 +450,12 @@ pub fn usb_report(
     report
 }
 
+pub fn player_leds_report(mask: u8) -> [u8; USB_OUTPUT_LEN] {
+    let mut report = usb_report(0, 0x10, 0, None, None, None, None, false);
+    report[44] = mask & 0x1f;
+    report
+}
+
 pub fn bt_report(usb: &[u8; USB_OUTPUT_LEN], sequence: u8) -> [u8; BT_OUTPUT_LEN] {
     let mut report = [0u8; BT_OUTPUT_LEN];
     report[0] = 0x31;
@@ -507,6 +530,14 @@ mod tests {
     }
 
     #[test]
+    fn player_indicators_are_independent_from_rgb_lightbar() {
+        let report = player_leds_report(0b1_0101);
+        assert_eq!((report[0], report[1], report[2]), (0x02, 0, 0x10));
+        assert_eq!(report[44], 0b1_0101);
+        assert_eq!(&report[45..48], &[0, 0, 0]);
+    }
+
+    #[test]
     fn bt_framing_and_crc() {
         let usb = usb_report(0, 0x04, 0, None, None, Some([6, 7, 8]), None, false);
         let bt = bt_report(&usb, 5);
@@ -538,6 +569,25 @@ mod tests {
         invalid.curve[3] = 0.3;
         invalid.strength = 101.0;
         assert!(encode_trigger(&invalid).is_err());
+    }
+
+    #[test]
+    fn independent_zone_forces_encode_only_the_selected_zone() {
+        let mut setting = linear("resistance");
+        setting.strength = 100.0;
+        setting.curve = vec![0.0; 11];
+        let mut zones = vec![0.0; 10];
+        zones[3] = 1.0;
+        setting.zone_forces = Some(zones);
+        let encoded = encode_trigger(&setting).unwrap();
+        assert_eq!(encoded[0], 0x21);
+        assert_eq!(u16::from_le_bytes([encoded[1], encoded[2]]), 1 << 3);
+        assert_eq!(
+            u32::from_le_bytes(encoded[3..7].try_into().unwrap()),
+            5 << 9
+        );
+        setting.zone_forces = Some(vec![0.5; 9]);
+        assert!(encode_trigger(&setting).is_err());
     }
 
     #[test]

@@ -29,6 +29,10 @@ use tauri::{Emitter, Manager, State};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
+#[cfg(windows)]
+use windows_sys::Win32::UI::Shell::ShellExecuteW;
 
 struct Bridge {
     writer: Mutex<Option<ChildStdin>>,
@@ -211,6 +215,64 @@ fn send_command(command: Value, bridge: State<'_, Arc<Bridge>>) -> Result<(), St
     bridge.send(&command)
 }
 
+#[cfg(windows)]
+fn shell_open(target: &OsStr, verb: &str) -> Result<(), String> {
+    let verb: Vec<u16> = OsStr::new(verb).encode_wide().chain([0]).collect();
+    let target: Vec<u16> = target.encode_wide().chain([0]).collect();
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1,
+        )
+    };
+    if (result as usize) <= 32 {
+        Err(format!(
+            "Windows could not open driver setup (code {}).",
+            result as usize
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[tauri::command]
+fn open_driver_setup(kind: &str, app: tauri::AppHandle) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        let (url, label) = match kind {
+            "vigem" => (
+                "https://github.com/nefarius/ViGEmBus/releases/tag/v1.22.0",
+                "ViGEmBus",
+            ),
+            "hidhide" => ("https://github.com/nefarius/HidHide/releases", "HidHide"),
+            _ => return Err("Unknown driver setup".into()),
+        };
+        if kind == "vigem" {
+            let bundled = app
+                .path()
+                .resource_dir()
+                .map_err(|e| e.to_string())?
+                .join("resources")
+                .join("ViGEmBus_1.22.0_x64_x86_arm64.exe");
+            if bundled.is_file() {
+                shell_open(bundled.as_os_str(), "runas")?;
+                return Ok("Signed ViGEmBus setup launched".into());
+            }
+        }
+        shell_open(OsStr::new(url), "open")?;
+        Ok(format!("Opened official {label} download page"))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (kind, app);
+        Err("Driver setup is available on Windows only".into())
+    }
+}
+
 #[tauri::command]
 fn load_profiles() -> Result<Option<Value>, String> {
     profiles::load()
@@ -310,6 +372,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             send_command,
+            open_driver_setup,
             load_profiles,
             save_profiles,
             export_profiles,

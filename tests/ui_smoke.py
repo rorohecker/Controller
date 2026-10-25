@@ -15,6 +15,7 @@ def mock_core(page):
           if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.11.2'}; }
           if (name === 'install_update') { window.installedUpdate=true; return null; }
           if (name === 'send_demo_telemetry') { window.demoPort=args.port; return null; }
+          if (name === 'open_driver_setup') { window.driverOpened=args.kind; return 'Driver setup opened'; }
           if (name === 'save_profiles') window.saved = args.data;
           if (name === 'export_profiles') { window.exported = args.data; return 'CONTROLLER-profiles.json'; }
           if (name === 'send_command') window.sent.push(args.command);
@@ -91,6 +92,9 @@ def main():
         assert page.evaluate("window.sent.at(-1).pointer_sensitivity") == .6
         page.locator("#pc-reverse-scroll").uncheck()
         assert page.evaluate("window.sent.at(-1).reverse_scroll") is False
+        page.locator('[data-view="touch"]').click()
+        page.locator("#setup-vigem").click()
+        assert page.evaluate("window.driverOpened==='vigem'")
         page.locator('[data-view="calibration"]').click()
         assert page.locator("#start-calibration").is_enabled()
         page.locator("#start-calibration").click()
@@ -104,9 +108,13 @@ def main():
         assert page.locator("#next-calibration").is_enabled()
         page.locator("#next-calibration").click()
         page.evaluate("""() => window.coreHandler({type:'input',input:{buttons:[0,0,0,0,0,0,1,1,...Array(15).fill(0)],axes:[0,0,0,0],touch:[null,null],gyro:[0,0,0],battery:75,charging:false,fullReport:true}})""")
+        assert page.locator("#next-calibration").is_disabled()
+        assert page.locator("#cal-l2-adc").inner_text() == "255 / 255"
+        pad_event(page)
+        assert "255/255" in page.locator("#cal-range-feedback").inner_text()
         assert page.locator("#next-calibration").is_enabled()
         page.locator("#next-calibration").click()
-        for x,y in ((.1,.1),(.9,.9)):
+        for x,y in ((.1,.1),(.9,.1),(.1,.9),(.9,.9)):
             for _ in range(6):
                 page.evaluate("""point => window.coreHandler({type:'input',input:{buttons:Array(23).fill(0),axes:[0,0,0,0],touch:[point,null],gyro:[0,0,0],battery:75,charging:false,fullReport:true}})""",{"x":x,"y":y})
         assert page.locator("#next-calibration").is_enabled()
@@ -116,6 +124,11 @@ def main():
         page.locator('[data-view="lights"]').click()
         assert page.locator("#light-controller-map .controller-map").count() == 1
         assert page.locator("#light-presets [data-color]").count() == 24
+        for led in (0, 2, 4):
+            page.locator(f'#player-leds [data-player-led="{led}"]').click()
+        assert page.locator('.map-player-indicators .is-active').count() == 3
+        page.locator("#set-player-leds").click()
+        assert page.evaluate("window.sent.at(-1).action==='setPlayerLeds' && window.sent.at(-1).mask===21")
         page.locator("#light-hex-input").fill("#42A5F5")
         page.locator("#light-hex-input").press("Tab")
         page.locator("#save-light-color").click()
@@ -166,6 +179,7 @@ def main():
         pad_event(page)
         pad_event(page, 0)
         assert page.locator("#curve-side-label").inner_text() == "R2"
+        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-trigger-zones.png"), full_page=True)
         for _ in range(40):
             pad_event(page)
             pad_event(page, 13)
@@ -266,12 +280,14 @@ def main():
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-telemetry-new.png"), full_page=True)
         page.locator('[data-view="triggers"]').click()
         page.locator('[data-mode="bow"]').click()
-        assert page.locator("#curve-other-line").get_attribute("d")
-        assert "L2" in page.locator("#curve-other-legend").inner_text() or "R2" in page.locator("#curve-other-legend").inner_text()
-        assert page.locator("#curve-values input").count() == 11
-        page.locator('[data-curve-value="5"]').fill("66")
-        page.locator('[data-curve-value="5"]').press("Tab")
-        assert page.locator('[data-curve-value="5"]').input_value() == "66"
+        assert page.locator(".trigger-curve-svg").count() == 2
+        assert page.locator('.trigger-curve-svg[data-curve-side="left"] [data-point]').count() == 10
+        right_zone = page.locator('.trigger-curve-svg[data-curve-side="right"] [data-point="5"]')
+        before = float(right_zone.get_attribute("cy"))
+        right_zone.focus()
+        right_zone.press("ArrowUp")
+        assert float(page.locator('.trigger-curve-svg[data-curve-side="right"] [data-point="5"]').get_attribute("cy")) < before
+        assert page.locator("#curve-side-label").inner_text() == "R2"
         page.locator("#break-start").fill("3")
         page.locator("#break-end").fill("8")
         page.locator("#break-snap").fill("75")
@@ -336,6 +352,11 @@ def main():
         assert page.locator("#profile-match-title").input_value() == ""
         page.wait_for_timeout(450)
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-profiles-check.png"), full_page=True)
+        for hero, expected_mode in (("hanzo", "bow"), ("genji", "resistance"), ("soldier", "vibration")):
+            page.locator(f'[data-hero-template="{hero}"]').click()
+            assert page.locator("#profile-auto-apply").is_checked() is False
+            assert page.locator("#profile-match").input_value() == ""
+            page.wait_for_function("mode => window.saved?.profiles[0]?.triggers.right.mode === mode", arg=expected_mode)
         for view in ("live", "triggers", "haptics", "touch", "pc-controls", "lights", "profiles", "calibration", "diagnostics"):
             page.locator(f'[data-view="{view}"]').click()
             assert page.locator(f"#{view}").is_visible()

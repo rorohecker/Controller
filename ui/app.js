@@ -30,6 +30,11 @@
     {id:'rally',name:'Rally',description:'L2 has a firm wall for braking. R2 uses a pulsing response for throttle experiments; tune its strength to suit your hands and the game.',tag:'RACING',matchExe:'',autoApply:true,triggers:{left:{mode:'resistance',strength:73,curve:clone(presets.Wall)},right:{mode:'vibration',strength:54,curve:clone(presets.Pulse)}},haptics:{shape:'saw',frequency:65,attack:8,release:240,strength:55,pan:-10},gyroAim:defaultGyro(),remap:defaultRemap(),inputEffects:defaultInputEffects()},
     {id:'arcade',name:'Arcade',description:'Both triggers break sharply for a punchy action feel. This preset is deliberately bold; lower the strength if it feels tiring during longer sessions.',tag:'ACTION',matchExe:'',autoApply:true,triggers:{left:{mode:'weapon',strength:57,curve:clone(presets.Break)},right:{mode:'weapon',strength:70,curve:clone(presets.Break)}},haptics:{shape:'square',frequency:180,attack:3,release:110,strength:39,pan:0},gyroAim:defaultGyro(),remap:defaultRemap(),inputEffects:defaultInputEffects()}
   ];
+  const overwatchTemplates = {
+    hanzo:{name:'Hanzo · Storm Bow',description:'Charging bow feel: R2 builds resistance toward a strong draw. The haptic preview is a soft bow pulse. Storm Arrows and the release snap need live game events.',left:{mode:'off',strength:0,curve:clone(presets.Linear)},right:{mode:'bow',strength:72,curve:clone(presets.Swell),startZone:0,endZone:8,snapStrength:62,zoneForces:[.12,.18,.25,.34,.44,.56,.69,.83,.94,.94]},haptics:{shape:'sine',frequency:50,attack:80,release:180,strength:45,pan:0},inputEffects:{enabled:false,threshold:.95,strength:45}},
+    genji:{name:'Genji · Shuriken',description:'Quick R2 travel for shuriken throws and a light L2 pulse to preview Deflect. Deflect direction, Swift Strike, and triple throws need live game events.',left:{mode:'vibration',strength:42,curve:clone(presets.Pulse),zoneForces:[0,.28,.48,.48,.48,.48,.48,.48,.48,.48]},right:{mode:'resistance',strength:28,curve:clone(presets.Linear),zoneForces:[0,0,.08,.12,.14,.16,.18,.2,.2,.2]},haptics:{shape:'square',frequency:120,attack:2,release:45,strength:42,pan:0},inputEffects:{enabled:true,threshold:.82,strength:32}},
+    soldier:{name:'Soldier: 76 · Pulse Rifle',description:'R2 has a repeating rifle feel; L2 provides a firm Helix Rocket wall. Sustained fire rate and rocket impact need live game events.',left:{mode:'weapon',strength:78,curve:clone(presets.Break),startZone:4,endZone:6,snapStrength:55},right:{mode:'vibration',strength:66,curve:clone(presets.Pulse),zoneForces:[0,.42,.66,.66,.66,.66,.66,.66,.66,.66]},haptics:{shape:'square',frequency:95,attack:3,release:135,strength:65,pan:0},inputEffects:{enabled:true,threshold:.78,strength:48}}
+  };
   const textures = [
     {name:'Soft tick',type:'Light',settings:{shape:'sine',frequency:175,attack:3,release:80,strength:30,pan:0}},
     {name:'Heartbeat',type:'Warm',settings:{shape:'sine',frequency:65,attack:20,release:270,strength:62,pan:0}},
@@ -89,7 +94,7 @@
     if(Number.isFinite(pointer)&&pointer>=.4&&pointer<=1.5)pcPointerSensitivity=pointer;
     pcReverseScroll=localStorage.getItem('aftertouch.pcReverseScroll')!=='false';
   }catch{}
-  let toastTimeout, audioContext, dragging = -1, saveTimeout, saveChain=Promise.resolve(), scanTimeout;
+  let toastTimeout, audioContext, dragging = null, saveTimeout, saveChain=Promise.resolve(), scanTimeout;
   let pcAudioSketch=false;
   try{pcAudioSketch=localStorage.getItem('aftertouch.pcAudioSketch')==='true';}catch{}
   $('#haptic-pc-audio').checked=pcAudioSketch;
@@ -128,6 +133,7 @@
       t.startZone=Number.isInteger(t.startZone)?t.startZone:(t.mode==='weapon'?5:2);
       t.endZone=Number.isInteger(t.endZone)?t.endZone:(t.mode==='weapon'?6:8);
       t.snapStrength=Number.isFinite(t.snapStrength)?t.snapStrength:50;
+      if(!Array.isArray(t.zoneForces)||t.zoneForces.length!==10)t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);
     }
     n.remap.bindings = Array.isArray(n.remap.bindings) ? n.remap.bindings.map(b=>({button:b.button,vk:b.vk,modifier:b.modifier??null,behavior:b.behavior||'hold',sequence:Array.isArray(b.sequence)?b.sequence:[]})) : [];
     return n;
@@ -211,13 +217,14 @@
     if(state.connected)send({action:'setPcBindings',bindings:pcBindings,click_threshold:pcClickThreshold,pointer_sensitivity:pcPointerSensitivity,reverse_scroll:pcReverseScroll});
   }
   function sendCalibration(){
-    if(state.connected)send({action:'setCalibration',calibration:inputCalibration||defaultCalibration()});
+    if(state.connected)return send({action:'setCalibration',calibration:inputCalibration||defaultCalibration()});
+    return Promise.resolve(false);
   }
   const calibrationStages=[
     {label:'1. Capture the resting position',instruction:'Set the controller down with sticks centered and L2/R2 released. Watch the live values settle, then capture.',action:'Capture rest'},
     {label:'2. Rotate both sticks',instruction:'Rotate each stick around its full rim until left, right, up, and down are all captured.',action:'Continue to triggers'},
-    {label:'3. Press both triggers fully',instruction:'Press L2 and R2 to their physical stops. Release and repeat if a maximum is still low.',action:'Continue to touchpad'},
-    {label:'4. Trace the touchpad',instruction:'Slide a finger through all four corners and along the edges until both axes show enough range.',action:'Save calibration'}
+    {label:'3. Press and release both triggers',instruction:'Watch the raw ADC bars while pressing L2 and R2 to their physical stops, then release each trigger to capture its peak.',action:'Continue to touchpad'},
+    {label:'4. Trace the touchpad',instruction:'Touch each marked corner, then slide along the edges. Each corner turns green when captured.',action:'Save calibration'}
   ];
   function restValues(run){
     const count=run.restSamples.length||1;
@@ -233,7 +240,7 @@
     }
     if(run.stage===1)return run.axisMins.every((value,i)=>value<=run.centers[i]-.5)&&run.axisMaxs.every((value,i)=>value>=run.centers[i]+.5);
     if(run.stage===2)return run.triggerFulls.every((value,i)=>value-run.rests[i]>=.5);
-    return run.touchCount>=10&&run.touchMins.every((value,i)=>run.touchMaxs[i]-value>=.5);
+    return run.touchCount>=10&&Object.values(run.touchCorners).every(Boolean)&&run.touchMins.every((value,i)=>run.touchMaxs[i]-value>=.5);
   }
   function calibrationFeedback(run){
     if(run.stage===0){
@@ -247,9 +254,10 @@
       const ranges=axes.map((name,i)=>`${name} ${Math.round(run.axisMins[i]*100)} to ${Math.round(run.axisMaxs[i]*100)}%`).join(' · ');
       return `${ranges}. ${missing.length?`Still waiting for full travel: ${missing.join(', ')}.`:'All four stick directions captured. Continue when ready.'}`;
     }
-    if(run.stage===2)return `Captured full pulls: L2 ${Math.round(run.triggerFulls[0]*100)}%, R2 ${Math.round(run.triggerFulls[1]*100)}%. ${calibrationReady(run)?'Both triggers captured.':'Press each trigger further.'}`;
+    if(run.stage===2)return `Peaks captured after release: L2 ${Math.round(run.triggerFulls[0]*255)}/255, R2 ${Math.round(run.triggerFulls[1]*255)}/255. ${calibrationReady(run)?'Both triggers captured; these peaks become 100% after saving.':'Press each trigger fully, then release it.'}`;
     const x=run.touchMaxs[0]-run.touchMins[0],y=run.touchMaxs[1]-run.touchMins[1];
-    return `Touch coverage: horizontal ${Math.max(0,Math.round(x*100))}%, vertical ${Math.max(0,Math.round(y*100))}%. ${calibrationReady(run)?'Ready to save.':'Trace farther toward each edge.'}`;
+    const corners=Object.values(run.touchCorners).filter(Boolean).length;
+    return `Touch corners ${corners}/4 · horizontal ${Math.max(0,Math.round(x*100))}% · vertical ${Math.max(0,Math.round(y*100))}%. ${calibrationReady(run)?'Ready to save.':'Touch each remaining corner.'}`;
   }
   function renderCalibrationStatus(){
     const run=calibrationRun;
@@ -267,17 +275,31 @@
       $('#cal-range-feedback').textContent=calibrationFeedback(run);
       $('#calibration-status').textContent=`Step ${run.stage+1} of 4. You choose when to continue.`;
     }
+    $('.calibration-work').dataset.stage=run?String(run.stage):'idle';
   }
   function sampleCalibration(input){
     const axes=input.axes||[0,0,0,0],buttons=input.buttons||Array(23).fill(0),point=input.touch?.find(Boolean);
+    const run=calibrationRun;
     $('#cal-stick-left').textContent=`${Math.round(axes[0]*100)} / ${Math.round(axes[1]*100)}`;
     $('#cal-stick-right').textContent=`${Math.round(axes[2]*100)} / ${Math.round(axes[3]*100)}`;
-    $('#cal-trigger-l2').textContent=`${Math.round(buttons[6]*100)}%`;
-    $('#cal-trigger-r2').textContent=`${Math.round(buttons[7]*100)}%`;
+    $('#cal-trigger-l2').textContent=run?`${Math.round(buttons[6]*255)}/255`:`${Math.round(buttons[6]*100)}%`;
+    $('#cal-trigger-r2').textContent=run?`${Math.round(buttons[7]*255)}/255`:`${Math.round(buttons[7]*100)}%`;
+    for(let side=0;side<2;side++){
+      const name=side?'right':'left',base=side*2;
+      $(`#cal-${name}-dot`).style.left=`${50+clamp(axes[base],-1,1)*42}%`;
+      $(`#cal-${name}-dot`).style.top=`${50+clamp(axes[base+1],-1,1)*42}%`;
+      const sweep=$(`#cal-${name}-sweep`);
+      sweep.classList.toggle('is-active',!!run&&run.stage>=1&&run.axisCount>0);
+      if(run&&run.axisCount){sweep.style.left=`${50+run.axisMins[base]*42}%`;sweep.style.top=`${50+run.axisMins[base+1]*42}%`;sweep.style.width=`${(run.axisMaxs[base]-run.axisMins[base])*42}%`;sweep.style.height=`${(run.axisMaxs[base+1]-run.axisMins[base+1])*42}%`;}
+      const triggerName=side?'r2':'l2',value=clamp(buttons[6+side]);
+      $(`#cal-${triggerName}-fill`).style.width=`${value*100}%`;
+      $(`#cal-${triggerName}-peak`).style.left=`${(run?.triggerFulls[side]||0)*100}%`;
+      $(`#cal-${triggerName}-adc`).textContent=`${Math.round(value*255)} / 255`;
+    }
     $('#cal-touch-readout').textContent=point?`${Math.round(point.x*100)}% / ${Math.round(point.y*100)}%`:'No contact';
     const dot=$('#cal-touch-dot');dot.classList.toggle('is-active',!!point);
     if(point){dot.style.left=`${clamp(point.x)*100}%`;dot.style.top=`${clamp(point.y)*100}%`;}
-    const run=calibrationRun;if(!run)return;
+    if(!run)return;
     if(run.stage===0){
       run.restSamples.push({axes:[...axes],triggers:[buttons[6],buttons[7]]});
       if(run.restSamples.length>100)run.restSamples.shift();
@@ -285,18 +307,27 @@
       run.axisCount++;
       axes.forEach((value,i)=>{run.axisMins[i]=Math.min(run.axisMins[i],value);run.axisMaxs[i]=Math.max(run.axisMaxs[i],value);});
     }else if(run.stage===2){
-      [6,7].forEach((button,i)=>run.triggerFulls[i]=Math.max(run.triggerFulls[i],buttons[button]));
+      [6,7].forEach((button,i)=>{
+        const value=buttons[button];
+        if(value>run.rests[i]+.25)run.triggerHeld[i]=true;
+        if(run.triggerHeld[i])run.triggerPeaks[i]=Math.max(run.triggerPeaks[i],value);
+        if(run.triggerHeld[i]&&value<=run.rests[i]+.08){run.triggerFulls[i]=Math.max(run.triggerFulls[i],run.triggerPeaks[i]);run.triggerHeld[i]=false;run.triggerPeaks[i]=0;}
+      });
     }else{
-      input.touch.forEach(contact=>{if(contact){run.touchMins[0]=Math.min(run.touchMins[0],contact.x);run.touchMins[1]=Math.min(run.touchMins[1],contact.y);run.touchMaxs[0]=Math.max(run.touchMaxs[0],contact.x);run.touchMaxs[1]=Math.max(run.touchMaxs[1],contact.y);run.touchCount++;}});
+      input.touch.forEach(contact=>{if(contact){run.touchMins[0]=Math.min(run.touchMins[0],contact.x);run.touchMins[1]=Math.min(run.touchMins[1],contact.y);run.touchMaxs[0]=Math.max(run.touchMaxs[0],contact.x);run.touchMaxs[1]=Math.max(run.touchMaxs[1],contact.y);run.touchCount++;if(contact.x<.3&&contact.y<.3)run.touchCorners.tl=true;if(contact.x>.7&&contact.y<.3)run.touchCorners.tr=true;if(contact.x<.3&&contact.y>.7)run.touchCorners.bl=true;if(contact.x>.7&&contact.y>.7)run.touchCorners.br=true;}});
     }
+    $$('.cal-corner').forEach(marker=>marker.classList.toggle('is-captured',!!run.touchCorners[marker.dataset.calCorner]));
     renderCalibrationStatus();
   }
-  function finishCalibration(){
+  async function finishCalibration(){
     const run=calibrationRun;
     const candidate={axisCenters:run.centers,axisMins:run.axisMins,axisMaxs:run.axisMaxs,triggerRests:run.rests,triggerFulls:run.triggerFulls,touchMins:run.touchMins,touchMaxs:run.touchMaxs};
+    if(!await send({action:'setCalibration',calibration:candidate})){
+      $('#calibration-status').textContent='Could not apply measured ranges. Check Diagnostics and try saving again.';
+      return;
+    }
     calibrationRun=null;inputCalibration=candidate;
     try{localStorage.setItem('aftertouch.inputCalibration',JSON.stringify(candidate));}catch{}
-    sendCalibration();
     $('#calibration-fill').style.width='100%';
     $('#calibration-step').textContent='Calibration saved';
     $('#calibration-instruction').textContent='Measured ranges now shape live input, pointer control, and trigger percentages.';
@@ -307,13 +338,13 @@
   $('#start-calibration').addEventListener('click',async()=>{
     if(!state.connected||calibrationRun)return;
     if(!await send({action:'setCalibration',calibration:defaultCalibration()}))return;
-    calibrationRun={stage:0,restSamples:[],centers:[0,0,0,0],rests:[0,0],axisMins:[1,1,1,1],axisMaxs:[-1,-1,-1,-1],axisCount:0,triggerFulls:[0,0],touchMins:[1,1],touchMaxs:[0,0],touchCount:0};
+    calibrationRun={stage:0,restSamples:[],centers:[0,0,0,0],rests:[0,0],axisMins:[1,1,1,1],axisMaxs:[-1,-1,-1,-1],axisCount:0,triggerFulls:[0,0],triggerPeaks:[0,0],triggerHeld:[false,false],touchMins:[1,1],touchMaxs:[0,0],touchCount:0,touchCorners:{tl:false,tr:false,bl:false,br:false}};
     renderCalibrationStatus();
   });
-  $('#next-calibration').addEventListener('click',()=>{
+  $('#next-calibration').addEventListener('click',async()=>{
     const run=calibrationRun;if(!run||!calibrationReady(run))return;
     if(run.stage===0){const values=restValues(run);run.centers=values.centres;run.rests=values.rests;}
-    if(run.stage===3){finishCalibration();return;}
+    if(run.stage===3){await finishCalibration();return;}
     run.stage++;renderCalibrationStatus();
   });
   $('#cancel-calibration').addEventListener('click',()=>{
@@ -490,8 +521,9 @@
     }else if(pressed(12)||pressed(13)){
       if(padFocus?.matches('[data-point]')){
         const index=Number(padFocus.dataset.point);
-        trigger().curve[index]=Math.round(clamp(trigger().curve[index]+(pressed(12)?.02:-.02))*100)/100;
-        renderCurve();focusPadControl($(`#curve-points [data-point="${index}"]`));saveProfiles();
+        const side=padFocus.dataset.side;
+        profile().triggers[side].zoneForces[index]=Math.round(clamp(profile().triggers[side].zoneForces[index]+(pressed(12)?.02:-.02))*100)/100;
+        renderCurve();focusPadControl($(`.trigger-curve-svg[data-curve-side="${side}"] [data-point="${index}"]`));saveProfiles();
       }else movePadFocus(pressed(13)?1:-1);
     }else if(pressed(14)||pressed(15)){
       if(!changePadValue(padFocus,pressed(15)?1:-1))movePadFocus(pressed(15)?1:-1);
@@ -518,6 +550,7 @@
       && (!(p.matchTitle||p.matchPath) || !!(p.matchExe||p.match_exe)) && p.triggers && ['left','right'].every(side => {
       const t = p.triggers[side];
       return t && modeLabel[t.mode] && Number.isFinite(t.strength) && t.strength>=0 && t.strength<=100 && Array.isArray(t.curve) && t.curve.length===11 && t.curve.every(n=>Number.isFinite(n)&&n>=0&&n<=1)
+        && (t.zoneForces==null || Array.isArray(t.zoneForces)&&t.zoneForces.length===10&&t.zoneForces.every(n=>Number.isFinite(n)&&n>=0&&n<=1))
         && (t.startZone==null || Number.isInteger(t.startZone)&&t.startZone>=0&&t.startZone<=7)
         && (t.endZone==null || Number.isInteger(t.endZone)&&t.endZone>=1&&t.endZone<=9)
         && (t.startZone==null||t.endZone==null||t.endZone>t.startZone)
@@ -650,6 +683,19 @@
     if(state.profiles.length>=50){toast('50 profile limit.');return;}
     const p=normalizeProfile(clone(profile())); p.id=`profile-${crypto.randomUUID()}`; p.name='Untitled'; p.description='';p.tag='Custom';p.matchExe='';p.matchTitle='';p.matchPath='';state.profiles.unshift(p); state.profileId=p.id;
     renderAllProfileControls(); saveProfiles(); $('#profile-name').focus(); $('#profile-name').select();
+  });
+  $('#overwatch-templates').addEventListener('click',event=>{
+    const button=event.target.closest('[data-hero-template]');if(!button)return;
+    if(state.profiles.length>=50){toast('50 profile limit.');return;}
+    const spec=overwatchTemplates[button.dataset.heroTemplate];if(!spec)return;
+    const p=normalizeProfile(clone(defaultProfiles[0]));
+    p.id=`overwatch-${button.dataset.heroTemplate}-${crypto.randomUUID()}`;
+    p.name=spec.name;p.description=spec.description;p.tag='OVERWATCH 2';
+    p.matchExe='';p.matchTitle='';p.matchPath='';p.autoApply=false;
+    p.triggers={left:clone(spec.left),right:clone(spec.right)};
+    p.haptics=clone(spec.haptics);p.inputEffects=clone(spec.inputEffects);
+    state.profiles.unshift(normalizeProfile(p));state.profileId=p.id;
+    renderAllProfileControls();saveProfiles();toast(`${p.name} template added`);
   });
   $('#duplicate-profile').addEventListener('click',() => {
     if(state.profiles.length>=50){toast('50 profile limit.');return;}
@@ -831,39 +877,32 @@
   function fillRange(el){const f=(+el.value-(+el.min||0))/((+el.max||100)-(+el.min||0))*100;el.style.setProperty('--fill',`${f}%`);}
   $('#trigger-strength').addEventListener('input',e=>{trigger().strength=+e.target.value;$('#trigger-strength-number').textContent=`${trigger().strength}%`;fillRange(e.target);saveProfiles();});
   $('#curve-presets').innerHTML=Object.keys(presets).map(n=>`<button type="button" data-preset="${n}">${n}</button>`).join('');
-  $('#curve-presets').addEventListener('click',e=>{const b=e.target.closest('[data-preset]');if(!b)return;trigger().curve=clone(presets[b.dataset.preset]);renderCurve();saveProfiles();toast(b.dataset.preset);});
+  $('#curve-presets').addEventListener('click',e=>{const b=e.target.closest('[data-preset]');if(!b)return;trigger().curve=clone(presets[b.dataset.preset]);trigger().zoneForces=Array.from({length:10},(_,i)=>(trigger().curve[i]+trigger().curve[i+1])/2);renderCurve();saveProfiles();toast(`${state.side==='left'?'L2':'R2'} ${b.dataset.preset}`);});
   function renderCurve(){
-    const svg=$('#curve-svg'),curve=trigger().curve,other=profile().triggers[state.side==='left'?'right':'left'].curve,grid=$('#curve-grid');
-    if(!grid.childElementCount){let g='';for(let i=0;i<=10;i++){let x=45+i*67;g+=`<line x1="${x}" y1="20" x2="${x}" y2="315" class="grid-line"/>`;}for(let i=0;i<=5;i++){let y=315-i*56;g+=`<line x1="45" y1="${y}" x2="715" y2="${y}" class="grid-line"/>`;}g+='<line x1="45" y1="20" x2="45" y2="315" class="axis-line"/>';grid.innerHTML=g;}
-    const xy=(v,i)=>`${45+i*67},${315-v*280}`;
-    const line=curve.map((v,i)=>(i?'L':'M')+xy(v,i)).join(' ');
-    $('#curve-line').setAttribute('d',line);$('#curve-fill').setAttribute('d',line+' L715,315 L45,315 Z');
-    $('#curve-other-line').setAttribute('d',other.map((v,i)=>(i?'L':'M')+xy(v,i)).join(' '));
-    $('#curve-active-legend').textContent=`${state.side==='left'?'L2':'R2'} selected`;
-    $('#curve-other-legend').textContent=`${state.side==='left'?'R2':'L2'} overlay`;
-    let steps='';for(let i=0;i<10;i++){const y=315-(curve[i]+curve[i+1])/2*280;steps+=`${i===0?'M':'L'}${45+i*67},${y} L${45+(i+1)*67},${y} `;}
-    $('#curve-steps').setAttribute('d',steps);
-    $('#curve-points').innerHTML=curve.map((v,i)=>`<circle data-point="${i}" cx="${45+i*67}" cy="${315-v*280}" r="7" tabindex="0" aria-label="Zone ${i+1} force ${Math.round(v*100)} percent"/>`).join('');
-    $('#curve-values').innerHTML=curve.map((v,i)=>`<label>Point ${i}<input type="number" min="0" max="100" step="1" value="${Math.round(v*100)}" data-curve-value="${i}" aria-label="Point ${i} force percent"></label>`).join('');
+    for(const side of ['left','right']){
+      const svg=$(`.trigger-curve-svg[data-curve-side="${side}"]`),zones=profile().triggers[side].zoneForces,grid=svg.querySelector('.curve-grid');
+      if(!grid.childElementCount){let g='';for(let i=0;i<=10;i++){const x=45+i*67;g+=`<line x1="${x}" y1="18" x2="${x}" y2="205" class="grid-line"/>`;}for(let i=0;i<=5;i++){const y=205-i*35;g+=`<line x1="45" y1="${y}" x2="715" y2="${y}" class="grid-line"/>`;}grid.innerHTML=g;}
+      const xy=(v,i)=>`${78.5+i*67},${205-v*175}`;
+      svg.querySelector('.curve-line').setAttribute('d',zones.map((v,i)=>(i?'L':'M')+xy(v,i)).join(' '));
+      svg.querySelector('.curve-zone-steps').setAttribute('d',zones.map((v,i)=>`M${45+i*67},${205-v*175} L${45+(i+1)*67},${205-v*175}`).join(' '));
+      svg.querySelector('.curve-points').innerHTML=zones.map((v,i)=>`<circle data-point="${i}" data-side="${side}" cx="${78.5+i*67}" cy="${205-v*175}" r="8" tabindex="0" aria-label="${side==='left'?'L2':'R2'} hardware zone ${i+1}, force ${Math.round(v*100)} percent"/>`).join('');
+      $(`[data-curve-card="${side}"]`).classList.toggle('is-selected',side===state.side);
+    }
     updatePlayhead();
   }
-  $('#curve-values').addEventListener('change',event=>{
-    const input=event.target.closest('[data-curve-value]');if(!input)return;
-    const value=Number(input.value);
-    if(!Number.isFinite(value)||value<0||value>100){renderCurve();return;}
-    trigger().curve[+input.dataset.curveValue]=value/100;
-    renderCurve();saveProfiles();
-  });
   function updatePlayhead(){
-    const selected=state.side==='left'?6:7,travel=state.buttons[selected]||0,other=state.buttons[selected===6?7:6]||0;
-    const x=45+travel*670,y=45+other*670;
-    $('#curve-playhead').setAttribute('x1',x);$('#curve-playhead').setAttribute('x2',x);
-    $('#curve-other-playhead').setAttribute('x1',y);$('#curve-other-playhead').setAttribute('x2',y);
+    for(const [side,index] of [['left',6],['right',7]]){
+      const x=45+(state.buttons[index]||0)*670,line=$(`.trigger-curve-svg[data-curve-side="${side}"] .curve-playhead`);
+      line.setAttribute('x1',x);line.setAttribute('x2',x);
+    }
   }
-  $('#curve-svg').addEventListener('pointerdown',e=>{const p=e.target.closest('[data-point]');if(!p)return;dragging=+p.dataset.point;$('#curve-svg').setPointerCapture(e.pointerId);e.preventDefault();});
-  $('#curve-svg').addEventListener('pointermove',e=>{if(dragging<0)return;const rect=$('#curve-svg').getBoundingClientRect();const svgY=(e.clientY-rect.top)*380/rect.height;trigger().curve[dragging]=Math.round(clamp((315-svgY)/280)*100)/100;renderCurve();});
-  function finishCurve(){if(dragging>=0){dragging=-1;saveProfiles();}}$('#curve-svg').addEventListener('pointerup',finishCurve);$('#curve-svg').addEventListener('pointercancel',finishCurve);
-  $('#curve-svg').addEventListener('keydown',e=>{const p=e.target.closest('[data-point]');if(!p||!['ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const i=+p.dataset.point;trigger().curve[i]=Math.round(clamp(trigger().curve[i]+(e.key==='ArrowUp'?.02:-.02))*100)/100;renderCurve();$(`#curve-points [data-point="${i}"]`).focus();saveProfiles();});
+  $$('.trigger-curve-svg').forEach(svg=>{
+    svg.addEventListener('pointerdown',e=>{const p=e.target.closest('[data-point]');if(!p)return;state.side=svg.dataset.curveSide;dragging={side:state.side,index:+p.dataset.point};renderTriggerControls();svg.setPointerCapture(e.pointerId);e.preventDefault();});
+    svg.addEventListener('pointermove',e=>{if(!dragging||dragging.side!==svg.dataset.curveSide)return;const rect=svg.getBoundingClientRect(),svgY=(e.clientY-rect.top)*250/rect.height;profile().triggers[dragging.side].zoneForces[dragging.index]=Math.round(clamp((205-svgY)/175)*100)/100;renderCurve();});
+    const finishCurve=()=>{if(dragging){dragging=null;saveProfiles();}};
+    svg.addEventListener('pointerup',finishCurve);svg.addEventListener('pointercancel',finishCurve);
+    svg.addEventListener('keydown',e=>{const p=e.target.closest('[data-point]');if(!p||!['ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const side=svg.dataset.curveSide,i=+p.dataset.point,t=profile().triggers[side];state.side=side;t.zoneForces[i]=Math.round(clamp(t.zoneForces[i]+(e.key==='ArrowUp'?.02:-.02))*100)/100;renderTriggerControls();svg.querySelector(`[data-point="${i}"]`).focus();saveProfiles();});
+  });
   $('#click-enabled').addEventListener('change',e=>{profile().inputEffects.enabled=e.target.checked;saveProfiles();});
   $('#click-threshold').addEventListener('input',e=>{profile().inputEffects.threshold=+e.target.value/100;$('#click-threshold-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
   $('#click-strength').addEventListener('input',e=>{profile().inputEffects.strength=+e.target.value;$('#click-strength-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
@@ -955,12 +994,23 @@
   const ns='http://www.w3.org/2000/svg';
   const plastic=document.createElementNS(ns,'path');plastic.setAttribute('class','map-light-plastic');plastic.setAttribute('d','M371 134 Q500 164 629 134 L610 285 Q500 314 390 285 Z');
   lightMap.querySelector('.map-touchpad').before(plastic);
-  const strip=lightMap.querySelector('.map-light-strip');
-  for(const path of [strip,...['M391 145 Q400 203 407 266','M609 145 Q600 203 593 266'].map(d=>{const side=document.createElementNS(ns,'path');side.setAttribute('class','map-light-side');side.setAttribute('d',d);return side;})]){
-    if(path!==strip)strip.after(path);
+  lightMap.querySelector('.map-light-strip').remove();
+  for(const path of ['M391 145 Q400 203 407 266','M609 145 Q600 203 593 266'].map(d=>{const side=document.createElementNS(ns,'path');side.setAttribute('class','map-light-side');side.setAttribute('d',d);return side;})){
+    lightMap.querySelector('.map-touchpad').after(path);
     const halo=path.cloneNode(true);halo.setAttribute('class','map-light-halo');path.before(halo);
   }
+  const playerIndicators=document.createElementNS(ns,'g');playerIndicators.setAttribute('class','map-player-indicators');
+  for(let i=0;i<5;i++){const dot=document.createElementNS(ns,'circle');dot.setAttribute('cx',String(440+i*30));dot.setAttribute('cy','294');dot.setAttribute('r','5');dot.setAttribute('data-player-preview',String(i));playerIndicators.append(dot);}
+  lightMap.append(playerIndicators);
   $('#light-controller-map').append(lightMap);
+  let playerLedMask=0;
+  function renderPlayerLeds(){
+    $$('#player-leds [data-player-led]').forEach(button=>{const on=!!(playerLedMask&(1<<Number(button.dataset.playerLed)));button.setAttribute('aria-pressed',String(on));button.classList.toggle('is-active',on);});
+    $$('.map-player-indicators [data-player-preview]').forEach(dot=>dot.classList.toggle('is-active',!!(playerLedMask&(1<<Number(dot.dataset.playerPreview)))));
+  }
+  $('#player-leds').addEventListener('click',event=>{const button=event.target.closest('[data-player-led]');if(!button)return;playerLedMask^=1<<Number(button.dataset.playerLed);renderPlayerLeds();});
+  $('#set-player-leds').addEventListener('click',()=>send({action:'setPlayerLeds',mask:playerLedMask}));
+  renderPlayerLeds();
   const validHex = value => /^#[0-9a-f]{6}$/i.test(value);
   function setLightColor(hex){
     if(!validHex(hex))return false;
@@ -1128,6 +1178,14 @@
     if (!state.connected) { toast('Connect a controller.'); return; }
     send({action:'setXinput', enabled: !state.xinput});
   });
+  $('.xinput-block').insertAdjacentHTML('beforeend','<div class="driver-actions"><button id="setup-vigem" class="quiet-action" type="button">Set up XInput driver</button><button id="setup-hidhide" class="quiet-action" type="button">HidHide download</button><small>ViGEmBus is needed only for the virtual Xbox pad. HidHide is optional when games see both the physical and virtual controller.</small></div>');
+  for(const [id,kind] of [['setup-vigem','vigem'],['setup-hidhide','hidhide']]){
+    $(`#${id}`).addEventListener('click',async()=>{
+      if(!native){toast('Open the Windows app to set up drivers.');return;}
+      try{toast(await invoke('open_driver_setup',{kind}));}
+      catch(error){toast(String(error));log(`DRIVER SETUP / ${error}`);}
+    });
+  }
 
   $('#diag-reset').addEventListener('click',()=>send({action:'reset'}));
   $('#quick-reset').addEventListener('click',()=>send({action:'reset'}));
@@ -1198,7 +1256,7 @@
     $('#diag-firmware').textContent=connected?(firmware||'Firmware unknown'):'Firmware —';
     $('#owner-status').textContent=connected?'Core writer':'No pad';
     $('#owner-square').classList.toggle('is-live',connected);
-    $$('#apply-triggers,#reset-effects,#touch-mouse-toggle,#gyro-aim-toggle,#xinput-toggle,#send-light,#release-light,#temperature-light,#screen-light,#diag-reset,#quick-reset,#apply-profile-now,#alert-ping,#alert-low-battery,#alert-timer-start').forEach(b=>b.disabled=!connected);
+    $$('#apply-triggers,#reset-effects,#touch-mouse-toggle,#gyro-aim-toggle,#xinput-toggle,#send-light,#set-player-leds,#release-light,#temperature-light,#screen-light,#diag-reset,#quick-reset,#apply-profile-now,#alert-ping,#alert-low-battery,#alert-timer-start').forEach(b=>b.disabled=!connected);
     $('#speaker-chirp').disabled=!connected||transport!=='USB';
     if(!connected){clearPadFocus();calibrationRun=null;if(state.gyroCalibration)clearTimeout(state.gyroCalibration.timer);state.gyroCalibration=null;state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.pcMode=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.temperatureLight=false;state.screenLight=false;state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderTemperatureLight();renderScreenLight();renderInput();}
     renderPcMode();

@@ -27,7 +27,11 @@
     "active": true,
     "targets": ["nsis"],
     "createUpdaterArtifacts": true,
-    "icon": ["icons/icon.ico"]
+    "icon": ["icons/icon.ico"],
+    "resources": ["resources/ViGEmBus_1.22.0_x64_x86_arm64.exe", "resources/ViGEmBus-LICENSE.txt"],
+    "windows": {
+      "webviewInstallMode": { "type": "embedBootstrapper" }
+    }
   },
   "plugins": {
     "updater": {

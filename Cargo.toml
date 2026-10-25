@@ -16,7 +16,7 @@ serde_json = "1.0"
 rhai = { version = "1.27.0", features = ["sync"] }
 tauri = { version = "2.12.4", default-features = false, features = ["wry", "common-controls-v6"] }
 tauri-plugin-updater = "2.13.3"
-windows-sys = { version = "0.61.2", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(windows)'.dependencies]
 vigem-client = "0.1.4"

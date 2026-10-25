@@ -55,6 +55,10 @@ def main():
 
         send("setLightbar", rgb=[24, 80, 128])
         until(lambda e: e.get("type") == "notice" and e.get("message") == "Lightbar set")
+        send("setPlayerLeds", mask=0b10101)
+        until(lambda e: e.get("type") == "notice" and e.get("message") == "Player indicators set")
+        send("setPlayerLeds", mask=0)
+        until(lambda e: e.get("type") == "notice" and e.get("message") == "Player indicators set")
         send("batteryLightbar", enabled=True)
         until(lambda e: e.get("type") == "lightMode" and e.get("battery") is True)
         send("setScreenLightbar", enabled=True)

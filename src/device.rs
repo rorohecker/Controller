@@ -38,6 +38,9 @@ pub enum DeviceCommand {
     SetLightbar {
         rgb: [u8; 3],
     },
+    SetPlayerLeds {
+        mask: u8,
+    },
     ReleaseLightbar,
     BatteryLightbar {
         enabled: bool,
@@ -198,6 +201,7 @@ struct Connected {
     input_sequence: Option<u8>,
     trigger_active: bool,
     light_active: bool,
+    player_leds_active: bool,
     rumble_active: bool,
     trigger_until: Option<Instant>,
     rumble_until: Option<Instant>,
@@ -313,7 +317,11 @@ impl Connected {
         self.screen_color = None;
         self.sensor_light = false;
         self.last_sensor = None;
-        if !(self.trigger_active || self.light_active || self.rumble_active) {
+        if !(self.trigger_active
+            || self.light_active
+            || self.rumble_active
+            || self.player_leds_active)
+        {
             return Ok(());
         }
         let off = protocol::encode_trigger(&TriggerSetting {
@@ -329,9 +337,10 @@ impl Connected {
             } else {
                 0
             };
-        let report = protocol::usb_report(
+        let mut report = protocol::usb_report(
             valid0,
-            if self.light_active { 0x08 } else { 0 },
+            (if self.light_active { 0x08 } else { 0 })
+                | if self.player_leds_active { 0x10 } else { 0 },
             if self.rumble_active {
                 self.rumble_flags.1
             } else {
@@ -347,9 +356,11 @@ impl Connected {
             },
             false,
         );
+        report[44] = 0;
         self.write(report)?;
         self.trigger_active = false;
         self.light_active = false;
+        self.player_leds_active = false;
         self.rumble_active = false;
         self.trigger_until = None;
         self.rumble_until = None;
@@ -555,6 +566,7 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     input_sequence: None,
                     trigger_active: false,
                     light_active: false,
+                    player_leds_active: false,
                     rumble_active: false,
                     trigger_until: None,
                     rumble_until: None,
@@ -1182,6 +1194,16 @@ fn handle_command(
                 device.last_light = Some(rgb);
                 "Lightbar set"
             })
+        }
+        DeviceCommand::SetPlayerLeds { mask } => {
+            if mask > 0x1f {
+                Err("Player indicator mask must use five lights".into())
+            } else {
+                device.write(protocol::player_leds_report(mask)).map(|_| {
+                    device.player_leds_active = mask != 0;
+                    "Player indicators set"
+                })
+            }
         }
         DeviceCommand::ReleaseLightbar => {
             screen.set_enabled(false);

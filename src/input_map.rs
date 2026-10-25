@@ -115,7 +115,7 @@ pub struct DesktopMapper {
     pointer_sensitivity: f32,
     reverse_scroll: bool,
     touch_previous: Option<TouchPoint>,
-    scroll_previous: Option<f32>,
+    scroll_last: Option<Instant>,
     wheel_remainder: f32,
 }
 
@@ -132,7 +132,7 @@ impl Default for DesktopMapper {
             pointer_sensitivity: 0.7,
             reverse_scroll: true,
             touch_previous: None,
-            scroll_previous: None,
+            scroll_last: None,
             wheel_remainder: 0.0,
         }
     }
@@ -199,7 +199,7 @@ impl DesktopMapper {
         self.right_down = false;
         self.keyboard.set_suspended(true);
         self.touch_previous = None;
-        self.scroll_previous = None;
+        self.scroll_last = None;
         self.wheel_remainder = 0.0;
     }
 
@@ -240,17 +240,10 @@ impl DesktopMapper {
             }
         }
         match input.touch {
-            [Some(a), Some(b)] => {
+            [Some(_), Some(_)] => {
                 self.touch_previous = None;
-                let centre = (a.y + b.y) * 0.5;
-                if let Some(previous) = self.scroll_previous {
-                    self.wheel_remainder +=
-                        (centre - previous) * 900.0 * if self.reverse_scroll { 1.0 } else { -1.0 };
-                }
-                self.scroll_previous = Some(centre);
             }
             [Some(point), None] | [None, Some(point)] => {
-                self.scroll_previous = None;
                 if let Some(previous) = self.touch_previous {
                     let delta_x = point.x - previous.x;
                     let delta_y = point.y - previous.y;
@@ -266,8 +259,17 @@ impl DesktopMapper {
             }
             [None, None] => {
                 self.touch_previous = None;
-                self.scroll_previous = None;
             }
+        }
+        let now = Instant::now();
+        let elapsed = self.scroll_last.replace(now).map_or(0.0, |last| {
+            now.saturating_duration_since(last).as_secs_f32().min(0.05)
+        });
+        let vertical = input.axes[3];
+        if vertical.abs() > 0.22 {
+            let amount = (vertical.abs() - 0.22) / 0.78;
+            let sign = if self.reverse_scroll { -1.0 } else { 1.0 };
+            self.wheel_remainder += vertical.signum() * amount * sign * 480.0 * elapsed;
         }
         let wheel = (self.wheel_remainder / 120.0).trunc() as i32 * 120;
         if wheel != 0 {

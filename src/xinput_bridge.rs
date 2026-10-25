@@ -1,6 +1,6 @@
 //! Optional Xbox 360 / XInput virtual pad via ViGEmBus (DualSenseX-style).
 //! Requires the separately installed [ViGEmBus](https://github.com/nefarius/ViGEmBus) driver.
-//! CONTROLLER never bundles or installs that driver.
+//! The Windows installer bundles its signed setup; users launch it explicitly for XInput.
 
 use aftertouch_protocol::InputState;
 use serde_json::{Value, json};
