@@ -12,7 +12,7 @@ def mock_core(page):
       window.__TAURI__ = {
         core: {invoke: async (name, args) => {
           if (name === 'load_profiles') return null;
-          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.11.1'}; }
+          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.11.2'}; }
           if (name === 'install_update') { window.installedUpdate=true; return null; }
           if (name === 'send_demo_telemetry') { window.demoPort=args.port; return null; }
           if (name === 'save_profiles') window.saved = args.data;
@@ -49,7 +49,7 @@ def main():
         page.wait_for_function("!!window.coreHandler")
         assert page.title() == "CONTROLLER"
         assert page.evaluate("document.querySelector('.brand strong').getBoundingClientRect().right <= document.querySelector('.sidebar').getBoundingClientRect().right")
-        assert page.locator(".controller-photo").is_visible()
+        assert page.locator(".photo-stage .controller-map").is_visible()
         assert page.locator("#connection-guide").is_visible()
         assert "Studio ready without a pad" in page.locator("#connection-guide").inner_text()
         page.locator('[data-goto="profiles"]').last.click()
@@ -65,7 +65,7 @@ def main():
         assert not page.evaluate("window.sent.some(c=>c.action==='playHaptic')")
         page.locator('[data-view="diagnostics"]').click()
         page.locator("#check-update").click()
-        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.11.1 is current')")
+        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.11.2 is current')")
         assert page.locator("#install-update").is_hidden()
         page.evaluate("window.mockUpdateVersion='0.12.0'")
         page.locator("#check-update").click()
@@ -79,15 +79,82 @@ def main():
             page.locator("#theme-select").select_option(palette)
             assert page.locator("body").get_attribute("data-theme") == palette
         page.evaluate("window.coreHandler({type:'device',connected:true,name:'DualSense',transport:'USB',path:'test'})")
+        assert page.evaluate("window.sent.some(c=>c.action==='setPcBindings')")
+        assert page.evaluate("window.sent.some(c=>c.action==='setCalibration')")
         assert not page.locator("#connection-guide").is_visible()
+        page.locator('[data-view="pc-controls"]').click()
+        assert page.locator("#pc-bindings .pc-binding").count() == 21
+        page.locator("#pc-click-threshold").fill("70")
+        assert page.evaluate("window.sent.at(-1).click_threshold") == .7
+        assert page.locator("#pc-reverse-scroll").is_checked()
+        page.locator("#pc-pointer-sensitivity").fill("60")
+        assert page.evaluate("window.sent.at(-1).pointer_sensitivity") == .6
+        page.locator("#pc-reverse-scroll").uncheck()
+        assert page.evaluate("window.sent.at(-1).reverse_scroll") is False
+        page.locator('[data-view="calibration"]').click()
+        assert page.locator("#start-calibration").is_enabled()
+        page.locator("#start-calibration").click()
+        page.wait_for_function("document.querySelector('#calibration-step').textContent.startsWith('1.')")
+        assert page.locator("#next-calibration").is_disabled()
+        page.evaluate("""() => { for(let i=0;i<35;i++)window.coreHandler({type:'input',input:{buttons:Array(23).fill(0),axes:[0,0,0,0],touch:[null,null],gyro:[0,0,0],battery:75,charging:false,fullReport:true}}); }""")
+        assert page.locator("#next-calibration").is_enabled()
+        page.locator("#next-calibration").click()
+        for axes in ([-1,-1,-1,-1],[1,1,1,1]):
+            page.evaluate("""axes => window.coreHandler({type:'input',input:{buttons:Array(23).fill(0),axes,touch:[null,null],gyro:[0,0,0],battery:75,charging:false,fullReport:true}})""",axes)
+        assert page.locator("#next-calibration").is_enabled()
+        page.locator("#next-calibration").click()
+        page.evaluate("""() => window.coreHandler({type:'input',input:{buttons:[0,0,0,0,0,0,1,1,...Array(15).fill(0)],axes:[0,0,0,0],touch:[null,null],gyro:[0,0,0],battery:75,charging:false,fullReport:true}})""")
+        assert page.locator("#next-calibration").is_enabled()
+        page.locator("#next-calibration").click()
+        for x,y in ((.1,.1),(.9,.9)):
+            for _ in range(6):
+                page.evaluate("""point => window.coreHandler({type:'input',input:{buttons:Array(23).fill(0),axes:[0,0,0,0],touch:[point,null],gyro:[0,0,0],battery:75,charging:false,fullReport:true}})""",{"x":x,"y":y})
+        assert page.locator("#next-calibration").is_enabled()
+        page.locator("#next-calibration").click()
+        assert page.locator("#calibration-step").inner_text() == "Calibration saved"
+        assert page.evaluate("window.sent.at(-1).action==='setCalibration'")
+        page.locator('[data-view="lights"]').click()
+        assert page.locator("#light-controller-map .controller-map").count() == 1
+        assert page.locator("#light-presets [data-color]").count() == 24
+        page.locator("#light-hex-input").fill("#42A5F5")
+        page.locator("#light-hex-input").press("Tab")
+        page.locator("#save-light-color").click()
+        assert page.locator("#light-favorites [data-color]").count() == 1
+        assert page.locator("#light-hex").inner_text() == "#42A5F5"
+        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-lightbar-preview.png"), full_page=True)
+        page.locator('[data-view="live"]').click()
+        assert page.locator("#input-mode-toggle").inner_text().endswith("Game mode")
+        pad_event(page)
+        pad_event(page, 5)
+        assert page.locator("#live").is_visible()
+        assert page.locator(".pad-focused").count() == 0
+        page.evaluate("""window.coreHandler({type:'input',input:{
+          buttons:Array(23).fill(0),axes:[0,0,1,0],touch:[null,null],gyro:[0,0,0],
+          battery:75,charging:false,fullReport:true}})""")
+        assert page.locator("#activity-scope").get_attribute("aria-label") == "Input activity 25 percent"
+        assert "18" in page.locator("#right-stick-cap").get_attribute("transform")
+        page.evaluate("""window.coreHandler({type:'input',input:{
+          buttons:[0,0,0,0,0,0,.5,.75,...Array(15).fill(0)],axes:[-1,1,.5,-.5],
+          touch:[{x:.25,y:.75},null],gyro:[0,0,0],battery:75,
+          charging:false,fullReport:true}})""")
+        assert page.locator("#left-stick-cap").get_attribute("transform") == "translate(-18 18)"
+        assert page.locator("#map-l2").get_attribute("transform") == "translate(0 8)"
+        assert page.locator("#map-r2").get_attribute("transform") == "translate(0 12)"
+        assert page.locator("#map-touch-0").get_attribute("class").endswith("is-active")
+        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-input-map.png"), full_page=True)
+        page.locator("#input-mode-toggle").click()
+        assert page.evaluate("window.sent.at(-1).action") == "setPcMode"
+        assert page.evaluate("window.sent.at(-1).enabled") is True
+        page.evaluate("window.coreHandler({type:'pcMode',enabled:true})")
+        assert page.locator("#input-mode-toggle").get_attribute("aria-pressed") == "true"
         page.evaluate("""window.coreHandler({type:'input',input:{
           buttons:[1,...Array(22).fill(0)],axes:[0.02,-0.01,0.03,0],touch:[null,null],
           gyro:[0,0,0],battery:75,charging:false,
           batteryInfo:{chargeState:'discharging',sensorByte:1},fullReport:true}})""")
-        assert "is-pressed" in page.locator('.hotspot[data-button="0"]').get_attribute("class")
+        assert "is-pressed" in page.locator('.map-control[data-button="0"]').get_attribute("class")
         assert page.locator("#battery-history .battery-history-bar").count() == 1
-        assert page.locator("#battery-health").inner_text() == "Health not reported"
-        assert page.locator("#battery-temp").inner_text() == "Sensor 1 raw"
+        assert "Charge rate available" in page.locator("#battery-charge-rate").inner_text()
+        assert page.locator("#diag-temp").inner_text() == "1"
         assert page.evaluate("document.hasFocus()")
         pad_event(page)
         pad_event(page, 5)
@@ -120,6 +187,14 @@ def main():
         pad_event(page, 15)
         assert page.locator("body").get_attribute("data-theme") == "cinder"
         page.locator("#theme-select").select_option("dusk")
+        page.locator("#input-mode-toggle").click()
+        assert page.evaluate("window.sent.at(-1).action") == "setPcMode"
+        assert page.evaluate("window.sent.at(-1).enabled") is False
+        page.evaluate("window.coreHandler({type:'pcMode',enabled:false})")
+        pad_event(page)
+        pad_event(page, 5)
+        assert page.locator("#live").is_visible()
+        assert page.locator(".pad-focused").count() == 0
         page.locator('[data-view="haptics"]').click()
         assert page.locator("#speaker-chirp").is_enabled()
         page.locator("#speaker-chirp").click()
@@ -191,8 +266,17 @@ def main():
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-telemetry-new.png"), full_page=True)
         page.locator('[data-view="triggers"]').click()
         page.locator('[data-mode="bow"]').click()
+        assert page.locator("#curve-other-line").get_attribute("d")
+        assert "L2" in page.locator("#curve-other-legend").inner_text() or "R2" in page.locator("#curve-other-legend").inner_text()
+        assert page.locator("#curve-values input").count() == 11
+        page.locator('[data-curve-value="5"]').fill("66")
+        page.locator('[data-curve-value="5"]').press("Tab")
+        assert page.locator('[data-curve-value="5"]').input_value() == "66"
+        page.locator("#break-start").fill("3")
+        page.locator("#break-end").fill("8")
+        page.locator("#break-snap").fill("75")
         page.locator("#apply-triggers").click()
-        assert page.evaluate("window.sent.some(c=>c.action==='applyTriggers' && (c.left?.mode==='bow'||c.right?.mode==='bow'))")
+        assert page.evaluate("window.sent.some(c=>c.action==='applyTriggers' && [c.left,c.right].some(t=>t?.mode==='bow'&&t.startZone===3&&t.endZone===8&&t.snapStrength===75))")
         page.locator('[data-mode="resistance"]').click()
         page.locator("#click-enabled").check()
         page.locator("#click-threshold").fill("78")
@@ -252,7 +336,7 @@ def main():
         assert page.locator("#profile-match-title").input_value() == ""
         page.wait_for_timeout(450)
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-profiles-check.png"), full_page=True)
-        for view in ("live", "triggers", "haptics", "touch", "lights", "profiles", "diagnostics"):
+        for view in ("live", "triggers", "haptics", "touch", "pc-controls", "lights", "profiles", "calibration", "diagnostics"):
             page.locator(f'[data-view="{view}"]').click()
             assert page.locator(f"#{view}").is_visible()
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), view
@@ -263,7 +347,7 @@ def main():
         mobile_errors = []
         mobile.on("pageerror", lambda error: mobile_errors.append(str(error)))
         mobile.goto((ROOT / "ui" / "index.html").as_uri())
-        for view in ("live", "triggers", "haptics", "touch", "lights", "profiles", "diagnostics"):
+        for view in ("live", "triggers", "haptics", "touch", "pc-controls", "lights", "profiles", "calibration", "diagnostics"):
             mobile.locator(f'[data-view="{view}"]').click()
             assert mobile.locator(f"#{view}").is_visible()
             assert mobile.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), view
@@ -277,7 +361,7 @@ def main():
         assert mobile.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
         assert not mobile_errors, mobile_errors
         browser.close()
-        print("UI smoke passed: photograph, controller navigation, palettes, input, report status, battery, stick checks, remap, mobile")
+        print("UI smoke passed: live vector map, Game/PC modes, palettes, input, report status, battery, stick checks, remap, mobile")
 
 
 if __name__ == "__main__":

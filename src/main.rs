@@ -42,6 +42,7 @@ impl Bridge {
         let mut command = Command::new(std::env::current_exe()?);
         command
             .arg("--core")
+            .env("CONTROLLER_GUI_PID", std::process::id().to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());

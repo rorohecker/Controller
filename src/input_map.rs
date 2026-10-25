@@ -1,15 +1,287 @@
 //! Gyro aim, touch gestures, and button→keyboard remapping via SendInput.
 
 use aftertouch_protocol::{InputState, TouchPoint};
+use serde::Deserialize;
 use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN,
-    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
+    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
+    MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
 };
 
 const VK_LEFT: u16 = 0x25;
 const VK_RIGHT: u16 = 0x27;
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InputCalibration {
+    pub axis_centers: [f32; 4],
+    pub axis_mins: [f32; 4],
+    pub axis_maxs: [f32; 4],
+    pub trigger_rests: [f32; 2],
+    pub trigger_fulls: [f32; 2],
+    pub touch_mins: [f32; 2],
+    pub touch_maxs: [f32; 2],
+}
+
+impl Default for InputCalibration {
+    fn default() -> Self {
+        Self {
+            axis_centers: [0.0; 4],
+            axis_mins: [-1.0; 4],
+            axis_maxs: [1.0; 4],
+            trigger_rests: [0.0; 2],
+            trigger_fulls: [1.0; 2],
+            touch_mins: [0.0; 2],
+            touch_maxs: [1.0; 2],
+        }
+    }
+}
+
+impl InputCalibration {
+    pub fn valid(&self) -> bool {
+        self.axis_centers
+            .iter()
+            .all(|v| v.is_finite() && v.abs() <= 0.3)
+            && self
+                .axis_mins
+                .iter()
+                .zip(self.axis_centers)
+                .all(|(min, centre)| min.is_finite() && *min <= centre - 0.5 && *min >= -1.0)
+            && self
+                .axis_maxs
+                .iter()
+                .zip(self.axis_centers)
+                .all(|(max, centre)| max.is_finite() && *max >= centre + 0.5 && *max <= 1.0)
+            && self
+                .trigger_rests
+                .iter()
+                .zip(self.trigger_fulls)
+                .all(|(rest, full)| {
+                    rest.is_finite()
+                        && full.is_finite()
+                        && *rest >= 0.0
+                        && full <= 1.0
+                        && full - rest >= 0.5
+                })
+            && self
+                .touch_mins
+                .iter()
+                .zip(self.touch_maxs)
+                .all(|(min, max)| {
+                    min.is_finite()
+                        && max.is_finite()
+                        && *min >= 0.0
+                        && max <= 1.0
+                        && max - min >= 0.5
+                })
+    }
+
+    pub fn apply(&self, input: &mut InputState) {
+        for i in 0..4 {
+            let value = input.axes[i];
+            let extent = if value >= self.axis_centers[i] {
+                self.axis_maxs[i] - self.axis_centers[i]
+            } else {
+                self.axis_centers[i] - self.axis_mins[i]
+            };
+            input.axes[i] = ((value - self.axis_centers[i]) / extent).clamp(-1.0, 1.0);
+        }
+        for i in 0..2 {
+            input.buttons[6 + i] = ((input.buttons[6 + i] - self.trigger_rests[i])
+                / (self.trigger_fulls[i] - self.trigger_rests[i]))
+                .clamp(0.0, 1.0);
+        }
+        for point in input.touch.iter_mut().flatten() {
+            point.x = ((point.x - self.touch_mins[0]) / (self.touch_maxs[0] - self.touch_mins[0]))
+                .clamp(0.0, 1.0);
+            point.y = ((point.y - self.touch_mins[1]) / (self.touch_maxs[1] - self.touch_mins[1]))
+                .clamp(0.0, 1.0);
+        }
+    }
+}
+
+/// Explicit desktop controls. The controller remains visible to games; this mapper
+/// only adds mouse and keyboard input while the workbench is out of focus.
+pub struct DesktopMapper {
+    enabled: bool,
+    ui_focused: bool,
+    wait_release: bool,
+    keyboard: RemapMapper,
+    left_down: bool,
+    right_down: bool,
+    click_threshold: f32,
+    pointer_sensitivity: f32,
+    reverse_scroll: bool,
+    touch_previous: Option<TouchPoint>,
+    scroll_previous: Option<f32>,
+    wheel_remainder: f32,
+}
+
+impl Default for DesktopMapper {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ui_focused: true,
+            wait_release: true,
+            keyboard: RemapMapper::default(),
+            left_down: false,
+            right_down: false,
+            click_threshold: 0.55,
+            pointer_sensitivity: 0.7,
+            reverse_scroll: true,
+            touch_previous: None,
+            scroll_previous: None,
+            wheel_remainder: 0.0,
+        }
+    }
+}
+
+impl DesktopMapper {
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn ui_focused(&self) -> bool {
+        self.ui_focused
+    }
+
+    pub fn set_enabled(&mut self, enabled: bool) {
+        if self.enabled == enabled {
+            return;
+        }
+        self.release_all();
+        self.enabled = enabled;
+        self.wait_release = true;
+        self.keyboard.set_suspended(!enabled || self.ui_focused);
+    }
+
+    pub fn set_ui_focused(&mut self, focused: bool) {
+        if self.ui_focused == focused {
+            return;
+        }
+        self.release_all();
+        self.ui_focused = focused;
+        self.wait_release = true;
+        self.keyboard.set_suspended(!self.enabled || focused);
+    }
+
+    pub fn set_bindings(
+        &mut self,
+        bindings: Vec<RemapBinding>,
+        click_threshold: f32,
+        pointer_sensitivity: f32,
+        reverse_scroll: bool,
+    ) {
+        self.release_all();
+        self.keyboard.set(true, bindings);
+        self.keyboard
+            .set_suspended(!self.enabled || self.ui_focused);
+        self.click_threshold = click_threshold.clamp(0.05, 0.95);
+        self.pointer_sensitivity = pointer_sensitivity.clamp(0.4, 1.5);
+        self.reverse_scroll = reverse_scroll;
+        self.wait_release = true;
+    }
+
+    pub fn tick(&mut self) {
+        self.keyboard.tick();
+    }
+
+    fn release_all(&mut self) {
+        if self.left_down {
+            send_mouse(0, 0, 0, MOUSEEVENTF_LEFTUP);
+        }
+        if self.right_down {
+            send_mouse(0, 0, 0, MOUSEEVENTF_RIGHTUP);
+        }
+        self.left_down = false;
+        self.right_down = false;
+        self.keyboard.set_suspended(true);
+        self.touch_previous = None;
+        self.scroll_previous = None;
+        self.wheel_remainder = 0.0;
+    }
+
+    pub fn update(&mut self, input: &InputState) {
+        if !self.enabled || self.ui_focused {
+            return;
+        }
+        let down = input.buttons.map(|value| value > 0.5);
+        if self.wait_release {
+            self.wait_release = down
+                .iter()
+                .enumerate()
+                .any(|(index, pressed)| index != 6 && index != 7 && *pressed);
+            if self.wait_release {
+                return;
+            }
+            self.keyboard.set_suspended(false);
+        }
+        self.keyboard.update(input);
+        for (button, previous, down_flag, up_flag) in [
+            (
+                6,
+                &mut self.left_down,
+                MOUSEEVENTF_LEFTDOWN,
+                MOUSEEVENTF_LEFTUP,
+            ),
+            (
+                7,
+                &mut self.right_down,
+                MOUSEEVENTF_RIGHTDOWN,
+                MOUSEEVENTF_RIGHTUP,
+            ),
+        ] {
+            let pressed = input.buttons[button] >= self.click_threshold;
+            if pressed != *previous {
+                send_mouse(0, 0, 0, if pressed { down_flag } else { up_flag });
+                *previous = pressed;
+            }
+        }
+        match input.touch {
+            [Some(a), Some(b)] => {
+                self.touch_previous = None;
+                let centre = (a.y + b.y) * 0.5;
+                if let Some(previous) = self.scroll_previous {
+                    self.wheel_remainder +=
+                        (centre - previous) * 900.0 * if self.reverse_scroll { 1.0 } else { -1.0 };
+                }
+                self.scroll_previous = Some(centre);
+            }
+            [Some(point), None] | [None, Some(point)] => {
+                self.scroll_previous = None;
+                if let Some(previous) = self.touch_previous {
+                    let delta_x = point.x - previous.x;
+                    let delta_y = point.y - previous.y;
+                    let dx = (delta_x * 1250.0 * self.pointer_sensitivity).round() as i32;
+                    let dy = (delta_y * 780.0 * self.pointer_sensitivity).round() as i32;
+                    if delta_x.abs() <= 0.2 && delta_y.abs() <= 0.2 && (dx != 0 || dy != 0) {
+                        let dx = dx.clamp(-36, 36);
+                        let dy = dy.clamp(-36, 36);
+                        send_mouse(dx, dy, 0, MOUSEEVENTF_MOVE);
+                    }
+                }
+                self.touch_previous = Some(point);
+            }
+            [None, None] => {
+                self.touch_previous = None;
+                self.scroll_previous = None;
+            }
+        }
+        let wheel = (self.wheel_remainder / 120.0).trunc() as i32 * 120;
+        if wheel != 0 {
+            send_mouse(0, 0, wheel.clamp(-240, 240), MOUSEEVENTF_WHEEL);
+            self.wheel_remainder -= wheel as f32;
+        }
+    }
+}
+
+impl Drop for DesktopMapper {
+    fn drop(&mut self) {
+        self.release_all();
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct GyroAimConfig {
@@ -587,6 +859,33 @@ fn tap_key(vk: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn measured_ranges_adjust_trigger_stick_and_touch_readouts() {
+        let mut input = aftertouch_protocol::parse_input(&[0x01; 64]).unwrap();
+        input.axes = [0.1, -0.5, 0.7, 0.0];
+        input.buttons[6] = 0.65;
+        input.buttons[7] = 0.55;
+        input.touch[0] = Some(TouchPoint { x: 0.8, y: 0.2 });
+        let calibration = InputCalibration {
+            axis_centers: [0.1, 0.0, 0.0, 0.0],
+            axis_mins: [-0.8; 4],
+            axis_maxs: [0.8; 4],
+            trigger_rests: [0.1, 0.05],
+            trigger_fulls: [0.65, 0.9],
+            touch_mins: [0.1, 0.1],
+            touch_maxs: [0.8, 0.9],
+        };
+        assert!(calibration.valid());
+        calibration.apply(&mut input);
+        assert_eq!(input.axes[0], 0.0);
+        assert!((input.axes[1] + 0.625).abs() < 0.001);
+        assert!((input.axes[2] - 0.875).abs() < 0.001);
+        assert_eq!(input.buttons[6], 1.0);
+        assert!((input.buttons[7] - 0.588).abs() < 0.002);
+        assert_eq!(input.touch[0].unwrap().x, 1.0);
+        assert!((input.touch[0].unwrap().y - 0.125).abs() < 0.001);
+    }
 
     #[test]
     fn two_buttons_sharing_key_keep_it_active_until_both_release() {

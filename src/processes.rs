@@ -19,6 +19,16 @@ pub struct ProcessState {
     pub foreground_path: Option<String>,
 }
 
+pub fn gui_window_focused(gui_pid: u32) -> bool {
+    let window = unsafe { GetForegroundWindow() };
+    if window.is_null() {
+        return false;
+    }
+    let mut foreground_pid = 0;
+    unsafe { GetWindowThreadProcessId(window, &mut foreground_pid) };
+    foreground_pid == gui_pid
+}
+
 pub fn inspect() -> ProcessState {
     let mut state = ProcessState {
         conflicts: Vec::new(),

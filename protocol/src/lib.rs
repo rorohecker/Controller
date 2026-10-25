@@ -20,11 +20,18 @@ pub fn rumble_flags(feature_version: Option<u16>, is_edge: bool) -> (u8, u8) {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TriggerSetting {
     pub mode: String,
     pub strength: f32,
     pub curve: Vec<f32>,
+    #[serde(default)]
+    pub start_zone: Option<u8>,
+    #[serde(default)]
+    pub end_zone: Option<u8>,
+    #[serde(default)]
+    pub snap_strength: Option<f32>,
 }
 
 impl TriggerSetting {
@@ -45,6 +52,30 @@ impl TriggerSetting {
                 .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
         {
             return Err("Curve must have eleven points between 0 and 1");
+        }
+        if self
+            .snap_strength
+            .is_some_and(|value| !value.is_finite() || !(0.0..=100.0).contains(&value))
+        {
+            return Err("Snap strength must be 0–100");
+        }
+        if matches!(self.mode.as_str(), "weapon" | "bow") {
+            let (max_start, max_end) = if self.mode == "weapon" {
+                (7, 8)
+            } else {
+                (7, 9)
+            };
+            if self
+                .start_zone
+                .is_some_and(|zone| zone > max_start || (self.mode == "weapon" && zone < 2))
+                || self.end_zone.is_some_and(|zone| zone > max_end || zone < 1)
+                || self
+                    .start_zone
+                    .zip(self.end_zone)
+                    .is_some_and(|(start, end)| end <= start)
+            {
+                return Err("Break zones must be ordered within the trigger's range");
+            }
         }
         Ok(())
     }
@@ -311,13 +342,21 @@ pub fn encode_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str
         }
         "weapon" => {
             block[0] = 0x25;
-            let start = (2..=7)
+            let inferred_start = (2..=7)
                 .max_by(|&a, &b| {
                     (setting.curve[a + 1] - setting.curve[a])
                         .total_cmp(&(setting.curve[b + 1] - setting.curve[b]))
                 })
                 .unwrap_or(4);
-            let stop = (start + 1).min(8);
+            let start = setting
+                .start_zone
+                .map(usize::from)
+                .unwrap_or(inferred_start);
+            let stop = setting
+                .end_zone
+                .map(usize::from)
+                .unwrap_or(start + 1)
+                .clamp(start + 1, 8);
             let mask = (1u16 << start) | (1u16 << stop);
             block[1..3].copy_from_slice(&mask.to_le_bytes());
             block[3] =
@@ -326,16 +365,31 @@ pub fn encode_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str
         "bow" => {
             // Unofficial mode 0x22. Choose a start and peak from the authored curve;
             // keep both force components below our normal six-level ceiling.
-            let peak = (1..=8)
+            let inferred_peak = (1..=8)
                 .max_by(|&a, &b| setting.curve[a].total_cmp(&setting.curve[b]))
                 .unwrap_or(8);
-            let start = (0..peak)
-                .find(|&i| setting.curve[i] >= setting.curve[peak] * 0.15)
+            let inferred_start = (0..inferred_peak)
+                .find(|&i| setting.curve[i] >= setting.curve[inferred_peak] * 0.15)
                 .unwrap_or(0);
+            let start = setting
+                .start_zone
+                .map(usize::from)
+                .unwrap_or(inferred_start);
+            let peak = setting
+                .end_zone
+                .map(usize::from)
+                .unwrap_or(inferred_peak)
+                .clamp(start + 1, 9);
             let mask = (1u16 << start) | (1u16 << peak);
             let force = ((setting.strength / 100.0 * MAX_TRIGGER_LEVEL as f32).round() as u8)
                 .clamp(1, MAX_TRIGGER_LEVEL);
-            let snap = (force / 2).max(1);
+            let snap = setting
+                .snap_strength
+                .map(|strength| {
+                    ((strength / 100.0 * MAX_TRIGGER_LEVEL as f32).round() as u8)
+                        .clamp(1, MAX_TRIGGER_LEVEL)
+                })
+                .unwrap_or((force / 2).max(1));
             block[0] = 0x22;
             block[1..3].copy_from_slice(&mask.to_le_bytes());
             block[3] = (force - 1) | ((snap - 1) << 3);
@@ -427,6 +481,7 @@ mod tests {
             mode: mode.into(),
             strength: 60.0,
             curve: (0..=10).map(|i| i as f32 / 10.0).collect(),
+            ..TriggerSetting::default()
         }
     }
 
@@ -491,6 +546,7 @@ mod tests {
             mode: "vibration".into(),
             strength: 75.0,
             curve: vec![0.0; 11],
+            ..TriggerSetting::default()
         };
         assert_eq!(encode_trigger(&zero).unwrap()[0], 0x05);
         assert_eq!(rumble_flags(Some(0x0214), false), (0x03, 0));
@@ -507,6 +563,31 @@ mod tests {
         assert_eq!(u16::from_le_bytes([encoded[1], encoded[2]]).count_ones(), 2);
         assert!(encoded[3] & 7 < MAX_TRIGGER_LEVEL);
         assert!(encoded[3] >> 3 < MAX_TRIGGER_LEVEL);
+    }
+
+    #[test]
+    fn authored_weapon_and_bow_break_points_encode_requested_zones() {
+        let mut weapon = linear("weapon");
+        weapon.start_zone = Some(3);
+        weapon.end_zone = Some(7);
+        let encoded = encode_trigger(&weapon).unwrap();
+        assert_eq!(
+            u16::from_le_bytes([encoded[1], encoded[2]]),
+            (1 << 3) | (1 << 7)
+        );
+
+        let mut bow = linear("bow");
+        bow.start_zone = Some(2);
+        bow.end_zone = Some(8);
+        bow.snap_strength = Some(100.0);
+        let encoded = encode_trigger(&bow).unwrap();
+        assert_eq!(
+            u16::from_le_bytes([encoded[1], encoded[2]]),
+            (1 << 2) | (1 << 8)
+        );
+        assert_eq!(encoded[3] >> 3, MAX_TRIGGER_LEVEL - 1);
+        bow.end_zone = Some(2);
+        assert!(encode_trigger(&bow).is_err());
     }
 
     #[test]

@@ -9,7 +9,7 @@
   const names = ['CROSS', 'CIRCLE', 'SQUARE', 'TRIANGLE', 'L1', 'R1', 'L2', 'R2', 'CREATE', 'OPTIONS', 'L3', 'R3', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'PS', 'TOUCHPAD', 'MIC', 'EDGE FN1', 'EDGE FN2', 'LEFT PADDLE', 'RIGHT PADDLE'];
   const vkChoices = [
     {vk: 0x11, label: 'Ctrl'}, {vk: 0x10, label: 'Shift'}, {vk: 0x12, label: 'Alt'},
-    {vk: 0x20, label: 'Space'}, {vk: 0x0D, label: 'Enter'}, {vk: 0x1B, label: 'Esc'},
+    {vk: 0x20, label: 'Space'}, {vk: 0x0D, label: 'Enter'}, {vk: 0x1B, label: 'Esc'}, {vk: 0x09, label: 'Tab'},
     {vk: 0x25, label: 'Left'}, {vk: 0x26, label: 'Up'}, {vk: 0x27, label: 'Right'}, {vk: 0x28, label: 'Down'},
     {vk: 0x70, label: 'F1'}, {vk: 0x71, label: 'F2'}, {vk: 0x72, label: 'F3'}, {vk: 0x73, label: 'F4'},
     {vk: 0x41, label: 'A'}, {vk: 0x42, label: 'B'}, {vk: 0x43, label: 'C'}, {vk: 0x45, label: 'E'},
@@ -34,7 +34,10 @@
     {name:'Soft tick',type:'Light',settings:{shape:'sine',frequency:175,attack:3,release:80,strength:30,pan:0}},
     {name:'Heartbeat',type:'Warm',settings:{shape:'sine',frequency:65,attack:20,release:270,strength:62,pan:0}},
     {name:'Gravel',type:'Grain',settings:{shape:'noise',frequency:78,attack:9,release:340,strength:47,pan:-20}},
-    {name:'Impact',type:'Sharp',settings:{shape:'saw',frequency:95,attack:3,release:190,strength:70,pan:0}}
+    {name:'Impact',type:'Sharp',settings:{shape:'saw',frequency:95,attack:3,release:190,strength:70,pan:0}},
+    {name:'Bow release',type:'Snap',settings:{shape:'saw',frequency:88,attack:2,release:125,strength:52,pan:0}},
+    {name:'Mechanical click',type:'Click',settings:{shape:'square',frequency:185,attack:2,release:55,strength:38,pan:0}},
+    {name:'Deep rumble',type:'Low',settings:{shape:'sine',frequency:45,attack:35,release:420,strength:67,pan:0}}
   ];
   const hapticFields = [
     {key:'frequency',label:'FREQUENCY',min:40,max:300,unit:'HZ'},
@@ -46,8 +49,8 @@
   const state = {
     connected:false,name:'',transport:'',path:'',battery:null,charging:false,
     batteryInfo:null,buttons:Array(names.length).fill(0),axes:[0,0,0,0],touch:[null,null],gyro:[0,0,0],
-    profileId:'standard',profiles:clone(defaultProfiles),side:'left',packet:0,
-    mouse:false,gestures:false,gyroAim:false,remapArmed:false,batteryLight:false,temperatureLight:false,screenLight:false,
+    profileId:'standard',profiles:defaultProfiles.map(normalizeProfile),side:'left',packet:0,
+    mouse:false,gestures:false,gyroAim:false,remapArmed:false,pcMode:false,batteryLight:false,temperatureLight:false,screenLight:false,
     xinput:false,xinputStatus:'disabled',xinputMessage:'ViGEm not connected',
     activity:Array(80).fill(0),lastInputAt:0,rate:0,devices:[],selectedPath:'',
     currentView:'live',playUntil:0,playStart:0,playDuration:0,lastExternalExe:'',
@@ -55,7 +58,45 @@
     autoApply:true,coreStatus:'ready',foregroundExe:'',foregroundTitle:'',foregroundPath:'',lastExternalPath:'',autoMatchId:'',autoSuppressed:false,
     sequenceGaps:0,invalidReports:0,stickTest:null,batteryHistory:[],audioBridge:false,audioRoute:'off',telemetryOn:false,telemetryLast:0,scriptEnabled:false,inputEffectsActive:false,gyroCalibration:null,lowBatteryAlert:false,timerUntil:0
   };
+  const pcButtons=[0,1,2,3,4,5,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22];
+  const defaultPcBindings=()=>[
+    {button:0,vk:13,behavior:'tap',sequence:[]},
+    {button:1,vk:27,behavior:'tap',sequence:[]},
+    {button:2,vk:32,behavior:'tap',sequence:[]},
+    {button:3,vk:9,behavior:'tap',sequence:[]},
+    {button:4,vk:16,behavior:'hold',sequence:[]},
+    {button:5,vk:17,behavior:'hold',sequence:[]},
+    {button:12,vk:38,behavior:'hold',sequence:[]},
+    {button:13,vk:40,behavior:'hold',sequence:[]},
+    {button:14,vk:37,behavior:'hold',sequence:[]},
+    {button:15,vk:39,behavior:'hold',sequence:[]}
+  ];
+  let pcBindings=defaultPcBindings();
+  let pcClickThreshold=.55;
+  let pcPointerSensitivity=.7,pcReverseScroll=true;
+  const defaultCalibration=()=>({axisCenters:[0,0,0,0],axisMins:[-1,-1,-1,-1],axisMaxs:[1,1,1,1],triggerRests:[0,0],triggerFulls:[1,1],touchMins:[0,0],touchMaxs:[1,1]});
+  let inputCalibration=null,calibrationRun=null;
+  try{
+    const saved=JSON.parse(localStorage.getItem('aftertouch.inputCalibration')||'null');
+    if(saved&&['axisCenters','axisMins','axisMaxs','triggerRests','triggerFulls','touchMins','touchMaxs'].every(key=>Array.isArray(saved[key])&&saved[key].every(Number.isFinite)))inputCalibration=saved;
+  }catch{}
+  try{
+    const saved=JSON.parse(localStorage.getItem('aftertouch.pcBindings')||'null');
+    if(Array.isArray(saved)&&saved.length<=pcButtons.length&&saved.every(b=>pcButtons.includes(b.button)&&vkChoices.some(k=>k.vk===b.vk)&&['hold','tap','macro'].includes(b.behavior)&&Array.isArray(b.sequence)&&b.sequence.length<=5&&b.sequence.every(vk=>vkChoices.some(k=>k.vk===vk))))pcBindings=saved;
+    const click=Number(localStorage.getItem('aftertouch.pcClickThreshold'));
+    if(Number.isFinite(click)&&click>=.05&&click<=.95)pcClickThreshold=click;
+    const pointer=Number(localStorage.getItem('aftertouch.pcPointerSensitivity'));
+    if(Number.isFinite(pointer)&&pointer>=.4&&pointer<=1.5)pcPointerSensitivity=pointer;
+    pcReverseScroll=localStorage.getItem('aftertouch.pcReverseScroll')!=='false';
+  }catch{}
   let toastTimeout, audioContext, dragging = -1, saveTimeout, saveChain=Promise.resolve(), scanTimeout;
+  let pcAudioSketch=false;
+  try{pcAudioSketch=localStorage.getItem('aftertouch.pcAudioSketch')==='true';}catch{}
+  $('#haptic-pc-audio').checked=pcAudioSketch;
+  $('#haptic-pc-audio').addEventListener('change',event=>{
+    pcAudioSketch=event.target.checked;
+    try{localStorage.setItem('aftertouch.pcAudioSketch',String(pcAudioSketch));}catch{}
+  });
   let updateChecking=false, updateInstalling=false, availableVersion='';
   const palettes=['dusk','cinder','tide','verdigris'];
   function setPalette(palette){
@@ -82,6 +123,12 @@
     n.gyroAim = Object.assign(defaultGyro(), n.gyroAim || {});
     n.remap = Object.assign(defaultRemap(), n.remap || {});
     n.inputEffects = Object.assign(defaultInputEffects(), n.inputEffects || {});
+    for(const side of ['left','right']){
+      const t=n.triggers[side];
+      t.startZone=Number.isInteger(t.startZone)?t.startZone:(t.mode==='weapon'?5:2);
+      t.endZone=Number.isInteger(t.endZone)?t.endZone:(t.mode==='weapon'?6:8);
+      t.snapStrength=Number.isFinite(t.snapStrength)?t.snapStrength:50;
+    }
     n.remap.bindings = Array.isArray(n.remap.bindings) ? n.remap.bindings.map(b=>({button:b.button,vk:b.vk,modifier:b.modifier??null,behavior:b.behavior||'hold',sequence:Array.isArray(b.sequence)?b.sequence:[]})) : [];
     return n;
   }
@@ -160,6 +207,197 @@
     try { await invoke('send_command',{command}); return true; }
     catch (error) { toast(String(error)); log(`CORE ERROR / ${error}`); return false; }
   }
+  function sendPcBindings(){
+    if(state.connected)send({action:'setPcBindings',bindings:pcBindings,click_threshold:pcClickThreshold,pointer_sensitivity:pcPointerSensitivity,reverse_scroll:pcReverseScroll});
+  }
+  function sendCalibration(){
+    if(state.connected)send({action:'setCalibration',calibration:inputCalibration||defaultCalibration()});
+  }
+  const calibrationStages=[
+    {label:'1. Capture the resting position',instruction:'Set the controller down with sticks centered and L2/R2 released. Watch the live values settle, then capture.',action:'Capture rest'},
+    {label:'2. Rotate both sticks',instruction:'Rotate each stick around its full rim until left, right, up, and down are all captured.',action:'Continue to triggers'},
+    {label:'3. Press both triggers fully',instruction:'Press L2 and R2 to their physical stops. Release and repeat if a maximum is still low.',action:'Continue to touchpad'},
+    {label:'4. Trace the touchpad',instruction:'Slide a finger through all four corners and along the edges until both axes show enough range.',action:'Save calibration'}
+  ];
+  function restValues(run){
+    const count=run.restSamples.length||1;
+    const centres=[0,0,0,0],rests=[0,0];
+    run.restSamples.forEach(sample=>{sample.axes.forEach((value,i)=>centres[i]+=value);sample.triggers.forEach((value,i)=>rests[i]+=value);});
+    return {centres:centres.map(value=>value/count),rests:rests.map(value=>value/count)};
+  }
+  function calibrationReady(run){
+    if(run.stage===0){
+      if(run.restSamples.length<30)return false;
+      const {centres,rests}=restValues(run);
+      return centres.every(value=>Math.abs(value)<=.3)&&rests.every(value=>value<=.2);
+    }
+    if(run.stage===1)return run.axisMins.every((value,i)=>value<=run.centers[i]-.5)&&run.axisMaxs.every((value,i)=>value>=run.centers[i]+.5);
+    if(run.stage===2)return run.triggerFulls.every((value,i)=>value-run.rests[i]>=.5);
+    return run.touchCount>=10&&run.touchMins.every((value,i)=>run.touchMaxs[i]-value>=.5);
+  }
+  function calibrationFeedback(run){
+    if(run.stage===0){
+      const {centres,rests}=restValues(run);
+      return `Rest samples ${run.restSamples.length}/30 · stick centers ${centres.map(v=>Math.round(v*100)+'%').join(', ')} · L2/R2 released ${rests.map(v=>Math.round(v*100)+'%').join(' / ')}. ${calibrationReady(run)?'Ready to capture.':'Keep the sticks and triggers at rest.'}`;
+    }
+    if(run.stage===1){
+      if(!run.axisCount)return 'Move both sticks around their full rims to start capturing each direction.';
+      const axes=['Left X','Left Y','Right X','Right Y'];
+      const missing=axes.filter((_,i)=>run.axisMins[i]>run.centers[i]-.5||run.axisMaxs[i]<run.centers[i]+.5);
+      const ranges=axes.map((name,i)=>`${name} ${Math.round(run.axisMins[i]*100)} to ${Math.round(run.axisMaxs[i]*100)}%`).join(' · ');
+      return `${ranges}. ${missing.length?`Still waiting for full travel: ${missing.join(', ')}.`:'All four stick directions captured. Continue when ready.'}`;
+    }
+    if(run.stage===2)return `Captured full pulls: L2 ${Math.round(run.triggerFulls[0]*100)}%, R2 ${Math.round(run.triggerFulls[1]*100)}%. ${calibrationReady(run)?'Both triggers captured.':'Press each trigger further.'}`;
+    const x=run.touchMaxs[0]-run.touchMins[0],y=run.touchMaxs[1]-run.touchMins[1];
+    return `Touch coverage: horizontal ${Math.max(0,Math.round(x*100))}%, vertical ${Math.max(0,Math.round(y*100))}%. ${calibrationReady(run)?'Ready to save.':'Trace farther toward each edge.'}`;
+  }
+  function renderCalibrationStatus(){
+    const run=calibrationRun;
+    $('#start-calibration').disabled=!state.connected||!!run;
+    $('#next-calibration').hidden=!run;
+    $('#next-calibration').disabled=!run||!calibrationReady(run);
+    $('#cancel-calibration').disabled=!run;
+    $('#reset-calibration').disabled=!state.connected||!!run||!inputCalibration;
+    if(run){
+      const step=calibrationStages[run.stage];
+      $('#calibration-step').textContent=step.label;
+      $('#calibration-instruction').textContent=step.instruction;
+      $('#next-calibration').textContent=step.action;
+      $('#calibration-fill').style.width=`${run.stage*25}%`;
+      $('#cal-range-feedback').textContent=calibrationFeedback(run);
+      $('#calibration-status').textContent=`Step ${run.stage+1} of 4. You choose when to continue.`;
+    }
+  }
+  function sampleCalibration(input){
+    const axes=input.axes||[0,0,0,0],buttons=input.buttons||Array(23).fill(0),point=input.touch?.find(Boolean);
+    $('#cal-stick-left').textContent=`${Math.round(axes[0]*100)} / ${Math.round(axes[1]*100)}`;
+    $('#cal-stick-right').textContent=`${Math.round(axes[2]*100)} / ${Math.round(axes[3]*100)}`;
+    $('#cal-trigger-l2').textContent=`${Math.round(buttons[6]*100)}%`;
+    $('#cal-trigger-r2').textContent=`${Math.round(buttons[7]*100)}%`;
+    $('#cal-touch-readout').textContent=point?`${Math.round(point.x*100)}% / ${Math.round(point.y*100)}%`:'No contact';
+    const dot=$('#cal-touch-dot');dot.classList.toggle('is-active',!!point);
+    if(point){dot.style.left=`${clamp(point.x)*100}%`;dot.style.top=`${clamp(point.y)*100}%`;}
+    const run=calibrationRun;if(!run)return;
+    if(run.stage===0){
+      run.restSamples.push({axes:[...axes],triggers:[buttons[6],buttons[7]]});
+      if(run.restSamples.length>100)run.restSamples.shift();
+    }else if(run.stage===1){
+      run.axisCount++;
+      axes.forEach((value,i)=>{run.axisMins[i]=Math.min(run.axisMins[i],value);run.axisMaxs[i]=Math.max(run.axisMaxs[i],value);});
+    }else if(run.stage===2){
+      [6,7].forEach((button,i)=>run.triggerFulls[i]=Math.max(run.triggerFulls[i],buttons[button]));
+    }else{
+      input.touch.forEach(contact=>{if(contact){run.touchMins[0]=Math.min(run.touchMins[0],contact.x);run.touchMins[1]=Math.min(run.touchMins[1],contact.y);run.touchMaxs[0]=Math.max(run.touchMaxs[0],contact.x);run.touchMaxs[1]=Math.max(run.touchMaxs[1],contact.y);run.touchCount++;}});
+    }
+    renderCalibrationStatus();
+  }
+  function finishCalibration(){
+    const run=calibrationRun;
+    const candidate={axisCenters:run.centers,axisMins:run.axisMins,axisMaxs:run.axisMaxs,triggerRests:run.rests,triggerFulls:run.triggerFulls,touchMins:run.touchMins,touchMaxs:run.touchMaxs};
+    calibrationRun=null;inputCalibration=candidate;
+    try{localStorage.setItem('aftertouch.inputCalibration',JSON.stringify(candidate));}catch{}
+    sendCalibration();
+    $('#calibration-fill').style.width='100%';
+    $('#calibration-step').textContent='Calibration saved';
+    $('#calibration-instruction').textContent='Measured ranges now shape live input, pointer control, and trigger percentages.';
+    $('#cal-range-feedback').textContent=`Sticks, both triggers, and touchpad ranges captured.`;
+    $('#calibration-status').textContent='Custom calibration saved locally and applied to this controller.';
+    renderCalibrationStatus();
+  }
+  $('#start-calibration').addEventListener('click',async()=>{
+    if(!state.connected||calibrationRun)return;
+    if(!await send({action:'setCalibration',calibration:defaultCalibration()}))return;
+    calibrationRun={stage:0,restSamples:[],centers:[0,0,0,0],rests:[0,0],axisMins:[1,1,1,1],axisMaxs:[-1,-1,-1,-1],axisCount:0,triggerFulls:[0,0],touchMins:[1,1],touchMaxs:[0,0],touchCount:0};
+    renderCalibrationStatus();
+  });
+  $('#next-calibration').addEventListener('click',()=>{
+    const run=calibrationRun;if(!run||!calibrationReady(run))return;
+    if(run.stage===0){const values=restValues(run);run.centers=values.centres;run.rests=values.rests;}
+    if(run.stage===3){finishCalibration();return;}
+    run.stage++;renderCalibrationStatus();
+  });
+  $('#cancel-calibration').addEventListener('click',()=>{
+    calibrationRun=null;sendCalibration();$('#calibration-step').textContent='Calibration canceled';
+    $('#calibration-instruction').textContent='Previous ranges restored. Start again whenever you are ready.';
+    $('#cal-range-feedback').textContent='No new ranges were saved.';
+    $('#calibration-status').textContent='Previous ranges restored.';renderCalibrationStatus();
+  });
+  $('#reset-calibration').addEventListener('click',()=>{
+    inputCalibration=null;try{localStorage.removeItem('aftertouch.inputCalibration');}catch{}
+    sendCalibration();$('#calibration-step').textContent='Default ranges restored';
+    $('#calibration-status').textContent='No custom calibration saved.';$('#calibration-fill').style.width='0%';renderCalibrationStatus();
+  });
+  function savePcBindings(){
+    try{
+      localStorage.setItem('aftertouch.pcBindings',JSON.stringify(pcBindings));
+      localStorage.setItem('aftertouch.pcClickThreshold',String(pcClickThreshold));
+      localStorage.setItem('aftertouch.pcPointerSensitivity',String(pcPointerSensitivity));
+      localStorage.setItem('aftertouch.pcReverseScroll',String(pcReverseScroll));
+    }catch{}
+    sendPcBindings();
+    $('#pc-bindings-status').textContent='Saved locally. Shortcuts take effect in PC control while another window is focused.';
+  }
+  function renderPcBindings(){
+    const host=$('#pc-bindings');host.replaceChildren();
+    for(const button of pcButtons){
+      const binding=pcBindings.find(item=>item.button===button);
+      const row=document.createElement('div');row.className='pc-binding';
+      const label=document.createElement('span');label.textContent=names[button];
+      const key=document.createElement('select');key.setAttribute('aria-label',`${names[button]} key`);
+      key.add(new Option('Unassigned',''));
+      for(const choice of vkChoices)key.add(new Option(choice.label,String(choice.vk)));
+      key.value=binding?String(binding.vk):'';
+      const behavior=document.createElement('select');behavior.setAttribute('aria-label',`${names[button]} action`);
+      for(const [value,text] of [['hold','Hold'],['tap','Tap'],['macro','Key sequence']])behavior.add(new Option(text,value));
+      behavior.value=binding?.behavior||'tap';behavior.disabled=!binding;
+      const sequence=document.createElement('input');sequence.type='text';sequence.maxLength=60;
+      sequence.placeholder='Then: E, Space';sequence.setAttribute('aria-label',`${names[button]} following keys`);
+      sequence.value=(binding?.sequence||[]).map(vk=>vkChoices.find(item=>item.vk===vk)?.label||'').join(', ');
+      sequence.hidden=behavior.value!=='macro';
+      key.addEventListener('change',()=>{
+        pcBindings=pcBindings.filter(item=>item.button!==button);
+        if(key.value)pcBindings.push({button,vk:+key.value,behavior:'tap',sequence:[]});
+        savePcBindings();renderPcBindings();
+      });
+      behavior.addEventListener('change',()=>{
+        const selected=pcBindings.find(item=>item.button===button);if(!selected)return;
+        selected.behavior=behavior.value;selected.sequence=behavior.value==='macro'?[32]:[];
+        savePcBindings();renderPcBindings();
+      });
+      sequence.addEventListener('change',()=>{
+        const selected=pcBindings.find(item=>item.button===button);if(!selected)return;
+        const labels=sequence.value.split(',').map(value=>value.trim().toLowerCase()).filter(Boolean);
+        const keys=labels.map(value=>vkChoices.find(choice=>choice.label.toLowerCase()===value)?.vk);
+        if(!keys.length||keys.length>5||keys.some(vk=>!vk)){
+          $('#pc-bindings-status').textContent='Enter one to five listed keys, separated by commas.';
+          sequence.value=selected.sequence.map(vk=>vkChoices.find(item=>item.vk===vk)?.label||'').join(', ');return;
+        }
+        selected.sequence=keys;savePcBindings();
+      });
+      row.append(label,key,behavior,sequence);host.append(row);
+    }
+    $('#pc-click-threshold').value=String(Math.round(pcClickThreshold*100));
+    $('#pc-click-value').textContent=`${Math.round(pcClickThreshold*100)}%`;
+    $('#pc-pointer-sensitivity').value=String(Math.round(pcPointerSensitivity*100));
+    $('#pc-pointer-value').textContent=`${Math.round(pcPointerSensitivity*100)}%`;
+    $('#pc-reverse-scroll').checked=pcReverseScroll;
+  }
+  $('#pc-click-threshold').addEventListener('input',event=>{
+    pcClickThreshold=+event.target.value/100;
+    $('#pc-click-value').textContent=`${event.target.value}%`;
+    savePcBindings();
+  });
+  $('#pc-reset-bindings').addEventListener('click',()=>{
+    pcBindings=defaultPcBindings();pcClickThreshold=.55;pcPointerSensitivity=.7;pcReverseScroll=true;renderPcBindings();savePcBindings();
+  });
+  $('#pc-pointer-sensitivity').addEventListener('input',event=>{
+    pcPointerSensitivity=+event.target.value/100;
+    $('#pc-pointer-value').textContent=`${event.target.value}%`;
+    savePcBindings();
+  });
+  $('#pc-reverse-scroll').addEventListener('change',event=>{
+    pcReverseScroll=event.target.checked;savePcBindings();
+  });
   function reportUiFocus(){
     if(native)invoke('send_command',{command:{action:'setUiFocused',focused:document.hasFocus()&&!document.hidden}}).catch(()=>{});
   }
@@ -181,8 +419,21 @@
   window.addEventListener('hashchange',() => navigate(location.hash.slice(1)));
   setInterval(() => $('#clock').textContent = timeLabel(),1000); $('#clock').textContent = timeLabel();
 
-  const padPages = ['live','triggers','haptics','touch','lights','profiles','diagnostics'];
+  const padPages = ['live','triggers','haptics','touch','pc-controls','lights','profiles','calibration','diagnostics'];
   let padNavPrev = null, padFocus = null;
+  function renderPcMode(){
+    const enabled=state.pcMode;
+    const button=$('#input-mode-toggle');
+    button.disabled=!state.connected;
+    button.setAttribute('aria-pressed',String(enabled));
+    button.classList.toggle('is-active',enabled);
+    $('strong',button).textContent=enabled?'PC control':'Game mode';
+    $('#input-mode-help').textContent=enabled
+      ?'PC control: use the pad to navigate this app. In other windows, touch the pad to move the pointer, use two fingers to scroll, and pull L2/R2 to click. Customize button shortcuts in PC controls.'
+      :'Game mode: controller input stays available to games and lights up here. Switch to PC control to navigate this app or the desktop.';
+    if(!enabled){padNavPrev=null;clearPadFocus();}
+  }
+  $('#input-mode-toggle').addEventListener('click',()=>send({action:'setPcMode',enabled:!state.pcMode}));
   function clearPadFocus(){
     if(padFocus)padFocus.classList.remove('pad-focused');
     padFocus=null;
@@ -221,6 +472,7 @@
     return false;
   }
   function handlePadNavigation(buttons){
+    if(!state.pcMode)return;
     if(!Array.isArray(buttons)||buttons.length<18)return;
     if(!document.hasFocus()||document.hidden){padNavPrev=null;return;}
     const down=buttons.map(v=>v>.5);
@@ -265,7 +517,11 @@
       && (!p.matchPath || (typeof p.matchPath==='string' && p.matchPath.length<=1024 && !p.matchPath.includes('\0')))
       && (!(p.matchTitle||p.matchPath) || !!(p.matchExe||p.match_exe)) && p.triggers && ['left','right'].every(side => {
       const t = p.triggers[side];
-      return t && modeLabel[t.mode] && Number.isFinite(t.strength) && t.strength>=0 && t.strength<=100 && Array.isArray(t.curve) && t.curve.length===11 && t.curve.every(n=>Number.isFinite(n)&&n>=0&&n<=1);
+      return t && modeLabel[t.mode] && Number.isFinite(t.strength) && t.strength>=0 && t.strength<=100 && Array.isArray(t.curve) && t.curve.length===11 && t.curve.every(n=>Number.isFinite(n)&&n>=0&&n<=1)
+        && (t.startZone==null || Number.isInteger(t.startZone)&&t.startZone>=0&&t.startZone<=7)
+        && (t.endZone==null || Number.isInteger(t.endZone)&&t.endZone>=1&&t.endZone<=9)
+        && (t.startZone==null||t.endZone==null||t.endZone>t.startZone)
+        && (t.snapStrength==null||Number.isFinite(t.snapStrength)&&t.snapStrength>=0&&t.snapStrength<=100);
     }) && p.haptics && ['sine','square','saw','noise'].includes(p.haptics.shape)
       && hapticFields.every(f=>Number.isInteger(p.haptics[f.key]) && p.haptics[f.key]>=f.min && p.haptics[f.key]<=f.max)
       && Number.isFinite(g.sensitivity) && g.sensitivity>=.05 && g.sensitivity<=8
@@ -537,6 +793,21 @@
     $('#curve-side-label').textContent=state.side==='left'?'L2':'R2';
     $('#trigger-modes').innerHTML=Object.entries(modeLabel).map(([key,label])=>`<button class="mode-button ${t.mode===key?'is-active':''}" data-mode="${key}" type="button"><span>${label}</span><small>${key}</small></button>`).join('');
     $('#trigger-strength').value=t.strength; $('#trigger-strength-number').textContent=`${t.strength}%`; fillRange($('#trigger-strength'));renderCurve();
+    const positioned=t.mode==='weapon'||t.mode==='bow';
+    $('#break-side-label').textContent=state.side==='left'?'L2':'R2';
+    $('#break-start').min=t.mode==='weapon'?2:0;
+    $('#break-end').max=t.mode==='weapon'?8:9;
+    t.startZone=clamp(t.startZone??(t.mode==='weapon'?5:2),+$('#break-start').min,7);
+    t.endZone=clamp(t.endZone??(t.mode==='weapon'?6:8),t.startZone+1,+$('#break-end').max);
+    $('#break-start').value=t.startZone;$('#break-end').value=t.endZone;$('#break-snap').value=t.snapStrength??50;
+    $('#break-start-value').textContent=`${t.startZone*10}%`;
+    $('#break-end-value').textContent=`${t.endZone*10}%`;
+    $('#break-snap-value').textContent=`${t.snapStrength??50}%`;
+    $$('#break-start,#break-end').forEach(input=>input.disabled=!positioned);
+    $('#break-snap').disabled=t.mode!=='bow';
+    $('#break-guide').textContent=positioned
+      ?`${t.mode==='bow'?'Bow':'Weapon'}: resistance begins at ${t.startZone*10}% and breaks at ${t.endZone*10}% of reported travel. Firmware intensity remains capped at 6 of 8.`
+      :'Choose Bow or Weapon mode to set explicit break positions.';
     const c=profile().inputEffects||defaultInputEffects();
     $('#click-enabled').checked=!!c.enabled;
     $('#click-threshold').value=Math.round(c.threshold*100);$('#click-threshold-value').textContent=`${Math.round(c.threshold*100)}%`;
@@ -545,22 +816,50 @@
   }
   $$('.side-tab').forEach(b=>b.addEventListener('click',()=>{state.side=b.dataset.side;renderTriggerControls();}));
   $('#trigger-modes').addEventListener('click',e=>{const b=e.target.closest('[data-mode]');if(!b)return;trigger().mode=b.dataset.mode;renderTriggerControls();saveProfiles();});
+  $('#break-start').addEventListener('input',event=>{
+    const t=trigger();t.startZone=+event.target.value;
+    if(t.endZone<=t.startZone)t.endZone=t.startZone+1;
+    renderTriggerControls();saveProfiles();
+  });
+  $('#break-end').addEventListener('input',event=>{
+    const t=trigger();t.endZone=Math.max(t.startZone+1,+event.target.value);
+    renderTriggerControls();saveProfiles();
+  });
+  $('#break-snap').addEventListener('input',event=>{
+    trigger().snapStrength=+event.target.value;renderTriggerControls();saveProfiles();
+  });
   function fillRange(el){const f=(+el.value-(+el.min||0))/((+el.max||100)-(+el.min||0))*100;el.style.setProperty('--fill',`${f}%`);}
   $('#trigger-strength').addEventListener('input',e=>{trigger().strength=+e.target.value;$('#trigger-strength-number').textContent=`${trigger().strength}%`;fillRange(e.target);saveProfiles();});
   $('#curve-presets').innerHTML=Object.keys(presets).map(n=>`<button type="button" data-preset="${n}">${n}</button>`).join('');
   $('#curve-presets').addEventListener('click',e=>{const b=e.target.closest('[data-preset]');if(!b)return;trigger().curve=clone(presets[b.dataset.preset]);renderCurve();saveProfiles();toast(b.dataset.preset);});
   function renderCurve(){
-    const svg=$('#curve-svg'),curve=trigger().curve,grid=$('#curve-grid');
+    const svg=$('#curve-svg'),curve=trigger().curve,other=profile().triggers[state.side==='left'?'right':'left'].curve,grid=$('#curve-grid');
     if(!grid.childElementCount){let g='';for(let i=0;i<=10;i++){let x=45+i*67;g+=`<line x1="${x}" y1="20" x2="${x}" y2="315" class="grid-line"/>`;}for(let i=0;i<=5;i++){let y=315-i*56;g+=`<line x1="45" y1="${y}" x2="715" y2="${y}" class="grid-line"/>`;}g+='<line x1="45" y1="20" x2="45" y2="315" class="axis-line"/>';grid.innerHTML=g;}
     const xy=(v,i)=>`${45+i*67},${315-v*280}`;
     const line=curve.map((v,i)=>(i?'L':'M')+xy(v,i)).join(' ');
     $('#curve-line').setAttribute('d',line);$('#curve-fill').setAttribute('d',line+' L715,315 L45,315 Z');
+    $('#curve-other-line').setAttribute('d',other.map((v,i)=>(i?'L':'M')+xy(v,i)).join(' '));
+    $('#curve-active-legend').textContent=`${state.side==='left'?'L2':'R2'} selected`;
+    $('#curve-other-legend').textContent=`${state.side==='left'?'R2':'L2'} overlay`;
     let steps='';for(let i=0;i<10;i++){const y=315-(curve[i]+curve[i+1])/2*280;steps+=`${i===0?'M':'L'}${45+i*67},${y} L${45+(i+1)*67},${y} `;}
     $('#curve-steps').setAttribute('d',steps);
     $('#curve-points').innerHTML=curve.map((v,i)=>`<circle data-point="${i}" cx="${45+i*67}" cy="${315-v*280}" r="7" tabindex="0" aria-label="Zone ${i+1} force ${Math.round(v*100)} percent"/>`).join('');
+    $('#curve-values').innerHTML=curve.map((v,i)=>`<label>Point ${i}<input type="number" min="0" max="100" step="1" value="${Math.round(v*100)}" data-curve-value="${i}" aria-label="Point ${i} force percent"></label>`).join('');
     updatePlayhead();
   }
-  function updatePlayhead(){const travel=state.buttons[state.side==='left'?6:7]||0;const x=45+travel*670;$('#curve-playhead').setAttribute('x1',x);$('#curve-playhead').setAttribute('x2',x);}
+  $('#curve-values').addEventListener('change',event=>{
+    const input=event.target.closest('[data-curve-value]');if(!input)return;
+    const value=Number(input.value);
+    if(!Number.isFinite(value)||value<0||value>100){renderCurve();return;}
+    trigger().curve[+input.dataset.curveValue]=value/100;
+    renderCurve();saveProfiles();
+  });
+  function updatePlayhead(){
+    const selected=state.side==='left'?6:7,travel=state.buttons[selected]||0,other=state.buttons[selected===6?7:6]||0;
+    const x=45+travel*670,y=45+other*670;
+    $('#curve-playhead').setAttribute('x1',x);$('#curve-playhead').setAttribute('x2',x);
+    $('#curve-other-playhead').setAttribute('x1',y);$('#curve-other-playhead').setAttribute('x2',y);
+  }
   $('#curve-svg').addEventListener('pointerdown',e=>{const p=e.target.closest('[data-point]');if(!p)return;dragging=+p.dataset.point;$('#curve-svg').setPointerCapture(e.pointerId);e.preventDefault();});
   $('#curve-svg').addEventListener('pointermove',e=>{if(dragging<0)return;const rect=$('#curve-svg').getBoundingClientRect();const svgY=(e.clientY-rect.top)*380/rect.height;trigger().curve[dragging]=Math.round(clamp((315-svgY)/280)*100)/100;renderCurve();});
   function finishCurve(){if(dragging>=0){dragging=-1;saveProfiles();}}$('#curve-svg').addEventListener('pointerup',finishCurve);$('#curve-svg').addEventListener('pointercancel',finishCurve);
@@ -596,7 +895,7 @@
     if(state.connected) {
       send({action:'playHaptic',shape:h.shape,frequency:h.frequency,attack:h.attack,release:h.release,strength:h.strength,pan:h.pan});
     }
-    try{
+    if(!state.connected||pcAudioSketch)try{
       audioContext=audioContext||new(window.AudioContext||window.webkitAudioContext)();await audioContext.resume();const now=audioContext.currentTime;
       const gain=audioContext.createGain(),pan=audioContext.createStereoPanner();pan.pan.value=h.pan/100;
       gain.gain.setValueAtTime(.0001,now);gain.gain.linearRampToValueAtTime(Math.min(.08,h.strength/100*.08),now+h.attack/1000);gain.gain.linearRampToValueAtTime(.0001,now+duration/1000);
@@ -618,7 +917,7 @@
     if(!state.connected)status.textContent='Connect a controller to start the bridge.';
     else if(!available)status.textContent='USB is required for system audio haptics. Haptic previews use motor rumble over Bluetooth.';
     else if(!state.audioBridge)status.textContent='Bridge off · USB voice-coil output available on first playback.';
-    $('#haptic-route').textContent=!state.connected?'Route: PC audio preview':state.audioRoute==='voiceCoil'?'Route: USB voice coils':state.transport==='Bluetooth'?'Route: Bluetooth motors':'Route: USB voice coils if available';
+    $('#haptic-route').textContent=!state.connected?'Route: PC audio preview':state.audioRoute==='voiceCoil'?'Route: USB voice coils':state.audioRoute==='motor'?'Route: motor fallback':state.transport==='Bluetooth'?'Route: Bluetooth motors':'Route: USB voice coils if available';
   }
   $('#bridge-toggle').addEventListener('click',()=>send({action:'setAudioBridge',enabled:!state.audioBridge,gain:+$('#bridge-gain').value/100,preset:$('#bridge-preset').value}));
   $('#bridge-gain').addEventListener('input',e=>{$('#bridge-gain-value').textContent=`${e.target.value}%`;fillRange(e.target);});
@@ -642,11 +941,55 @@
   $('#alert-timer-start').addEventListener('click',()=>send({action:'setHapticTimer',seconds:Number($('#alert-timer-minutes').value)*60}));
   $('#alert-timer-cancel').addEventListener('click',()=>send({action:'setHapticTimer',seconds:0}));
 
-  function setLightColor(hex){$('#light-color').value=hex;$('#light-hex').textContent=hex.toUpperCase();$('#light-arcs').style.setProperty('--light',hex);}
-  const lightColors=['#d4a84b','#3d9b8c','#efd9a0','#5b8c7a','#c45c3e','#7ec9bc'];
-  $('#light-presets').innerHTML=lightColors.map(c=>`<button type="button" data-color="${c}" style="--color:${c}" aria-label="Color ${c}"></button>`).join('');
-  $('#light-presets').addEventListener('click',e=>{const b=e.target.closest('[data-color]');if(b)setLightColor(b.dataset.color);});
+  const lightMap=$('.controller-map').cloneNode(true);
+  lightMap.setAttribute('aria-label','Front view of DualSense showing diffused light around the touchpad');
+  lightMap.querySelectorAll('[id]').forEach(node=>{node.id=`light-${node.id}`;});
+  lightMap.querySelectorAll('*').forEach(node=>{
+    for(const attribute of [...node.attributes]){
+      if(attribute.value.includes('url(#'))node.setAttribute(attribute.name,attribute.value.replace(/url\(#([^)]*)\)/g,'url(#light-$1)'));
+    }
+    node.removeAttribute('data-button');
+    node.classList.remove('is-pressed');
+  });
+  lightMap.querySelectorAll('.map-touch-contact').forEach(node=>node.remove());
+  const ns='http://www.w3.org/2000/svg';
+  const plastic=document.createElementNS(ns,'path');plastic.setAttribute('class','map-light-plastic');plastic.setAttribute('d','M371 134 Q500 164 629 134 L610 285 Q500 314 390 285 Z');
+  lightMap.querySelector('.map-touchpad').before(plastic);
+  const strip=lightMap.querySelector('.map-light-strip');
+  for(const path of [strip,...['M391 145 Q400 203 407 266','M609 145 Q600 203 593 266'].map(d=>{const side=document.createElementNS(ns,'path');side.setAttribute('class','map-light-side');side.setAttribute('d',d);return side;})]){
+    if(path!==strip)strip.after(path);
+    const halo=path.cloneNode(true);halo.setAttribute('class','map-light-halo');path.before(halo);
+  }
+  $('#light-controller-map').append(lightMap);
+  const validHex = value => /^#[0-9a-f]{6}$/i.test(value);
+  function setLightColor(hex){
+    if(!validHex(hex))return false;
+    hex=hex.toLowerCase();$('#light-color').value=hex;$('#light-hex-input').value=hex.toUpperCase();
+    $('#light-hex').textContent=hex.toUpperCase();$('#light-arcs').style.setProperty('--light',hex);
+    $('#light-hex-error').textContent='';return true;
+  }
+  const lightPalettes={
+    'Classic':['#d4a84b','#3d9b8c','#f1f0e8','#3d74d8','#dc4565','#212c51'],
+    'Neon':['#ff3da1','#9c57ff','#37d9ff','#42e47e','#ffb12b','#fa513a'],
+    'Soft':['#e9a8c0','#b9a7e8','#93c8df','#9dd7c1','#f1d198','#d9b7a0'],
+    'Warm':['#ff642e','#ec324f','#ff9e45','#f5c73d','#c77b4b','#ad556b']
+  };
+  const colorButton=c=>`<button type="button" data-color="${c}" style="--color:${c}" aria-label="Choose ${c}"></button>`;
+  $('#light-presets').innerHTML=Object.entries(lightPalettes).map(([name,colors])=>`<div class="light-palette-row"><span>${name}</span><div>${colors.map(colorButton).join('')}</div></div>`).join('');
+  let savedColors=[];
+  try{const saved=JSON.parse(localStorage.getItem('aftertouch.lightColors')||'[]');if(Array.isArray(saved))savedColors=saved.filter(validHex).slice(-12);}catch{}
+  function renderSavedColors(){
+    $('#light-favorites').innerHTML=savedColors.length?savedColors.map(colorButton).join(''):'<span class="light-empty">No saved colors yet.</span>';
+  }
+  renderSavedColors();
+  $$('#light-presets,#light-favorites').forEach(host=>host.addEventListener('click',e=>{const b=e.target.closest('[data-color]');if(b)setLightColor(b.dataset.color);}));
   $('#light-color').addEventListener('input',e=>setLightColor(e.target.value));
+  $('#light-hex-input').addEventListener('change',e=>{if(!setLightColor(e.target.value.trim()))$('#light-hex-error').textContent='Use a six-digit hex color, for example #42A5F5.';});
+  $('#save-light-color').addEventListener('click',()=>{
+    const color=$('#light-color').value.toLowerCase();savedColors=[...savedColors.filter(item=>item!==color),color].slice(-12);
+    try{localStorage.setItem('aftertouch.lightColors',JSON.stringify(savedColors));}catch{}
+    renderSavedColors();toast('Color saved locally.');
+  });
   $('#send-light').addEventListener('click',()=>{const h=$('#light-color').value;send({action:'setLightbar',rgb:[1,3,5].map(i=>parseInt(h.slice(i,i+2),16))});});
   $('#battery-light').addEventListener('click',()=>send({action:'batteryLightbar',enabled:!state.batteryLight}));
   $('#battery-light').insertAdjacentHTML('afterend','<button class="quiet-action" id="screen-light" type="button" aria-pressed="false" disabled>Follow screen color: off</button><small class="screen-light-status" id="screen-light-status" role="status">Samples the primary display locally only while enabled.</small>');
@@ -841,6 +1184,7 @@
   }
 
   function setConnected(connected,name='',transport='',firmware='',path=''){
+    const wasCalibrating=!!calibrationRun;
     state.connected=connected;state.name=name;state.transport=transport;state.path=connected?path:'';
     $('#side-dot').parentElement.classList.toggle('is-connected',connected);
     $('#side-state').textContent=connected?'Connected':'Searching';
@@ -856,10 +1200,18 @@
     $('#owner-square').classList.toggle('is-live',connected);
     $$('#apply-triggers,#reset-effects,#touch-mouse-toggle,#gyro-aim-toggle,#xinput-toggle,#send-light,#release-light,#temperature-light,#screen-light,#diag-reset,#quick-reset,#apply-profile-now,#alert-ping,#alert-low-battery,#alert-timer-start').forEach(b=>b.disabled=!connected);
     $('#speaker-chirp').disabled=!connected||transport!=='USB';
-    if(!connected){clearPadFocus();if(state.gyroCalibration)clearTimeout(state.gyroCalibration.timer);state.gyroCalibration=null;state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.temperatureLight=false;state.screenLight=false;state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderTemperatureLight();renderScreenLight();renderInput();}
+    if(!connected){clearPadFocus();calibrationRun=null;if(state.gyroCalibration)clearTimeout(state.gyroCalibration.timer);state.gyroCalibration=null;state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.pcMode=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.temperatureLight=false;state.screenLight=false;state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderTemperatureLight();renderScreenLight();renderInput();}
+    renderPcMode();
     if(!connected){state.lowBatteryAlert=false;state.timerUntil=0;}
     renderAlerts();renderBridge();
     renderStickButtons();
+    renderCalibrationStatus();
+    if(!connected&&wasCalibrating){
+      $('#calibration-step').textContent='Controller disconnected';
+      $('#calibration-instruction').textContent='Reconnect and start the guide again. No incomplete ranges were saved.';
+      $('#calibration-status').textContent='Calibration stopped.';
+      $('#calibration-fill').style.width='0%';
+    }
     renderSession();
   }
 
@@ -896,6 +1248,22 @@
     state.batteryHistory=state.batteryHistory.slice(-24);
     try{localStorage.setItem('aftertouch.batteryHistory',JSON.stringify(state.batteryHistory));}catch{}
     renderBatteryHistory();
+  }
+  function chargeRateLabel(){
+    if(!state.connected || state.battery==null)return 'Charge rate —';
+    if(state.batteryInfo?.chargeState==='full')return 'Fully charged';
+    if(!state.charging)return 'Charge rate available while charging';
+    const samples=state.batteryHistory;
+    let first=samples.length-1;
+    while(first>0 && samples[first-1].charging && samples[first].time-samples[first-1].time<6*60*60*1000)first--;
+    const run=samples.slice(first).filter(item=>item.charging);
+    const start=run.find(item=>item.level<state.battery);
+    const end=run.at(-1);
+    if(!start||!end)return 'Estimating charge rate · waiting for a level change';
+    const hours=(end.time-start.time)/3600000;
+    if(hours<.08)return 'Estimating charge rate · more time needed';
+    const rate=(end.level-start.level)/hours;
+    return rate>0&&rate<120?`Estimated +${Math.round(rate)}%/h · 10% battery steps`:'Estimating charge rate · more readings needed';
   }
   function renderStickButtons(){
     $$('#start-drift,#start-circularity').forEach(b=>b.disabled=!state.connected||!!state.stickTest);
@@ -945,15 +1313,21 @@
   function formatAxis(n){return(Math.abs(n)<.005?0:n).toFixed(2);}
   function renderInput(){
     const b=state.buttons,a=state.axes,l=Math.round((b[6]||0)*100),r=Math.round((b[7]||0)*100);
-    $$('.hotspot,.shoulder-mark').forEach(el=>el.classList.toggle('is-pressed',(b[+el.dataset.button]||0)>.08));
+    $$('.map-control,.map-stick').forEach(el=>el.classList.toggle('is-pressed',(b[+el.dataset.button]||0)>.08));
     $$('.button-matrix span').forEach(el=>el.classList.toggle('is-pressed',(b[+el.dataset.matrix]||0)>.5));
     const active=names.filter((_,i)=>b[i]>.5);$('#active-buttons').textContent=active.length?active.join(' · '):'None';
     $('#live-l2').textContent=String(l).padStart(2,'0')+'%';$('#live-r2').textContent=String(r).padStart(2,'0')+'%';
     $('#live-l2-fill').style.width=l+'%';$('#live-r2-fill').style.width=r+'%';
     $('#left-axis').textContent=`${formatAxis(a[0])} / ${formatAxis(a[1])}`;$('#right-axis').textContent=`${formatAxis(a[2])} / ${formatAxis(a[3])}`;
     $('#diag-l2').textContent=(b[6]||0).toFixed(2);$('#diag-r2').textContent=(b[7]||0).toFixed(2);
-    $('#left-stick-mark i').style.transform=`translate(${a[0]*8}px,${a[1]*8}px)`;
-    $('#right-stick-mark i').style.transform=`translate(${a[2]*8}px,${a[3]*8}px)`;
+    $('#left-stick-cap').setAttribute('transform',`translate(${a[0]*18} ${a[1]*18})`);
+    $('#right-stick-cap').setAttribute('transform',`translate(${a[2]*18} ${a[3]*18})`);
+    $('#map-l2').setAttribute('transform',`translate(0 ${l*.16})`);
+    $('#map-r2').setAttribute('transform',`translate(0 ${r*.16})`);
+    state.touch.forEach((point,i)=>{
+      const mark=$(`#map-touch-${i}`);mark.classList.toggle('is-active',!!point);
+      if(point){mark.setAttribute('cx',String(409+clamp(point.x)*182));mark.setAttribute('cy',String(165+clamp(point.y)*94));}
+    });
     const info=state.batteryInfo;
     const chargeNames={discharging:'Discharging',charging:'Charging',full:'Full',voltageOrTempFault:'Voltage / temp fault',temperatureFault:'Temperature fault',chargingError:'Charging error',unknown:'Unknown'};
     const chargeLabel=info?.chargeState ? (chargeNames[info.chargeState]||info.chargeState) : null;
@@ -961,9 +1335,7 @@
     $('#battery-value').textContent=state.battery!=null?`${state.battery}%`:(fault?'Fault':'—');
     $('#diag-battery').textContent=state.battery!=null?`${state.battery}%`:(fault?'Fault':'—');
     $('#battery-detail').textContent=!info?'—':state.charging?'Charging':(chargeLabel||'Battery');
-    $('#battery-health').textContent=fault?'Charge fault':'Health not reported';
-    $('#battery-health').dataset.health=fault?'fault':'unknown';
-    $('#battery-temp').textContent=info?.sensorByte!=null?`Sensor ${info.sensorByte} raw`:'Sensor —';
+    $('#battery-charge-rate').textContent=fault?'Charge fault':chargeRateLabel();
     $('#diag-health').textContent=fault?'Charge fault':'Not reported';
     $('#diag-temp').textContent=info?.sensorByte!=null?String(info.sensorByte):'—';
     $('#diag-charge').textContent=chargeLabel||'—';
@@ -982,8 +1354,10 @@
     });
     state.touch.forEach((point,i)=>{const el=$(`#contact-${i}`);el.classList.toggle('is-active',!!point);if(point){el.style.left=`${point.x*100}%`;el.style.top=`${point.y*100}%`;} $(`#touch-${i+1}-pos`).textContent=point?`${point.x.toFixed(3)} / ${point.y.toFixed(3)}`:'—';});
     state.gyro.forEach((n,i)=>{const k=['x','y','z'][i];$(`#gyro-${k}`).textContent=String(n);const f=clamp(Math.abs(n)/16000)*50;const el=$(`#gyro-${k}-fill`);el.style.width=`${f}%`;el.style.left=n<0?`${50-f}%`:'50%';});
-    const activity=(active.length/8+Math.abs(a[0])/4+Math.abs(a[1])/4+(b[6]+b[7])/4);state.activity.push(clamp(activity));state.activity.shift();
-    updatePlayhead();$('#packet-counter').textContent=String(state.packet%10000).padStart(4,'0');$('#diag-packet').textContent=`#${String(state.packet%10000).padStart(4,'0')}`;
+    const activity=clamp(active.length/8+Math.abs(a[0])/4+Math.abs(a[1])/4+Math.abs(a[2])/4+Math.abs(a[3])/4+(b[6]+b[7])/4);
+    state.activity.push(activity);state.activity.shift();
+    $('#activity-scope').setAttribute('aria-label',`Input activity ${Math.round(activity*100)} percent`);
+    updatePlayhead();$('#diag-packet').textContent=`#${String(state.packet%10000).padStart(4,'0')}`;
   }
   $('#battery-segments').innerHTML=Array.from({length:10},()=>'<i></i>').join('');
   function drawActivity(){const canvas=$('#activity-scope'),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);ctx.beginPath();state.activity.forEach((v,i)=>{const x=i/(state.activity.length-1)*w,y=h-8-v*(h-16);if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.lineWidth=3;ctx.strokeStyle='#d4a84b';ctx.stroke();ctx.fillStyle='#7ec9bc';const last=state.activity.at(-1);ctx.fillRect(w-5,h-8-last*(h-16)-4,8,8);}
@@ -992,6 +1366,7 @@
       const changed=state.connected!==!!event.connected || (event.connected&&(state.name!==event.name||state.transport!==event.transport||state.path!==(event.path||'')));
       if(changed)padNavPrev=null;
       setConnected(!!event.connected,event.name||'',event.transport||'',event.firmware||'',event.path||'');
+      if(changed && event.connected){sendPcBindings();sendCalibration();}
       if(event.path) state.selectedPath = event.path;
       if(changed||state.manualScan){const msg=event.connected?`${event.name} · ${event.transport}`:(event.message||'Disconnected');log(msg);toast(msg);}
       if(state.manualScan)finishScan();
@@ -1002,6 +1377,7 @@
       renderDeviceList();
       if(state.manualScan)finishScan();
     }else if(event.type==='input'){
+      sampleCalibration(event.input);
       handlePadNavigation(event.input.buttons);
       state.buttons=event.input.buttons;state.axes=event.input.axes;state.touch=event.input.touch;state.gyro=event.input.gyro;
       if(state.gyroCalibration&&event.input.fullReport&&Array.isArray(event.input.gyro)){
@@ -1097,6 +1473,8 @@
       }
     }else if(event.type==='mouseMode'){
       state.mouse=!!event.enabled;renderMouseSwitch();
+    }else if(event.type==='pcMode'){
+      state.pcMode=!!event.enabled;renderPcMode();
     }else if(event.type==='touchGestures'){
       state.gestures=!!event.enabled;renderGestureSwitch();
     }else if(event.type==='gyroAim'){
@@ -1123,6 +1501,7 @@
       renderSession();
     }else if(event.type==='safetyReset'){
       state.autoSuppressed=true;
+      state.pcMode=false;renderPcMode();
       state.leaseUntil=0;
       state.audioBridge=false;state.audioRoute='off';renderBridge();
       state.inputEffectsActive=false;$('#click-status').textContent='Not armed';
@@ -1134,6 +1513,7 @@
     }else if(event.type==='core'){
       state.coreStatus = event.status || 'ready';
       if(event.status==='restarting'||event.status==='stopped'){
+        state.pcMode=false;renderPcMode();
         state.scriptEnabled=false;renderScript();$('#script-status').textContent='Core restarting · arm the rule again when ready';$('#script-output').textContent='Waiting for a signal';
         state.temperatureLight=false;state.screenLight=false;renderTemperatureLight();renderScreenLight();
       }
@@ -1154,7 +1534,7 @@
   window.addEventListener('blur',()=>{if(state.connected)return;held.clear();state.buttons.fill(0);renderInput();});
 
   async function start(){
-    renderAllProfileControls();setLightColor('#d4a84b');setConnected(false);renderInput();renderDeviceList();renderGestureSwitch();renderXinput();navigate(location.hash.slice(1)||'live');
+    renderAllProfileControls();renderPcBindings();setLightColor('#d4a84b');setConnected(false);renderInput();renderDeviceList();renderGestureSwitch();renderXinput();navigate(location.hash.slice(1)||'live');
     await loadProfiles();
     if(native){
       try{await window.__TAURI__.event.listen('core-event',e=>handleEvent(e.payload));await window.__TAURI__.event.listen('update-progress',e=>handleUpdateProgress(e.payload));await send({action:'listDevices'});reportUiFocus();log('Core ready');$('#core-status').textContent='Core: ready';}

@@ -82,6 +82,10 @@ def main():
         until(lambda e: e.get("type") == "touchGestures" and e.get("enabled") is False)
         send("setTouchMouse", enabled=False)
         until(lambda e: e.get("type") == "mouseMode" and e.get("enabled") is False)
+        send("setPcMode", enabled=True)
+        until(lambda e: e.get("type") == "pcMode" and e.get("enabled") is True)
+        send("setPcMode", enabled=False)
+        until(lambda e: e.get("type") == "pcMode" and e.get("enabled") is False)
 
         send("setAudioBridge", enabled=True, gain=0.0, preset="gentle")
         until(lambda e: e.get("type") == "audioStatus" and e.get("bridge") is True)

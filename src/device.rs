@@ -8,8 +8,8 @@ use crate::{
     audio_haptics::{AudioEngine, VoiceClip},
     haptics::HapticClip,
     input_map::{
-        GyroActivation, GyroAimConfig, GyroAimMapper, MouseMapper, RemapBehavior, RemapBinding,
-        RemapMapper, TouchCue,
+        DesktopMapper, GyroActivation, GyroAimConfig, GyroAimMapper, InputCalibration, MouseMapper,
+        RemapBehavior, RemapBinding, RemapMapper, TouchCue,
     },
     processes,
     screen_color::{self, ScreenSampler},
@@ -76,6 +76,18 @@ pub enum DeviceCommand {
     },
     SetUiFocused {
         focused: bool,
+    },
+    SetPcMode {
+        enabled: bool,
+    },
+    SetPcBindings {
+        bindings: Vec<RemapBindingDto>,
+        click_threshold: f32,
+        pointer_sensitivity: f32,
+        reverse_scroll: bool,
+    },
+    SetCalibration {
+        calibration: InputCalibration,
     },
     SetXinput {
         enabled: bool,
@@ -191,6 +203,8 @@ struct Connected {
     rumble_until: Option<Instant>,
     haptic: Option<HapticClip>,
     audio: AudioEngine,
+    desktop: DesktopMapper,
+    calibration: InputCalibration,
     last_input_sent: Instant,
     last_input_buttons: [bool; 23],
     last_valid_report: Instant,
@@ -287,6 +301,7 @@ impl Connected {
     }
 
     fn reset(&mut self) -> Result<(), String> {
+        self.desktop.set_enabled(false);
         self.haptic = None;
         self.audio.stop();
         self.input_effect = None;
@@ -305,6 +320,7 @@ impl Connected {
             mode: "off".into(),
             strength: 0.0,
             curve: vec![0.0; 11],
+            ..TriggerSetting::default()
         })
         .unwrap();
         let valid0 = (if self.trigger_active { 0x0c } else { 0 })
@@ -365,6 +381,7 @@ impl Connected {
             mode: "off".into(),
             strength: 0.0,
             curve: vec![0.0; 11],
+            ..TriggerSetting::default()
         })
         .unwrap();
         let right = self.last_trigger.map(|(_, right)| right).unwrap_or(off);
@@ -408,6 +425,7 @@ impl Connected {
             mode: "weapon".into(),
             strength: strength as f32,
             curve,
+            ..TriggerSetting::default()
         })
         .map_err(str::to_string)?;
         self.write(protocol::usb_report(
@@ -542,6 +560,8 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     rumble_until: None,
                     haptic: None,
                     audio: AudioEngine::default(),
+                    desktop: DesktopMapper::default(),
+                    calibration: InputCalibration::default(),
                     last_input_sent: Instant::now() - Duration::from_secs(1),
                     last_input_buttons: [false; 23],
                     last_valid_report: Instant::now(),
@@ -744,6 +764,17 @@ fn handle_command(
                 );
                 return true;
             }
+            if enabled
+                && device
+                    .as_ref()
+                    .is_some_and(|connected| connected.desktop.enabled())
+            {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"PC control already owns the touchpad pointer. Turn off PC control before using the separate touchpad mouse mode."}),
+                );
+                return true;
+            }
             mouse.set_enabled(enabled);
             emit(proxy, json!({"type":"mouseMode","enabled":enabled}));
             emit(
@@ -753,7 +784,104 @@ fn handle_command(
             return true;
         }
         DeviceCommand::SetUiFocused { focused } => {
-            remap.set_suspended(focused);
+            if let Some(device) = device.as_mut() {
+                device.desktop.set_ui_focused(focused);
+                remap.set_suspended(focused || device.desktop.enabled());
+            } else {
+                remap.set_suspended(focused);
+            }
+            return true;
+        }
+        DeviceCommand::SetPcMode { enabled } => {
+            let Some(device) = device.as_mut() else {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Connect a controller before enabling PC control."}),
+                );
+                return true;
+            };
+            if enabled && mouse.enabled() {
+                mouse.set_enabled(false);
+                emit(proxy, json!({"type":"mouseMode","enabled":false}));
+            }
+            device.desktop.set_enabled(enabled);
+            remap.set_suspended(enabled || device.desktop.ui_focused());
+            emit(proxy, json!({"type":"pcMode","enabled":enabled}));
+            emit(
+                proxy,
+                json!({"type":"notice","message":if enabled {"PC control on"} else {"Game mode on"}}),
+            );
+            return true;
+        }
+        DeviceCommand::SetPcBindings {
+            bindings,
+            click_threshold,
+            pointer_sensitivity,
+            reverse_scroll,
+        } => {
+            let Some(device) = device.as_mut() else {
+                return true;
+            };
+            let mut seen = std::collections::HashSet::new();
+            if !click_threshold.is_finite()
+                || !(0.05..=0.95).contains(&click_threshold)
+                || !pointer_sensitivity.is_finite()
+                || !(0.4..=1.5).contains(&pointer_sensitivity)
+                || bindings.len() > 21
+                || bindings.iter().any(|b| {
+                    b.button >= 23
+                        || matches!(b.button, 6 | 7)
+                        || b.vk == 0
+                        || b.vk > 255
+                        || b.modifier.is_some()
+                        || RemapBehavior::from_label(&b.behavior).is_none()
+                        || (b.behavior == "macro"
+                            && (b.sequence.is_empty() || b.sequence.len() > 5))
+                        || (b.behavior != "macro" && !b.sequence.is_empty())
+                        || b.sequence.iter().any(|&vk| vk == 0 || vk > 255)
+                        || !seen.insert(b.button)
+                })
+            {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"PC shortcuts need distinct buttons and valid key actions."}),
+                );
+                return true;
+            }
+            let mapped = bindings
+                .into_iter()
+                .map(|b| RemapBinding {
+                    button: b.button,
+                    vk: b.vk,
+                    modifier: None,
+                    behavior: RemapBehavior::from_label(&b.behavior).unwrap_or(RemapBehavior::Hold),
+                    sequence: b.sequence,
+                })
+                .collect();
+            device.desktop.set_bindings(
+                mapped,
+                click_threshold,
+                pointer_sensitivity,
+                reverse_scroll,
+            );
+            emit(
+                proxy,
+                json!({"type":"pcBindings","count":seen.len(),"clickThreshold":click_threshold}),
+            );
+            return true;
+        }
+        DeviceCommand::SetCalibration { calibration } => {
+            if !calibration.valid() {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Calibration ranges are incomplete or invalid."}),
+                );
+                return true;
+            }
+            if let Some(connected) = device.as_mut() {
+                connected.calibration = calibration;
+                emit(proxy, json!({"type":"calibration","applied":true}));
+            }
             return true;
         }
         DeviceCommand::SetTouchGestures { enabled } => {
@@ -1345,7 +1473,10 @@ fn handle_command(
         | DeviceCommand::SetXinput { .. }
         | DeviceCommand::SetTelemetry { .. }
         | DeviceCommand::SetScript { .. }
-        | DeviceCommand::SetUiFocused { .. } => unreachable!(),
+        | DeviceCommand::SetUiFocused { .. }
+        | DeviceCommand::SetPcMode { .. }
+        | DeviceCommand::SetPcBindings { .. }
+        | DeviceCommand::SetCalibration { .. } => unreachable!(),
     };
     match result {
         Ok(message) => emit(proxy, json!({ "type": "notice", "message": message })),
@@ -1379,6 +1510,10 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     let mut next_scan = Instant::now();
     let mut input_report = [0u8; 78];
     let mut next_process_check = Instant::now();
+    let gui_pid = std::env::var("CONTROLLER_GUI_PID")
+        .ok()
+        .and_then(|value| value.parse::<u32>().ok());
+    let mut next_focus_check = Instant::now();
     let mut last_conflicts = Vec::<&'static str>::new();
     let mut first_process_check = true;
     let mut last_foreground = (None::<String>, None::<String>, None::<String>);
@@ -1388,6 +1523,16 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     let mut next_rate = Instant::now() + Duration::from_secs(1);
     let mut telemetry_stale_latched = false;
     loop {
+        if let Some(gui_pid) = gui_pid
+            && Instant::now() >= next_focus_check
+        {
+            let focused = processes::gui_window_focused(gui_pid);
+            if let Some(connected) = device.as_mut() {
+                connected.desktop.set_ui_focused(focused);
+                remap.set_suspended(focused || connected.desktop.enabled());
+            }
+            next_focus_check = Instant::now() + Duration::from_millis(60);
+        }
         if Instant::now() >= next_rate {
             if telemetry.stale() && !telemetry_stale_latched {
                 telemetry_stale_latched = true;
@@ -1658,6 +1803,9 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
         }
         remap.tick();
         if let Some(connected) = device.as_mut() {
+            connected.desktop.tick();
+        }
+        if let Some(connected) = device.as_mut() {
             if connected
                 .haptic_timer
                 .is_some_and(|at| Instant::now() >= at)
@@ -1685,6 +1833,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     mode: "off".into(),
                     strength: 0.0,
                     curve: vec![0.0; 11],
+                    ..TriggerSetting::default()
                 })
                 .unwrap();
                 let report =
@@ -1725,7 +1874,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
             }
             match connected.hid.read_timeout(&mut input_report, 20) {
                 Ok(length) if length > 0 => {
-                    if let Some(input) = protocol::parse_input(&input_report[..length]) {
+                    if let Some(mut input) = protocol::parse_input(&input_report[..length]) {
                         connected.last_valid_report = Instant::now();
                         raw_reports += 1;
                         if input.charging || input.battery.is_some_and(|level| level >= 30) {
@@ -1806,9 +1955,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                                 );
                             }
                         }
+                        connected.calibration.apply(&mut input);
                         let touch_cue = mouse.update(&input);
                         gyro.update(&input);
                         remap.update(&input);
+                        connected.desktop.update(&input);
                         if let Some(event) = xinput.update(&input) {
                             emit(&proxy, event.clone());
                             if let Some(message) = event["message"].as_str() {

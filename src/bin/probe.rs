@@ -39,6 +39,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             mode: "off".into(),
                             strength: 0.0,
                             curve: vec![0.0; 11],
+                            ..protocol::TriggerSetting::default()
                         })?;
                         let report = protocol::usb_report(
                             0x0c,
