@@ -139,6 +139,23 @@ impl Default for DesktopMapper {
 }
 
 impl DesktopMapper {
+    fn scroll_delta(&mut self, vertical: f32, elapsed: f32) -> i32 {
+        if vertical.abs() <= 0.18 {
+            self.wheel_remainder = 0.0;
+            return 0;
+        }
+        let direction = vertical.signum() * if self.reverse_scroll { -1.0 } else { 1.0 };
+        if self.wheel_remainder.signum() != direction {
+            self.wheel_remainder = 0.0;
+        }
+        let travel = ((vertical.abs() - 0.18) / 0.82).clamp(0.0, 1.0);
+        self.wheel_remainder += direction * travel.powf(0.85) * 960.0 * elapsed;
+        // Send small wheel increments regularly; apps that need full detents accumulate them.
+        let delta = ((self.wheel_remainder / 15.0).trunc() as i32).clamp(-8, 8) * 15;
+        self.wheel_remainder -= delta as f32;
+        delta
+    }
+
     pub fn enabled(&self) -> bool {
         self.enabled
     }
@@ -265,16 +282,9 @@ impl DesktopMapper {
         let elapsed = self.scroll_last.replace(now).map_or(0.0, |last| {
             now.saturating_duration_since(last).as_secs_f32().min(0.05)
         });
-        let vertical = input.axes[3];
-        if vertical.abs() > 0.22 {
-            let amount = (vertical.abs() - 0.22) / 0.78;
-            let sign = if self.reverse_scroll { -1.0 } else { 1.0 };
-            self.wheel_remainder += vertical.signum() * amount * sign * 480.0 * elapsed;
-        }
-        let wheel = (self.wheel_remainder / 120.0).trunc() as i32 * 120;
+        let wheel = self.scroll_delta(input.axes[3], elapsed);
         if wheel != 0 {
-            send_mouse(0, 0, wheel.clamp(-240, 240), MOUSEEVENTF_WHEEL);
-            self.wheel_remainder -= wheel as f32;
+            send_mouse(0, 0, wheel, MOUSEEVENTF_WHEEL);
         }
     }
 }
@@ -978,6 +988,20 @@ mod tests {
         assert_eq!(gesture.arrow_key(), Some(VK_RIGHT));
         gesture.last.y = 0.8;
         assert_eq!(gesture.arrow_key(), None);
+    }
+
+    #[test]
+    fn right_stick_scroll_emits_small_steps_and_reverses_immediately() {
+        let mut mapper = DesktopMapper::default();
+        assert_eq!(mapper.scroll_delta(0.0, 0.016), 0);
+        let first = (0..6).map(|_| mapper.scroll_delta(0.7, 0.016)).sum::<i32>();
+        assert!(first < 0 && first % 15 == 0);
+        let reverse = (0..6)
+            .map(|_| mapper.scroll_delta(-0.7, 0.016))
+            .sum::<i32>();
+        assert!(reverse > 0 && reverse % 15 == 0);
+        assert_eq!(mapper.scroll_delta(0.0, 0.016), 0);
+        assert_eq!(mapper.wheel_remainder, 0.0);
     }
 
     #[test]
