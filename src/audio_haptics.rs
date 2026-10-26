@@ -25,6 +25,8 @@ const MAX_SPEAKER_SAMPLES: usize = RATE as usize * 3;
 struct SpeakerPcm {
     started: Instant,
     samples: Arc<[i16]>,
+    speaker: bool,
+    grips: Option<Arc<[f32]>>,
 }
 
 #[derive(Clone, Copy)]
@@ -196,7 +198,8 @@ impl AudioEngine {
         let mut eligible_endpoints = 0usize;
         for device in host.output_devices().map_err(|e| e.to_string())? {
             let name = device.to_string();
-            if !name.to_ascii_lowercase().contains("dualsense") {
+            let lower = name.to_ascii_lowercase();
+            if !lower.contains("dualsense") && !lower.contains("wireless controller") {
                 continue;
             }
             let configs = device
@@ -227,7 +230,7 @@ impl AudioEngine {
         if eligible_endpoints > 1 {
             return Err("More than one DualSense USB audio endpoint is connected. Keep one USB pad connected for haptic PCM, or use motor fallback.".into());
         }
-        let (device, name, format) = candidate.ok_or("No four-channel DualSense USB audio endpoint at 48 kHz. Connect by USB and enable its Speakers device in Windows.".to_string())?;
+        let (device, name, format) = candidate.ok_or("No four-channel DualSense USB audio endpoint at 48 kHz. Connect by USB and enable its audio output in system settings.".to_string())?;
         let config = StreamConfig {
             channels: 4,
             sample_rate: RATE,
@@ -290,15 +293,21 @@ impl AudioEngine {
         Ok(self.endpoint.as_deref().unwrap_or("DualSense"))
     }
 
-    pub fn play_speaker_pcm(&mut self, samples: Vec<i16>) -> Result<&str, String> {
+    pub fn play_speaker_pcm(&mut self, samples: Vec<i16>, route: &str) -> Result<&str, String> {
         if samples.is_empty() || samples.len() > MAX_SPEAKER_SAMPLES {
             return Err("Choose a sound between 1 sample and 3 seconds.".into());
         }
+        if !matches!(route, "speaker" | "both" | "grips") {
+            return Err("Choose a valid sound route.".into());
+        }
+        let grips = matches!(route, "both" | "grips").then(|| low_bass(&samples));
         self.start_output()?;
         *self.shared.speaker.lock().map_err(|e| e.to_string())? = None;
         *self.shared.speaker_pcm.lock().map_err(|e| e.to_string())? = Some(SpeakerPcm {
             started: Instant::now(),
             samples: samples.into(),
+            speaker: route != "grips",
+            grips,
         });
         Ok(self.endpoint.as_deref().unwrap_or("DualSense"))
     }
@@ -359,6 +368,23 @@ impl AudioEngine {
     }
 }
 
+fn low_bass(samples: &[i16]) -> Arc<[f32]> {
+    let lp_alpha = std::f32::consts::TAU * 250.0 / RATE as f32;
+    let hp_alpha = RATE as f32 / (RATE as f32 + std::f32::consts::TAU * 35.0);
+    let (mut low, mut previous_low, mut high) = (0.0f32, 0.0f32, 0.0f32);
+    samples
+        .iter()
+        .map(|sample| {
+            let x = *sample as f32 / i16::MAX as f32;
+            low += lp_alpha * (x - low);
+            high = hp_alpha * (high + low - previous_low);
+            previous_low = low;
+            (high * 1.25).clamp(-1.0, 1.0)
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
 fn record_audio_error(shared: &Shared, error: cpal::Error, route: &str) {
     if error.kind() == cpal::ErrorKind::Xrun {
         // CPAL continues streaming after a WASAPI discontinuity; a glitch is not a stopped stream.
@@ -411,12 +437,18 @@ fn fill_frames(
         } else {
             [0.0; 2]
         };
-        let l = soft_limit(tone[0] + audio[0], duty);
-        let r = soft_limit(tone[1] + audio[1], duty);
+        let grip = pcm
+            .and_then(|sound| sound.grips.as_ref())
+            .and_then(|samples| samples.get(pcm_start + index))
+            .copied()
+            .unwrap_or(0.0);
+        let l = soft_limit(tone[0] + audio[0] + grip, duty);
+        let r = soft_limit(tone[1] + audio[1] + grip, duty);
         let chirp = speaker
             .and_then(|sound| sound.sample(speaker_elapsed + index as f32 / RATE as f32))
             .unwrap_or(0.0)
             + pcm
+                .filter(|sound| sound.speaker)
                 .and_then(|sound| sound.samples.get(pcm_start + index))
                 .map(|sample| *sample as f32 / i16::MAX as f32 * 0.16)
                 .unwrap_or(0.0);
@@ -669,6 +701,8 @@ mod tests {
         *shared.speaker_pcm.lock().unwrap() = Some(SpeakerPcm {
             started: Instant::now(),
             samples: vec![i16::MAX; 2048].into(),
+            speaker: true,
+            grips: None,
         });
         let mut frames = [0.0f32; 4096];
         render_output(&mut frames, &shared, &mut 0, &mut 0.0);
@@ -683,6 +717,23 @@ mod tests {
                     && frame[2] == 0.0
                     && frame[3] == 0.0)
         );
+    }
+    #[test]
+    fn grip_audio_filters_high_pitch_before_output() {
+        let bass: Vec<i16> = (0..4800)
+            .map(|i| {
+                ((i as f32 * std::f32::consts::TAU * 100.0 / RATE as f32).sin() * 20_000.0) as i16
+            })
+            .collect();
+        let treble: Vec<i16> = (0..4800)
+            .map(|i| {
+                ((i as f32 * std::f32::consts::TAU * 3000.0 / RATE as f32).sin() * 20_000.0) as i16
+            })
+            .collect();
+        let rms = |samples: Arc<[f32]>| {
+            (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+        };
+        assert!(rms(low_bass(&bass)) > rms(low_bass(&treble)) * 3.0);
     }
     #[test]
     fn explicit_chirp_uses_only_speaker_channels_and_stays_quiet() {

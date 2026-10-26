@@ -456,6 +456,27 @@ pub fn player_leds_report(mask: u8) -> [u8; USB_OUTPUT_LEN] {
     report
 }
 
+/// Select the built-in speaker for USB channels 1/2. The speaker uses channel 2.
+/// Audio control offsets follow Sony's Linux hid-playstation output report layout.
+pub fn speaker_route_report(enabled: bool) -> [u8; USB_OUTPUT_LEN] {
+    let mut report = usb_report(
+        0x80 | if enabled { 0x20 } else { 0 },
+        if enabled { 0x80 } else { 0 },
+        0,
+        None,
+        None,
+        None,
+        None,
+        false,
+    );
+    if enabled {
+        report[6] = 0x64; // speaker volume
+        report[8] = 3 << 4; // speaker-only output path
+        report[38] = 0x02; // modest speaker preamp gain
+    }
+    report
+}
+
 pub fn bt_report(usb: &[u8; USB_OUTPUT_LEN], sequence: u8) -> [u8; BT_OUTPUT_LEN] {
     let mut report = [0u8; BT_OUTPUT_LEN];
     report[0] = 0x31;
@@ -535,6 +556,17 @@ mod tests {
         assert_eq!((report[0], report[1], report[2]), (0x02, 0, 0x10));
         assert_eq!(report[44], 0b1_0101);
         assert_eq!(&report[45..48], &[0, 0, 0]);
+    }
+
+    #[test]
+    fn speaker_route_sets_audio_path_and_can_restore_headphones() {
+        let on = speaker_route_report(true);
+        assert_eq!(
+            [on[0], on[1], on[2], on[6], on[8], on[38]],
+            [0x02, 0xa0, 0x80, 0x64, 0x30, 0x02]
+        );
+        let off = speaker_route_report(false);
+        assert_eq!([off[0], off[1], off[2], off[8]], [0x02, 0x80, 0, 0]);
     }
 
     #[test]

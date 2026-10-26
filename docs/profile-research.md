@@ -10,6 +10,7 @@ Checked 2026-10-26. These are references for the effect model, not official game
 | [DualSense Explorer](https://github.com/nondebug/dualsense) | 122 GitHub stars | Input and output report layout and audio endpoint behavior |
 | [DualSensitive](https://github.com/tpetsas/dualsensitive) | 7 GitHub stars | Unverified weapon examples |
 | [DualSenseBridge](https://github.com/flyingriverhorse/DualSenseBridge) | 2 GitHub stars | Experimental game and weapon presets; limited community validation |
+| [DualSense Haptic Designer](https://github.com/Jellybit/DualSense-Haptic-Designer) | 18 GitHub stars | USB speaker routing, four-channel playback, and a physical wall test for trigger zone calibration |
 
 No weapon profile library found had both strong public approval and a repeatable hardware test for sniper, pistol, burst, and SMG effects. The built-in weapon cues therefore use the documented hardware modes and editable controller-input timing. They are labeled as templates. Overwatch 2 ability, damage, and shot events are unavailable to the app unless a game integration supplies them. A trigger-pull cue will not always coincide with a game shot.
 

@@ -36,7 +36,7 @@ use serde_json::{Value, json};
 use tauri::{Emitter, Manager, State};
 use tauri::{
     menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
+    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
 
@@ -85,13 +85,11 @@ fn set_close_to_tray(
     let path = settings_path(&app)?;
     std::fs::create_dir_all(path.parent().ok_or("Settings folder missing")?)
         .map_err(|e| e.to_string())?;
-    let temp = path.with_extension("tmp");
     std::fs::write(
-        &temp,
+        &path,
         serde_json::to_vec(&json!({"closeToTray": enabled})).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
-    std::fs::rename(temp, path).map_err(|e| e.to_string())?;
     tray.close_to_tray.store(enabled, Ordering::SeqCst);
     Ok(())
 }
@@ -477,6 +475,19 @@ fn main() {
                     }
                     "quit" => app.exit(0),
                     _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if matches!(
+                        event,
+                        TrayIconEvent::DoubleClick {
+                            button: MouseButton::Left,
+                            ..
+                        }
+                    ) && let Some(window) = tray.app_handle().get_webview_window("main")
+                    {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
                 })
                 .build(app)?;
             Ok(())

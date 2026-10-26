@@ -1,6 +1,6 @@
 # Compatibility and test record
 
-Last checked: 25 October 2026 on Windows 11. This page records observed results rather than expected support. A protocol unit test verifies report construction; it cannot prove that a particular controller firmware or game accepts an effect.
+Last checked: 26 October 2026 on Windows 11. This page records observed results rather than expected support. A protocol unit test verifies report construction; it cannot prove that a particular controller firmware or game accepts an effect.
 
 | Setup | Input | Triggers and lightbar | Haptic audio | Game bridge |
 | --- | --- | --- | --- | --- |
@@ -33,5 +33,9 @@ Version 0.11.4 uses a front-facing DualSense base, moving stick caps, and matchi
 Version 0.11.5 removed the bright cyan outline image from L1 and R1 presses. The live controller retest still showed a box around the shoulder. Several 0.11.6 previews changed the shoulder motion. The user preferred the preview with a moving face and black side and a readable label, so that version is retained. It still shows a bar during a press; the user asked to move on without further UI changes.
 
 Version 0.12.0 uses the user's Solve Practice Lab home screen as the visual reference for a full pixel art workbench background, warm and charcoal cards with colored edge light, and small signal animations. The prior sidebar styling and shoulder artwork are retained. The app theme selector is removed; Lightbar colors still control the physical RGB LEDs. Short panels no longer stretch to fill their grid row, and the session rail scrolls horizontally in narrow windows. Browser checks cover all nine pages, the Scan button position, and widths from 390 to 1920 pixels.
+
+Version 0.13.0 adds input-driven Pistol, Sniper, Burst, and SMG templates; controller speaker and filtered grip playback for short audio files; tray and sign-in settings; more PC bindings; and gyro noise floor and smoothing. A unit test verifies burst timing and SMG release, and audio tests verify routed channels, output limiting, and bass filtering. Windows Rust tests, cargo check, strict Clippy, browser UI smoke, and controller-free script/update checks passed. The user is testing the physical trigger feel, sound routes, and tray behavior on a USB DualSense. Linux and macOS builds pass Rust tests, check, and Clippy in CI; packaged preview results and physical pad behavior are recorded in [platform support](docs/platform-support.md) when available. Windows remains the only platform with a tested PC input backend and game matching.
+
+The first live 0.13.0 preview exposed silent speaker playback, a weak Sniper cue, an ineffective Burst cue, and weak SMG rapid fire. The user also requested a rate control that is easier to adjust and a track-duration display. The next build switches the USB audio path to the built-in speaker before playback, shows a selectable three-second clip against the full track duration, adds tray double-click, and revises the three weapon cues. Protocol tests verify the speaker routing flags; physical speaker and recoil retests are still needed.
 
 The app reads HID reports, uses Windows audio loopback, and listens for published telemetry. It does not inject code into games. Steam Input or another controller tool may write to the same controller; Diagnostics reports likely conflicts, and Reset releases effects when this app owns them.

@@ -1,5 +1,9 @@
 """Browser smoke for the embedded UI. Run: python tests/ui_smoke.py"""
 from pathlib import Path
+import io
+import math
+import struct
+import wave
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,7 +21,7 @@ def mock_core(page):
           if (name === 'set_close_to_tray') { window.mockAppSettings.closeToTray=args.enabled; return null; }
           if (name === 'set_start_on_login') { window.mockAppSettings.startOnLogin=args.enabled; return null; }
           if (name === 'platform_capabilities') return {os:'windows',desktopInput:true,xinput:true,screenColor:true,systemAudioBridge:true};
-          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.12.0'}; }
+          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.13.0'}; }
           if (name === 'install_update') { window.installedUpdate=true; return null; }
           if (name === 'send_demo_telemetry') { window.demoPort=args.port; return null; }
           if (name === 'open_driver_setup') { window.driverOpened=args.kind; return 'Driver setup opened'; }
@@ -93,7 +97,7 @@ def main():
         assert not page.evaluate("window.sent.some(c=>c.action==='playHaptic')")
         page.locator('[data-view="diagnostics"]').click()
         page.locator("#check-update").click()
-        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.12.0 is current')")
+        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.13.0 is current')")
         assert page.locator("#install-update").is_hidden()
         page.locator('[data-view="settings"]').click()
         assert page.locator('#close-to-tray').is_checked()
@@ -102,9 +106,9 @@ def main():
         page.locator('#start-on-login').check()
         page.wait_for_function("window.mockAppSettings.startOnLogin===true")
         page.locator('[data-view="diagnostics"]').click()
-        page.evaluate("window.mockUpdateVersion='0.12.0'")
+        page.evaluate("window.mockUpdateVersion='0.13.0'")
         page.locator("#check-update").click()
-        page.wait_for_function("document.querySelector('#install-update').textContent.includes('0.12.0')")
+        page.wait_for_function("document.querySelector('#install-update').textContent.includes('0.13.0')")
         assert page.locator("#install-update").is_visible()
         page.locator("#install-update").click()
         page.wait_for_function("window.installedUpdate===true")
@@ -115,6 +119,24 @@ def main():
         assert page.evaluate("window.sent.some(c=>c.action==='setPcBindings')")
         assert page.evaluate("window.sent.some(c=>c.action==='setCalibration')")
         assert not page.locator("#connection-guide").is_visible()
+        with io.BytesIO() as sound:
+            with wave.open(sound, "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(48_000)
+                wav.writeframes(b"".join(struct.pack("<h", int(12_000 * math.sin(2 * math.pi * 100 * i / 48_000))) for i in range(48_000 * 4)))
+            page.locator('[data-view="haptics"]').click()
+            page.locator('#speaker-file').set_input_files({"name":"tone.wav","mimeType":"audio/wav","buffer":sound.getvalue()})
+        page.wait_for_function("document.querySelector('#speaker-time').textContent==='0:00 / 0:04'")
+        assert page.locator('#speaker-start').is_enabled()
+        page.locator('#speaker-start').fill('1')
+        assert page.locator('#speaker-start-value').inner_text() == '0:01'
+        page.locator('#speaker-route').select_option('both')
+        page.locator('#speaker-file-play').click()
+        page.wait_for_function("window.sent.some(c=>c.action==='playSpeakerSound')")
+        assert page.evaluate("window.sent.findLast(c=>c.action==='playSpeakerSound').route") == 'both'
+        page.evaluate("window.coreHandler({type:'speakerStatus',source:'file',message:'Sound sent to test pad'})")
+        page.wait_for_function("document.querySelector('#speaker-progress').value>1")
         page.locator('[data-view="pc-controls"]').click()
         assert page.locator("#pc-bindings .pc-binding").count() == 21
         page.locator("#pc-click-threshold").fill("70")

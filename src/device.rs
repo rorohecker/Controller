@@ -112,6 +112,7 @@ pub enum DeviceCommand {
     PlaySpeakerSound {
         #[serde(rename = "pcmBase64")]
         pcm_base64: String,
+        route: String,
     },
     SetAudioBridge {
         enabled: bool,
@@ -244,6 +245,7 @@ struct Connected {
     rumble_until: Option<Instant>,
     haptic: Option<HapticClip>,
     audio: AudioEngine,
+    speaker_route_until: Option<Instant>,
     desktop: DesktopMapper,
     calibration: InputCalibration,
     last_input_sent: Instant,
@@ -326,23 +328,9 @@ impl WeaponKind {
         match self {
             Self::Click => ("square", 145, 2, 75, (strength / 2).max(1), 45),
             Self::Pistol => ("square", 155, 2, 105, strength, 35),
-            Self::Sniper => ("saw", 65, 4, 250, strength, 10),
-            Self::Burst => (
-                "square",
-                150,
-                2,
-                65,
-                ((u16::from(strength) * 3 / 4) as u8).max(1),
-                35,
-            ),
-            Self::Smg => (
-                "square",
-                175,
-                2,
-                48,
-                ((u16::from(strength) * 3 / 5) as u8).max(1),
-                45,
-            ),
+            Self::Sniper => ("square", 55, 2, 280, strength, 0),
+            Self::Burst => ("square", 110, 2, 110, strength, 20),
+            Self::Smg => ("square", 95, 2, 75, strength, 20),
         }
     }
 }
@@ -364,6 +352,17 @@ impl Connected {
         let fallback = HapticClip::new(shape.into(), frequency, attack, release, strength, pan);
         self.rumble_until = Some(Instant::now() + fallback.duration());
         self.haptic = Some(fallback);
+    }
+
+    fn set_speaker_route(&mut self, enabled: bool) -> Result<(), String> {
+        if !matches!(self.transport, BusType::Usb) {
+            return Err("Controller speaker routing requires USB.".into());
+        }
+        self.write(protocol::speaker_route_report(enabled))?;
+        if !enabled {
+            self.speaker_route_until = None;
+        }
+        Ok(())
     }
 
     fn write(&mut self, report: [u8; protocol::USB_OUTPUT_LEN]) -> Result<(), String> {
@@ -420,6 +419,11 @@ impl Connected {
         self.desktop.set_enabled(false);
         self.haptic = None;
         self.audio.stop();
+        let restore_speaker = self.speaker_route_until.is_some();
+        self.speaker_route_until = None;
+        if restore_speaker {
+            self.set_speaker_route(false)?;
+        }
         self.input_effect = None;
         self.input_effect_until = None;
         self.low_battery_alert = false;
@@ -542,10 +546,18 @@ impl Connected {
             self.restore_input_effect()?;
         }
         let mut curve = vec![0.0; 11];
-        let zone = ((threshold * 10.0).round() as usize).clamp(2, 7);
-        curve[zone + 1..].fill(1.0);
+        let vibration = matches!(
+            kind,
+            WeaponKind::Sniper | WeaponKind::Burst | WeaponKind::Smg
+        );
+        if vibration {
+            curve[2..].fill(1.0);
+        } else {
+            let zone = ((threshold * 10.0).round() as usize).clamp(2, 7);
+            curve[zone + 1..].fill(1.0);
+        }
         let click = protocol::encode_trigger(&TriggerSetting {
-            mode: "weapon".into(),
+            mode: if vibration { "vibration" } else { "weapon" }.into(),
             strength: strength as f32,
             curve,
             ..TriggerSetting::default()
@@ -564,7 +576,12 @@ impl Connected {
         self.trigger_active = true;
         self.input_effect_until = Some(
             Instant::now()
-                + Duration::from_millis(if kind == WeaponKind::Sniper { 110 } else { 65 }),
+                + Duration::from_millis(match kind {
+                    WeaponKind::Sniper => 160,
+                    WeaponKind::Burst => 110,
+                    WeaponKind::Smg => 65,
+                    _ => 65,
+                }),
         );
         let (shape, frequency, attack, release, power, pan) = kind.cue(strength);
         self.play_feedback(shape, frequency, attack, release, power, pan);
@@ -684,6 +701,7 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     rumble_until: None,
                     haptic: None,
                     audio: AudioEngine::default(),
+                    speaker_route_until: None,
                     desktop: DesktopMapper::default(),
                     calibration: InputCalibration::default(),
                     last_input_sent: Instant::now() - Duration::from_secs(1),
@@ -1538,13 +1556,15 @@ fn handle_command(
             if !matches!(device.transport, BusType::Usb) {
                 Err("Controller speaker chirps require USB.".into())
             } else {
-                device.audio.play_speaker_chirp().map(|endpoint| {
-                    emit(proxy, json!({"type":"speakerStatus","message":format!("Chirp sent to {endpoint}")}));
+                let output = device.audio.start_output().map(|_| ());
+                output.and_then(|_| device.set_speaker_route(true)).and_then(|_| device.audio.play_speaker_chirp()).map(|endpoint| {
+                    device.speaker_route_until = Some(Instant::now() + Duration::from_millis(460));
+                    emit(proxy, json!({"type":"speakerStatus","source":"chirp","message":format!("Chirp sent to {endpoint}")}));
                     "Controller speaker chirp playing"
                 })
             }
         }
-        DeviceCommand::PlaySpeakerSound { pcm_base64 } => {
+        DeviceCommand::PlaySpeakerSound { pcm_base64, route } => {
             if !matches!(device.transport, BusType::Usb) {
                 Err("Controller speaker playback requires USB.".into())
             } else if pcm_base64.len() > 400_000 {
@@ -1557,9 +1577,13 @@ fn handle_command(
                     if bytes.is_empty() || bytes.len() > 288_000 || bytes.len() % 2 != 0 {
                         return Err("Sound must be 48 kHz PCM and at most 3 seconds".into());
                     }
-                    let samples = bytes.as_chunks::<2>().0.iter().map(|pair| i16::from_le_bytes(*pair)).collect();
-                    device.audio.play_speaker_pcm(samples).map(|endpoint| {
-                        emit(proxy, json!({"type":"speakerStatus","message":format!("Sound sent to {endpoint}")}));
+                    let samples: Vec<i16> = bytes.as_chunks::<2>().0.iter().map(|pair| i16::from_le_bytes(*pair)).collect();
+                    let duration = Duration::from_secs_f32(samples.len() as f32 / 48_000.0);
+                    let routing = device.audio.start_output().map(|_| ());
+                    routing.and_then(|_| if route == "grips" { device.set_speaker_route(false) } else { device.set_speaker_route(true) })
+                    .and_then(|_| device.audio.play_speaker_pcm(samples, &route)).map(|endpoint| {
+                        device.speaker_route_until = (route != "grips").then(|| Instant::now() + duration + Duration::from_millis(100));
+                        emit(proxy, json!({"type":"speakerStatus","source":"file","message":format!("Sound sent to {endpoint}")}));
                         "Controller speaker playing"
                     })
                 })
@@ -2025,6 +2049,13 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
             connected.desktop.tick();
         }
         if let Some(connected) = device.as_mut() {
+            if connected
+                .speaker_route_until
+                .is_some_and(|at| Instant::now() >= at)
+                && let Err(error) = connected.set_speaker_route(false)
+            {
+                emit(&proxy, json!({"type":"error","message":error}));
+            }
             if connected
                 .haptic_timer
                 .is_some_and(|at| Instant::now() >= at)

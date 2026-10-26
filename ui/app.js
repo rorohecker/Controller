@@ -876,8 +876,8 @@
     const c=profile().inputEffects||defaultInputEffects();
     $('#click-enabled').checked=!!c.enabled;
     $('#weapon-kind').value=c.kind||'click';
-    $('#weapon-rate').value=String(c.rate??10);
     $('#weapon-rate-value').textContent=`${c.rate??10} shots/s`;
+    $('#weapon-rate-gap').textContent=`${Math.round(1000/(c.rate??10))} ms between shots`;
     $('#weapon-rate-row').hidden=!['burst','smg'].includes(c.kind);
     $('#click-threshold').value=Math.round(c.threshold*100);$('#click-threshold-value').textContent=`${Math.round(c.threshold*100)}%`;
     $('#click-strength').value=c.strength;$('#click-strength-value').textContent=`${c.strength}%`;
@@ -926,13 +926,13 @@
     svg.addEventListener('pointerup',finishCurve);svg.addEventListener('pointercancel',finishCurve);
     svg.addEventListener('keydown',e=>{const p=e.target.closest('[data-point]');if(!p||!['ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const side=svg.dataset.curveSide,i=+p.dataset.point,t=profile().triggers[side];state.side=side;t.zoneForces[i]=Math.round(clamp(t.zoneForces[i]+(e.key==='ArrowUp'?.02:-.02))*100)/100;renderTriggerControls();svg.querySelector(`[data-point="${i}"]`).focus();saveProfiles();});
   });
-  $('#click-enabled').closest('.input-click-block').insertAdjacentHTML('afterbegin',`<div class="weapon-library"><h3>Weapon cues</h3><p>R2 creates a haptic recoil cue from your pull. Game events are needed for exact shot timing.</p><div class="weapon-preset-list"><button type="button" data-weapon-preset="pistol">Pistol</button><button type="button" data-weapon-preset="sniper">Sniper</button><button type="button" data-weapon-preset="burst">Burst</button><button type="button" data-weapon-preset="smg">SMG</button></div><label class="control-label" for="weapon-kind">Recoil pattern</label><select id="weapon-kind"><option value="click">Click</option><option value="pistol">Pistol</option><option value="sniper">Sniper</option><option value="burst">Three shot burst</option><option value="smg">Automatic</option></select><label class="control-label" id="weapon-rate-row" for="weapon-rate"><span>Rate</span><b id="weapon-rate-value">10 shots/s</b></label><input id="weapon-rate" type="range" min="3" max="20" value="10"></div>`);
+  $('#click-enabled').closest('.input-click-block').insertAdjacentHTML('afterbegin',`<div class="weapon-library"><h3>Weapon cues</h3><p>R2 creates a haptic recoil cue from your pull. Game events are needed for exact shot timing.</p><div class="weapon-preset-list"><button type="button" data-weapon-preset="pistol">Pistol</button><button type="button" data-weapon-preset="sniper">Sniper</button><button type="button" data-weapon-preset="burst">Burst</button><button type="button" data-weapon-preset="smg">SMG</button></div><label class="control-label" for="weapon-kind">Recoil pattern</label><select id="weapon-kind"><option value="click">Click</option><option value="pistol">Pistol</option><option value="sniper">Sniper</option><option value="burst">Three shot burst</option><option value="smg">Automatic</option></select><div id="weapon-rate-row" class="weapon-rate-row"><span>Rate</span><div class="weapon-rate-stepper"><button type="button" data-rate-step="-1" aria-label="Slower firing rate">−</button><b id="weapon-rate-value">10 shots/s</b><button type="button" data-rate-step="1" aria-label="Faster firing rate">+</button></div><small id="weapon-rate-gap">100 ms between shots</small></div></div>`);
   $('#click-enabled').closest('.input-click-block').querySelector(':scope > h3').textContent='R2 cue';
   $('#click-enabled').closest('.input-click-block').querySelector(':scope > p').textContent='The cue starts when R2 crosses the pull point. Release to rearm single shots.';
-  const weaponPresets={pistol:{kind:'pistol',threshold:.72,strength:62,rate:6,mode:'weapon',startZone:4,endZone:6},sniper:{kind:'sniper',threshold:.85,strength:90,rate:3,mode:'weapon',startZone:5,endZone:7},burst:{kind:'burst',threshold:.68,strength:68,rate:10,mode:'weapon',startZone:3,endZone:5},smg:{kind:'smg',threshold:.42,strength:52,rate:12,mode:'vibration',startZone:1,endZone:7}};
-  $('.weapon-preset-list').addEventListener('click',e=>{const button=e.target.closest('[data-weapon-preset]');if(!button)return;const spec=weaponPresets[button.dataset.weaponPreset];if(!spec)return;profile().inputEffects={enabled:true,threshold:spec.threshold,strength:spec.strength,kind:spec.kind,rate:spec.rate};const t=profile().triggers.right;t.mode=spec.mode;t.strength=spec.strength;t.startZone=spec.startZone;t.endZone=spec.endZone;t.curve=clone(spec.mode==='vibration'?presets.Pulse:presets.Break);t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);state.side='right';renderTriggerControls();saveProfiles();toast(`${button.textContent} loaded · Apply to feel it`);});
+  const weaponPresets={pistol:{kind:'pistol',threshold:.72,strength:62,rate:6,mode:'weapon',startZone:4,endZone:6},sniper:{kind:'sniper',threshold:.72,strength:100,rate:3,mode:'weapon',startZone:5,endZone:7},burst:{kind:'burst',threshold:.46,strength:82,rate:8,mode:'weapon',startZone:2,endZone:4},smg:{kind:'smg',threshold:.40,strength:82,triggerStrength:40,rate:12,mode:'resistance',curve:[0,0,.1,.2,.25,.28,.3,.3,.3,.3,.3]}};
+  $('.weapon-preset-list').addEventListener('click',e=>{const button=e.target.closest('[data-weapon-preset]');if(!button)return;const spec=weaponPresets[button.dataset.weaponPreset];if(!spec)return;profile().inputEffects={enabled:true,threshold:spec.threshold,strength:spec.strength,kind:spec.kind,rate:spec.rate};const t=profile().triggers.right;t.mode=spec.mode;t.strength=spec.triggerStrength??spec.strength;t.startZone=spec.startZone;t.endZone=spec.endZone;t.curve=clone(spec.curve??presets.Break);t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);state.side='right';renderTriggerControls();saveProfiles();toast(`${button.textContent} loaded · Apply to feel it`);});
   $('#weapon-kind').addEventListener('change',e=>{profile().inputEffects.kind=e.target.value;renderTriggerControls();saveProfiles();});
-  $('#weapon-rate').addEventListener('input',e=>{profile().inputEffects.rate=+e.target.value;$('#weapon-rate-value').textContent=`${e.target.value} shots/s`;saveProfiles();});
+  $('#weapon-rate-row').addEventListener('click',e=>{const button=e.target.closest('[data-rate-step]');if(!button)return;profile().inputEffects.rate=clamp((profile().inputEffects.rate??10)+Number(button.dataset.rateStep),3,20);renderTriggerControls();saveProfiles();});
   $('#click-enabled').addEventListener('change',e=>{profile().inputEffects.enabled=e.target.checked;saveProfiles();});
   $('#click-threshold').addEventListener('input',e=>{profile().inputEffects.threshold=+e.target.value/100;$('#click-threshold-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
   $('#click-strength').addEventListener('input',e=>{profile().inputEffects.strength=+e.target.value;$('#click-strength-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
@@ -1006,34 +1006,56 @@
   $('#alert-ping').insertAdjacentHTML('afterend','<button id="speaker-chirp" class="quiet-action" type="button" disabled title="Play a short, quiet chirp through the controller speaker over USB">Speaker chirp · USB</button>');
   $('.alert-body > div > p').textContent='Low battery and timer alerts tap the grips. Find my pad taps them now. Speaker chirp uses the controller speaker over USB. Reset, disconnect, or exit to stop alerts.';
   $('#speaker-chirp').addEventListener('click',()=>send({action:'playSpeakerChirp'}));
-  let speakerSound=null;
+  let speakerSound=null,speakerDecoded=null,speakerTrackDuration=0,speakerClipDuration=0,speakerClipStart=0,speakerStartedAt=0,speakerPending=false;
+  const soundTime=seconds=>`${Math.floor(seconds/60)}:${String(Math.floor(seconds%60)).padStart(2,'0')}`;
+  function renderSpeakerProgress(now=performance.now()){
+    const elapsed=speakerStartedAt?Math.min(speakerClipDuration,(now-speakerStartedAt)/1000):0;
+    const position=speakerClipStart+elapsed;
+    $('#speaker-time').textContent=`${soundTime(position)} / ${soundTime(speakerTrackDuration)}`;
+    $('#speaker-progress').max=Math.max(speakerTrackDuration,1);
+    $('#speaker-progress').value=position;
+    if(speakerStartedAt&&elapsed>=speakerClipDuration){speakerStartedAt=0;$('#speaker-start').disabled=+$('#speaker-start').max<=0;}
+  }
+  function prepareSpeakerSound(){
+    if(!speakerDecoded)return;
+    const decoded=speakerDecoded, count=Math.min(144_000,Math.ceil((decoded.duration-speakerClipStart)*48_000));
+    if(!count)throw Error('The selected section has no audio.');
+    const channels=Array.from({length:Math.min(2,decoded.numberOfChannels)},(_,i)=>decoded.getChannelData(i));
+    const mono=new Float32Array(count);let peak=0;
+    for(let i=0;i<count;i++){
+      const position=(speakerClipStart+i/48_000)*decoded.sampleRate,index=Math.floor(position),mix=position-index;
+      let sample=0;
+      for(const data of channels)sample+=(data[index]||0)*(1-mix)+(data[index+1]||0)*mix;
+      sample/=channels.length;mono[i]=sample;peak=Math.max(peak,Math.abs(sample));
+    }
+    const scale=peak>0?Math.min(2,.9/peak):1;
+    const bytes=new Uint8Array(count*2),view=new DataView(bytes.buffer);
+    for(let i=0;i<count;i++)view.setInt16(i*2,Math.round(clamp(mono[i]*scale,-1,1)*32767),true);
+    let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
+    speakerSound=btoa(binary);speakerClipDuration=count/48_000;
+    $('#speaker-file-status').textContent=peak<.005?'This section is nearly silent. Move Clip start to a louder part.':`Ready · ${soundTime(speakerClipDuration)} clip from ${soundTime(speakerClipStart)}`;
+    $('#speaker-file-play').disabled=!state.connected||state.transport!=='USB';
+    renderSpeakerProgress();
+  }
   $('#speaker-file').addEventListener('change',async event=>{
-    speakerSound=null;$('#speaker-file-play').disabled=true;
+    speakerSound=null;speakerDecoded=null;speakerStartedAt=0;$('#speaker-file-play').disabled=true;
     const file=event.target.files[0];if(!file)return;
     if(file.size>6_000_000){$('#speaker-file-status').textContent='Choose a file under 6 MB.';return;}
     try{
       audioContext=audioContext||new(window.AudioContext||window.webkitAudioContext)();
-      const decoded=await audioContext.decodeAudioData(await file.arrayBuffer());
-      const count=Math.min(144_000,Math.ceil(Math.min(3,decoded.duration)*48_000));
-      if(!count)throw Error('The file has no audio.');
-      const channels=Array.from({length:Math.min(2,decoded.numberOfChannels)},(_,i)=>decoded.getChannelData(i));
-      const mono=new Float32Array(count);let peak=0;
-      for(let i=0;i<count;i++){
-        const position=i*decoded.sampleRate/48_000,index=Math.floor(position),mix=position-index;
-        let sample=0;
-        for(const data of channels)sample+=(data[index]||0)*(1-mix)+(data[index+1]||0)*mix;
-        sample/=channels.length;mono[i]=sample;peak=Math.max(peak,Math.abs(sample));
-      }
-      const scale=peak>0?Math.min(2,.9/peak):1;
-      const bytes=new Uint8Array(count*2),view=new DataView(bytes.buffer);
-      for(let i=0;i<count;i++)view.setInt16(i*2,Math.round(clamp(mono[i]*scale,-1,1)*32767),true);
-      let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
-      speakerSound=btoa(binary);
-      $('#speaker-file-status').textContent=`${file.name} · ${Math.round(count/48)/1000}s ready`;
-      $('#speaker-file-play').disabled=!state.connected||state.transport!=='USB';
+      speakerDecoded=await audioContext.decodeAudioData(await file.arrayBuffer());
+      speakerTrackDuration=speakerDecoded.duration;speakerClipStart=0;
+      if(!speakerTrackDuration)throw Error('The file has no audio.');
+      $('#speaker-start').max=String(Math.max(0,speakerTrackDuration-.1));
+      $('#speaker-start').value='0';$('#speaker-start').disabled=speakerTrackDuration<=3;
+      $('#speaker-start-value').textContent='0:00';
+      prepareSpeakerSound();
+      $('#speaker-file-status').title=file.name;
     }catch(error){$('#speaker-file-status').textContent=`Could not read sound: ${error.message}`;}
   });
-  $('#speaker-file-play').addEventListener('click',()=>{if(speakerSound)send({action:'playSpeakerSound',pcmBase64:speakerSound});});
+  $('#speaker-start').addEventListener('input',e=>{$('#speaker-start-value').textContent=soundTime(+e.target.value);});
+  $('#speaker-start').addEventListener('change',e=>{speakerClipStart=+e.target.value;prepareSpeakerSound();});
+  $('#speaker-file-play').addEventListener('click',async()=>{if(!speakerSound)return;speakerPending=true;if(!await send({action:'playSpeakerSound',pcmBase64:speakerSound,route:$('#speaker-route').value}))speakerPending=false;});
   $('#alert-low-battery').addEventListener('click',()=>send({action:'setLowBatteryAlert',enabled:!state.lowBatteryAlert}));
   $('#alert-timer-start').addEventListener('click',()=>send({action:'setHapticTimer',seconds:Number($('#alert-timer-minutes').value)*60}));
   $('#alert-timer-cancel').addEventListener('click',()=>send({action:'setHapticTimer',seconds:0}));
@@ -1536,6 +1558,7 @@
       else if(event.bridge&&Number.isInteger(event.glitches))$('#bridge-status').textContent=event.glitches?`Bridge active · ${event.glitches} audio buffer glitch${event.glitches===1?'':'es'}`:'Bridge active · audio stream healthy';
     }else if(event.type==='speakerStatus'){
       log(event.message||'Controller speaker chirp playing');
+      if(speakerPending&&event.source==='file'){speakerPending=false;speakerStartedAt=performance.now();$('#speaker-start').disabled=true;$('#speaker-file-status').textContent=event.message||'Playing';renderSpeakerProgress();}
     }else if(event.type==='inputEffects'){
       state.inputEffectsActive=!!event.enabled;
       $('#click-status').textContent=event.enabled?'Armed · release R2 to rearm':'Not armed';
@@ -1658,7 +1681,7 @@
       toast(event.message);log(event.message);
     }
   }
-  let lastCanvas=0;function frame(now){if(now-lastCanvas>35){drawActivity();if(state.currentView==='haptics'||now<state.playUntil)drawWave(now);renderSession();if(state.currentView==='haptics'&&state.timerUntil)renderAlerts();updateStickTest(now);if(state.telemetryOn&&state.telemetryLast&&now-state.telemetryLast>1500)$('#telemetry-status').textContent='Listening · waiting for telemetry';lastCanvas=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
+  let lastCanvas=0;function frame(now){if(now-lastCanvas>35){drawActivity();if(state.currentView==='haptics'||now<state.playUntil)drawWave(now);renderSession();if(state.currentView==='haptics'&&state.timerUntil)renderAlerts();if(state.currentView==='haptics'&&speakerStartedAt)renderSpeakerProgress(now);updateStickTest(now);if(state.telemetryOn&&state.telemetryLast&&now-state.telemetryLast>1500)$('#telemetry-status').textContent='Listening · waiting for telemetry';lastCanvas=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
   const keyMap={j:2,k:0,l:1,i:3,q:4,e:5,z:6,c:7,ArrowUp:12,ArrowDown:13,ArrowLeft:14,ArrowRight:15};
   const held=new Set();window.addEventListener('keydown',e=>{if(state.connected||e.target.matches('input,textarea,button,select'))return;if(!(e.key in keyMap))return;held.add(e.key);state.buttons[keyMap[e.key]]=1;renderInput();});
   window.addEventListener('keyup',e=>{if(!(e.key in keyMap)||state.connected)return;held.delete(e.key);state.buttons[keyMap[e.key]]=0;renderInput();});
