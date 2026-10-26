@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#152033">
+  <meta name="theme-color" content="#101e2d">
   <title>CONTROLLER</title>
   <link rel="icon" href="./assets/icon.png">
   <link rel="stylesheet" href="./style.css">
@@ -31,14 +31,14 @@
       <div class="side-bottom">
         <div class="side-led"><span id="side-dot"></span><span id="side-state">Searching</span></div>
         <p>Local only</p>
-        <div class="side-code">0.11.6</div>
+        <div class="side-code">0.12.0</div>
       </div>
     </aside>
 
     <div class="workspace">
       <header class="masthead">
-        <div class="mast-title">DualSense</div>
-        <div class="mast-actions"><label class="theme-control" for="theme-select">Palette <select id="theme-select" aria-label="Palette"><option value="dusk">Dusk</option><option value="cinder">Cinder</option><option value="tide">Tide</option><option value="verdigris">Verdigris</option></select></label><span class="transport-label" id="top-transport">No device</span><button id="scan-button" class="header-button" type="button" aria-busy="false">Scan</button></div>
+        <div class="mast-title"><span class="mast-glyph" aria-hidden="true"></span><span>DualSense</span></div>
+        <div class="mast-actions"><span class="mast-link"><span class="mast-beacon" aria-hidden="true"><i></i><i></i><i></i></span><span class="transport-label" id="top-transport">No device</span></span><button id="scan-button" class="header-button" type="button" aria-busy="false">Scan</button></div>
       </header>
 
       <div class="session-rail" aria-label="Session">
@@ -57,6 +57,7 @@
             <div class="photo-module framed">
               <div class="module-topline"><span><b class="blink-pixel"></b> Front map</span><span id="photo-status">Waiting</span></div>
               <div class="photo-stage" id="photo-stage">
+                <div class="field-hud" aria-hidden="true"><span></span><span></span><span></span><span></span></div>
                 <div class="photo-ruler top-ruler"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span></div>
                 <div class="controller-photo-wrap">
                   <svg class="controller-map" viewBox="0 0 1467 816" role="img" aria-label="Front view of DualSense controller with live buttons, sticks, and triggers">

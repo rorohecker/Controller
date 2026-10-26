@@ -12,7 +12,7 @@ def mock_core(page):
       window.__TAURI__ = {
         core: {invoke: async (name, args) => {
           if (name === 'load_profiles') return null;
-          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.11.6'}; }
+          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.12.0'}; }
           if (name === 'install_update') { window.installedUpdate=true; return null; }
           if (name === 'send_demo_telemetry') { window.demoPort=args.port; return null; }
           if (name === 'open_driver_setup') { window.driverOpened=args.kind; return 'Driver setup opened'; }
@@ -88,7 +88,7 @@ def main():
         assert not page.evaluate("window.sent.some(c=>c.action==='playHaptic')")
         page.locator('[data-view="diagnostics"]').click()
         page.locator("#check-update").click()
-        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.11.6 is current')")
+        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.12.0 is current')")
         assert page.locator("#install-update").is_hidden()
         page.evaluate("window.mockUpdateVersion='0.12.0'")
         page.locator("#check-update").click()
@@ -97,10 +97,8 @@ def main():
         page.locator("#install-update").click()
         page.wait_for_function("window.installedUpdate===true")
         page.locator('[data-view="live"]').click()
-        assert page.locator("#theme-select option").count() == 4
-        for palette in ("cinder", "tide", "verdigris", "dusk"):
-            page.locator("#theme-select").select_option(palette)
-            assert page.locator("body").get_attribute("data-theme") == palette
+        assert page.locator("#theme-select").count() == 0
+        assert page.locator("body").get_attribute("data-theme") is None
         page.evaluate("window.coreHandler({type:'device',connected:true,name:'DualSense',transport:'USB',path:'test'})")
         assert page.evaluate("window.sent.some(c=>c.action==='setPcBindings')")
         assert page.evaluate("window.sent.some(c=>c.action==='setCalibration')")
@@ -189,6 +187,7 @@ def main():
         page.evaluate("""window.coreHandler({type:'input',input:{buttons:Array(23).fill(0),axes:[0,0,0,0],touch:[{x:0,y:1},null],gyro:[0,0,0],battery:75,charging:false,fullReport:true}})""")
         assert page.locator("#map-touch-0").get_attribute("cx") == "516"
         assert page.locator("#map-touch-0").get_attribute("cy") == "425"
+        page.wait_for_timeout(450)
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-input-map.png"), full_page=True)
         page.locator("#input-mode-toggle").click()
         assert page.evaluate("window.sent.at(-1).action") == "setPcMode"
@@ -231,11 +230,10 @@ def main():
         assert page.locator("#live").is_visible()
         pad_event(page)
         pad_event(page, 13)
-        assert page.locator(".pad-focused").get_attribute("id") == "theme-select"
+        assert page.locator(".pad-focused").get_attribute("id") == "scan-button"
         pad_event(page)
         pad_event(page, 15)
-        assert page.locator("body").get_attribute("data-theme") == "cinder"
-        page.locator("#theme-select").select_option("dusk")
+        assert "session-profile" in page.locator(".pad-focused").get_attribute("class").split()
         page.locator("#input-mode-toggle").click()
         assert page.evaluate("window.sent.at(-1).action") == "setPcMode"
         assert page.evaluate("window.sent.at(-1).enabled") is False

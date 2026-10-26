@@ -32,4 +32,6 @@ Version 0.11.4 uses a front-facing DualSense base, moving stick caps, and matchi
 
 Version 0.11.5 removed the bright cyan outline image from L1 and R1 presses. The live controller retest still showed a box around the shoulder. Several 0.11.6 previews changed the shoulder motion. The user preferred the preview with a moving face and black side and a readable label, so that version is retained. It still shows a bar during a press; the user asked to move on without further UI changes.
 
+Version 0.12.0 uses the user's Solve Practice Lab home screen as the visual reference for a full pixel art workbench background, warm and charcoal cards with colored edge light, and small signal animations. The prior sidebar styling and shoulder artwork are retained. The app theme selector is removed; Lightbar colors still control the physical RGB LEDs. Short panels no longer stretch to fill their grid row, and the session rail scrolls horizontally in narrow windows. Browser checks cover all nine pages, the Scan button position, and widths from 390 to 1920 pixels.
+
 The app reads HID reports, uses Windows audio loopback, and listens for published telemetry. It does not inject code into games. Steam Input or another controller tool may write to the same controller; Diagnostics reports likely conflicts, and Reset releases effects when this app owns them.

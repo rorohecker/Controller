@@ -103,16 +103,6 @@
     try{localStorage.setItem('aftertouch.pcAudioSketch',String(pcAudioSketch));}catch{}
   });
   let updateChecking=false, updateInstalling=false, availableVersion='';
-  const palettes=['dusk','cinder','tide','verdigris'];
-  function setPalette(palette){
-    const choice=palettes.includes(palette)?palette:'dusk';
-    document.body.dataset.theme=choice;
-    $('#theme-select').value=choice;
-    try{localStorage.setItem('aftertouch.palette',choice);}catch{}
-  }
-  try{setPalette(localStorage.getItem('aftertouch.palette')||'dusk');}catch{setPalette('dusk');}
-  $('#theme-select').addEventListener('change',e=>setPalette(e.target.value));
-
   const profile = () => state.profiles.find(p => p.id === state.profileId) || state.profiles[0];
   const trigger = () => profile().triggers[state.side];
   const timeLabel = () => new Date().toLocaleTimeString('en-US',{hour12:false});
@@ -1249,6 +1239,7 @@
     $('#side-dot').parentElement.classList.toggle('is-connected',connected);
     $('#side-state').textContent=connected?'Connected':'Searching';
     $('#top-transport').textContent=connected?transport:'No device';
+    $('.mast-link').classList.toggle('is-live',connected);
     $('#photo-status').textContent=connected?`${transport} live`:'Waiting';
     $('#device-name').textContent=connected?name:'No controller';
     $('#device-subtitle').textContent=connected?`${transport} stream`:'USB or Bluetooth';
