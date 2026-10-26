@@ -1,0 +1,15 @@
+{
+  "bundle": {
+    "targets": ["deb", "appimage"],
+    "createUpdaterArtifacts": false,
+    "icon": ["icons/icon.png"],
+    "resources": ["resources/DualSense-artwork-LICENSE.txt"],
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/lib/udev/rules.d/70-controller-dualsense.rules": "resources/70-controller-dualsense.rules"
+        }
+      }
+    }
+  }
+}

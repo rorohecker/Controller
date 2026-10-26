@@ -81,6 +81,10 @@ struct GyroAimSettings {
     activation: String,
     #[serde(default)]
     bias: [i16; 3],
+    #[serde(default = "default_gyro_deadzone")]
+    deadzone: u16,
+    #[serde(default = "default_gyro_smoothing")]
+    smoothing: f32,
 }
 
 fn default_sens() -> f32 {
@@ -91,6 +95,12 @@ fn default_axis() -> f32 {
 }
 fn default_activation() -> String {
     "always".into()
+}
+fn default_gyro_deadzone() -> u16 {
+    90
+}
+fn default_gyro_smoothing() -> f32 {
+    0.18
 }
 
 impl Default for GyroAimSettings {
@@ -103,6 +113,8 @@ impl Default for GyroAimSettings {
             invert_y: false,
             activation: "always".into(),
             bias: [0; 3],
+            deadzone: default_gyro_deadzone(),
+            smoothing: default_gyro_smoothing(),
         }
     }
 }
@@ -141,6 +153,10 @@ struct InputEffectSettings {
     threshold: f32,
     #[serde(default = "default_click_strength")]
     strength: u8,
+    #[serde(default = "default_weapon_kind")]
+    kind: String,
+    #[serde(default = "default_weapon_rate")]
+    rate: u8,
 }
 fn default_click_threshold() -> f32 {
     0.82
@@ -148,23 +164,57 @@ fn default_click_threshold() -> f32 {
 fn default_click_strength() -> u8 {
     55
 }
+fn default_weapon_kind() -> String {
+    "click".into()
+}
+fn default_weapon_rate() -> u8 {
+    10
+}
 impl Default for InputEffectSettings {
     fn default() -> Self {
         Self {
             enabled: false,
             threshold: default_click_threshold(),
             strength: default_click_strength(),
+            kind: default_weapon_kind(),
+            rate: default_weapon_rate(),
         }
     }
 }
 
 fn paths() -> Result<(PathBuf, PathBuf), String> {
-    let base = env::var_os("APPDATA").ok_or("APPDATA is unavailable")?;
-    let base = PathBuf::from(base);
+    let base = config_base()?;
     Ok((
         base.join("CONTROLLER").join("profiles.json"),
         base.join("Aftertouch").join("profiles.json"),
     ))
+}
+
+fn config_base() -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    {
+        env::var_os("APPDATA")
+            .map(PathBuf::from)
+            .ok_or("APPDATA is unavailable".into())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join("Library/Application Support"))
+            .ok_or("HOME is unavailable".into())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(xdg) = env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
+        {
+            return Ok(xdg);
+        }
+        env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join(".config"))
+            .ok_or("HOME is unavailable".into())
+    }
 }
 
 fn validate(data: Value) -> Result<Archive, String> {
@@ -219,10 +269,20 @@ fn validate(data: Value) -> Result<Archive, String> {
                 "always" | "l1" | "r1" | "l2" | "r2" | "touchpad"
             )
             || g.bias.iter().any(|n| i32::from(*n).abs() > 4096)
+            || g.deadzone > 512
+            || !g.smoothing.is_finite()
+            || !(0.0..=0.85).contains(&g.smoothing)
         {
             return Err("Gyro aim settings are out of range".into());
         }
-        if !(0.2..=0.95).contains(&p.input_effects.threshold) || p.input_effects.strength > 100 {
+        if !(0.2..=0.95).contains(&p.input_effects.threshold)
+            || p.input_effects.strength > 100
+            || !(3..=20).contains(&p.input_effects.rate)
+            || !matches!(
+                p.input_effects.kind.as_str(),
+                "click" | "pistol" | "sniper" | "burst" | "smg"
+            )
+        {
             return Err("Input-driven trigger settings are out of range".into());
         }
         let mut mapped_buttons = std::collections::HashSet::new();
@@ -321,7 +381,8 @@ fn write_archive(file: &std::path::Path, json: &[u8]) -> Result<(), String> {
 pub fn export(data: Value) -> Result<String, String> {
     let archive = validate(data)?;
     let json = serde_json::to_vec_pretty(&archive).map_err(|e| e.to_string())?;
-    let user = env::var_os("USERPROFILE").ok_or("USERPROFILE is unavailable")?;
+    let user = env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+        .ok_or("Home folder is unavailable")?;
     let folder = PathBuf::from(user).join("Downloads");
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)

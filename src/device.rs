@@ -9,7 +9,7 @@ use crate::{
     haptics::HapticClip,
     input_map::{
         DesktopMapper, GyroActivation, GyroAimConfig, GyroAimMapper, InputCalibration, MouseMapper,
-        RemapBehavior, RemapBinding, RemapMapper, TouchCue,
+        PcLaunchBinding, RemapBehavior, RemapBinding, RemapMapper, TouchCue,
     },
     processes,
     screen_color::{self, ScreenSampler},
@@ -18,6 +18,7 @@ use crate::{
     xinput_bridge::XInputBridge,
 };
 use aftertouch_protocol::{self as protocol, TriggerSetting};
+use base64::Engine;
 use hidapi::{BusType, HidApi, HidDevice};
 use serde::Deserialize;
 use serde_json::json;
@@ -71,6 +72,10 @@ pub enum DeviceCommand {
         activation: String,
         #[serde(default)]
         bias: [i16; 3],
+        #[serde(default = "default_gyro_deadzone")]
+        deadzone: u16,
+        #[serde(default = "default_gyro_smoothing")]
+        smoothing: f32,
     },
     SetRemap {
         enabled: bool,
@@ -104,6 +109,10 @@ pub enum DeviceCommand {
         pan: i16,
     },
     PlaySpeakerChirp,
+    PlaySpeakerSound {
+        #[serde(rename = "pcmBase64")]
+        pcm_base64: String,
+    },
     SetAudioBridge {
         enabled: bool,
         gain: f32,
@@ -126,6 +135,10 @@ pub enum DeviceCommand {
         enabled: bool,
         threshold: f32,
         strength: u8,
+        #[serde(default = "default_weapon_kind")]
+        kind: String,
+        #[serde(default = "default_weapon_rate")]
+        rate: u8,
     },
     SetLowBatteryAlert {
         enabled: bool,
@@ -153,6 +166,8 @@ pub struct RemapBindingDto {
     pub behavior: String,
     #[serde(default)]
     pub sequence: Vec<u16>,
+    #[serde(default, rename = "launchPath")]
+    pub launch_path: Option<String>,
 }
 
 fn default_remap_behavior() -> String {
@@ -171,6 +186,28 @@ fn default_axis() -> f32 {
 }
 fn default_activation() -> String {
     "always".into()
+}
+fn default_weapon_kind() -> String {
+    "click".into()
+}
+fn default_weapon_rate() -> u8 {
+    10
+}
+fn default_gyro_deadzone() -> u16 {
+    90
+}
+fn default_gyro_smoothing() -> f32 {
+    0.18
+}
+fn valid_launch_path(path: &str) -> bool {
+    let file = std::path::Path::new(path);
+    path.len() <= 1024
+        && !path.contains('\0')
+        && file.is_absolute()
+        && file.is_file()
+        && file
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
 }
 
 fn sensor_color(sensor_byte: u8) -> [u8; 3] {
@@ -232,7 +269,82 @@ struct Connected {
 struct InputEffect {
     threshold: f32,
     strength: u8,
+    kind: WeaponKind,
+    rate: u8,
     armed: bool,
+    remaining: u8,
+    next_pulse: Option<Instant>,
+}
+
+impl InputEffect {
+    fn advance(&mut self, now: Instant, right_pull: f32) -> bool {
+        if right_pull < self.threshold - 0.08 {
+            self.armed = true;
+            if self.kind == WeaponKind::Smg {
+                self.next_pulse = None;
+            }
+        }
+        let first = self.armed && right_pull >= self.threshold;
+        if first {
+            self.armed = false;
+            self.remaining = if self.kind == WeaponKind::Burst { 2 } else { 0 };
+            self.next_pulse = Some(now + Duration::from_millis(1000 / u64::from(self.rate.max(1))));
+            return true;
+        }
+        let repeat = self.next_pulse.is_some_and(|at| now >= at)
+            && (self.remaining > 0
+                || (self.kind == WeaponKind::Smg && right_pull >= self.threshold));
+        if repeat {
+            self.remaining = self.remaining.saturating_sub(1);
+            self.next_pulse = Some(now + Duration::from_millis(1000 / u64::from(self.rate.max(1))));
+        }
+        repeat
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WeaponKind {
+    Click,
+    Pistol,
+    Sniper,
+    Burst,
+    Smg,
+}
+
+impl WeaponKind {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "click" => Some(Self::Click),
+            "pistol" => Some(Self::Pistol),
+            "sniper" => Some(Self::Sniper),
+            "burst" => Some(Self::Burst),
+            "smg" => Some(Self::Smg),
+            _ => None,
+        }
+    }
+    fn cue(self, strength: u8) -> (&'static str, u16, u16, u16, u8, i16) {
+        match self {
+            Self::Click => ("square", 145, 2, 75, (strength / 2).max(1), 45),
+            Self::Pistol => ("square", 155, 2, 105, strength, 35),
+            Self::Sniper => ("saw", 65, 4, 250, strength, 10),
+            Self::Burst => (
+                "square",
+                150,
+                2,
+                65,
+                ((u16::from(strength) * 3 / 4) as u8).max(1),
+                35,
+            ),
+            Self::Smg => (
+                "square",
+                175,
+                2,
+                48,
+                ((u16::from(strength) * 3 / 5) as u8).max(1),
+                45,
+            ),
+        }
+    }
 }
 
 impl Connected {
@@ -420,15 +532,15 @@ impl Connected {
         let Some(effect) = self.input_effect.as_mut() else {
             return Ok(());
         };
-        if right_pull < effect.threshold - 0.08 {
-            effect.armed = true;
-        }
-        if !effect.armed || right_pull < effect.threshold || self.input_effect_until.is_some() {
+        if !effect.advance(Instant::now(), right_pull) {
             return Ok(());
         }
+        let kind = effect.kind;
         let threshold = effect.threshold;
         let strength = effect.strength;
-        effect.armed = false;
+        if self.input_effect_until.is_some() {
+            self.restore_input_effect()?;
+        }
         let mut curve = vec![0.0; 11];
         let zone = ((threshold * 10.0).round() as usize).clamp(2, 7);
         curve[zone + 1..].fill(1.0);
@@ -450,12 +562,12 @@ impl Connected {
             false,
         ))?;
         self.trigger_active = true;
-        self.input_effect_until = Some(Instant::now() + Duration::from_millis(95));
-        let voice = VoiceClip::new("square", 145, 2, 75, (strength / 2).max(1), 45);
-        if !matches!(self.transport, BusType::Usb) || self.audio.play(voice).is_err() {
-            let _ = self.write_rumble([0, (strength / 2).max(1)]);
-            self.rumble_until = Some(Instant::now() + Duration::from_millis(75));
-        }
+        self.input_effect_until = Some(
+            Instant::now()
+                + Duration::from_millis(if kind == WeaponKind::Sniper { 110 } else { 65 }),
+        );
+        let (shape, frequency, attack, release, power, pan) = kind.cue(strength);
+        self.play_feedback(shape, frequency, attack, release, power, pan);
         Ok(())
     }
 }
@@ -769,6 +881,13 @@ fn handle_command(
             return true;
         }
         DeviceCommand::SetTouchMouse { enabled } => {
+            if enabled && !cfg!(windows) {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Desktop pointer control is currently available on Windows."}),
+                );
+                return true;
+            }
             if enabled && device.is_none() {
                 emit(
                     proxy,
@@ -805,6 +924,13 @@ fn handle_command(
             return true;
         }
         DeviceCommand::SetPcMode { enabled } => {
+            if enabled && !cfg!(windows) {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"PC control is currently available on Windows."}),
+                );
+                return true;
+            }
             let Some(device) = device.as_mut() else {
                 emit(
                     proxy,
@@ -843,10 +969,15 @@ fn handle_command(
                 || bindings.iter().any(|b| {
                     b.button >= 23
                         || matches!(b.button, 6 | 7)
-                        || b.vk == 0
-                        || b.vk > 255
                         || b.modifier.is_some()
-                        || RemapBehavior::from_label(&b.behavior).is_none()
+                        || (b.behavior != "launch"
+                            && (b.vk == 0
+                                || b.vk > 255
+                                || RemapBehavior::from_label(&b.behavior).is_none()
+                                || b.launch_path.is_some()))
+                        || (b.behavior == "launch"
+                            && (b.vk != 0
+                                || b.launch_path.as_deref().is_none_or(valid_launch_path)))
                         || (b.behavior == "macro"
                             && (b.sequence.is_empty() || b.sequence.len() > 5))
                         || (b.behavior != "macro" && !b.sequence.is_empty())
@@ -860,8 +991,17 @@ fn handle_command(
                 );
                 return true;
             }
+            let launches = bindings
+                .iter()
+                .filter(|b| b.behavior == "launch")
+                .map(|b| PcLaunchBinding {
+                    button: b.button,
+                    path: std::path::PathBuf::from(b.launch_path.as_deref().unwrap()),
+                })
+                .collect();
             let mapped = bindings
                 .into_iter()
+                .filter(|b| b.behavior != "launch")
                 .map(|b| RemapBinding {
                     button: b.button,
                     vk: b.vk,
@@ -875,6 +1015,7 @@ fn handle_command(
                 click_threshold,
                 pointer_sensitivity,
                 reverse_scroll,
+                launches,
             );
             emit(
                 proxy,
@@ -920,7 +1061,16 @@ fn handle_command(
             invert_y,
             activation,
             bias,
+            deadzone,
+            smoothing,
         } => {
+            if enabled && !cfg!(windows) {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Gyro pointer control is currently available on Windows."}),
+                );
+                return true;
+            }
             if enabled && device.is_none() {
                 emit(
                     proxy,
@@ -939,6 +1089,9 @@ fn handle_command(
                 || !(0.0..=4.0).contains(&yaw_scale)
                 || !(0.0..=4.0).contains(&pitch_scale)
                 || bias.iter().any(|n| i32::from(*n).abs() > 4096)
+                || deadzone > 512
+                || !smoothing.is_finite()
+                || !(0.0..=0.85).contains(&smoothing)
             {
                 emit(
                     proxy,
@@ -954,6 +1107,8 @@ fn handle_command(
                 invert_y,
                 activation: activation_mode,
                 bias,
+                deadzone,
+                smoothing,
             });
             emit(
                 proxy,
@@ -966,6 +1121,13 @@ fn handle_command(
             return true;
         }
         DeviceCommand::SetRemap { enabled, bindings } => {
+            if enabled && !cfg!(windows) {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Keyboard remap is currently available on Windows."}),
+                );
+                return true;
+            }
             if enabled && device.is_none() {
                 emit(
                     proxy,
@@ -982,6 +1144,7 @@ fn handle_command(
                         || b.modifier
                             .is_some_and(|modifier| modifier >= 23 || modifier == b.button)
                         || RemapBehavior::from_label(&b.behavior).is_none()
+                        || b.launch_path.is_some()
                         || (b.behavior == "macro"
                             && (b.sequence.is_empty() || b.sequence.len() > 5))
                         || (b.behavior != "macro" && !b.sequence.is_empty())
@@ -1251,6 +1414,13 @@ fn handle_command(
             }
         }
         DeviceCommand::SetScreenLightbar { enabled } => {
+            if enabled && !cfg!(windows) {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Screen color sampling is currently available on Windows."}),
+                );
+                return true;
+            }
             if !enabled && !device.screen_light {
                 emit(
                     proxy,
@@ -1374,12 +1544,35 @@ fn handle_command(
                 })
             }
         }
+        DeviceCommand::PlaySpeakerSound { pcm_base64 } => {
+            if !matches!(device.transport, BusType::Usb) {
+                Err("Controller speaker playback requires USB.".into())
+            } else if pcm_base64.len() > 400_000 {
+                Err("Sound is too long. Use at most 3 seconds.".into())
+            } else {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(pcm_base64)
+                    .map_err(|_| "Sound data is invalid".to_string());
+                bytes.and_then(|bytes| {
+                    if bytes.is_empty() || bytes.len() > 288_000 || bytes.len() % 2 != 0 {
+                        return Err("Sound must be 48 kHz PCM and at most 3 seconds".into());
+                    }
+                    let samples = bytes.as_chunks::<2>().0.iter().map(|pair| i16::from_le_bytes(*pair)).collect();
+                    device.audio.play_speaker_pcm(samples).map(|endpoint| {
+                        emit(proxy, json!({"type":"speakerStatus","message":format!("Sound sent to {endpoint}")}));
+                        "Controller speaker playing"
+                    })
+                })
+            }
+        }
         DeviceCommand::SetAudioBridge {
             enabled,
             gain,
             preset,
         } => {
-            if enabled && !matches!(device.transport, BusType::Usb) {
+            if enabled && !cfg!(windows) {
+                Err("System audio capture is currently available on Windows.".into())
+            } else if enabled && !matches!(device.transport, BusType::Usb) {
                 Err("System audio haptics require USB. Bluetooth motor fallback remains available in Haptic Lab.".into())
             } else {
                 let result = device.audio.set_bridge(enabled, gain, &preset);
@@ -1402,18 +1595,22 @@ fn handle_command(
             enabled,
             threshold,
             strength,
+            kind,
+            rate,
         } => {
             if !threshold.is_finite()
                 || !(0.2..=0.95).contains(&threshold)
                 || strength > 100
                 || (enabled && strength == 0)
+                || !(3..=20).contains(&rate)
+                || WeaponKind::parse(&kind).is_none()
             {
-                Err("Input click threshold or strength is out of range.".into())
+                Err("Weapon cue settings are out of range.".into())
             } else {
                 device.restore_input_effect().map(|_| {
-                    device.input_effect = enabled.then_some(InputEffect {threshold,strength,armed:true});
-                    emit(proxy, json!({"type":"inputEffects","enabled":enabled,"threshold":threshold,"strength":strength}));
-                    if enabled {"Input click armed"} else {"Input click off"}
+                    device.input_effect = enabled.then_some(InputEffect {threshold,strength,kind:WeaponKind::parse(&kind).unwrap(),rate,armed:true,remaining:0,next_pulse:None});
+                    emit(proxy, json!({"type":"inputEffects","enabled":enabled,"threshold":threshold,"strength":strength,"kind":kind,"rate":rate}));
+                    if enabled {"Weapon cue armed"} else {"Weapon cue off"}
                 })
             }
         }
@@ -2106,12 +2303,43 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
 
 #[cfg(test)]
 mod tests {
-    use super::sensor_color;
+    use super::{InputEffect, WeaponKind, sensor_color};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn raw_sensor_byte_spans_the_color_palette() {
         assert_eq!(sensor_color(0), [60, 130, 200]);
         assert_eq!(sensor_color(127), [230, 165, 45]);
         assert_eq!(sensor_color(255), [220, 45, 50]);
+    }
+
+    #[test]
+    fn burst_fires_three_times_and_smg_stops_on_release() {
+        let now = Instant::now();
+        let mut burst = InputEffect {
+            threshold: 0.6,
+            strength: 60,
+            kind: WeaponKind::Burst,
+            rate: 10,
+            armed: true,
+            remaining: 0,
+            next_pulse: None,
+        };
+        assert!(burst.advance(now, 0.7));
+        assert!(!burst.advance(now + Duration::from_millis(90), 0.7));
+        assert!(burst.advance(now + Duration::from_millis(100), 0.7));
+        assert!(burst.advance(now + Duration::from_millis(200), 0.7));
+        assert!(!burst.advance(now + Duration::from_millis(300), 0.7));
+        let mut smg = InputEffect {
+            kind: WeaponKind::Smg,
+            ..burst
+        };
+        smg.armed = true;
+        smg.remaining = 0;
+        smg.next_pulse = None;
+        assert!(smg.advance(now, 0.7));
+        assert!(smg.advance(now + Duration::from_millis(100), 0.7));
+        assert!(!smg.advance(now + Duration::from_millis(200), 0.0));
+        assert!(smg.advance(now + Duration::from_millis(300), 0.7));
     }
 }

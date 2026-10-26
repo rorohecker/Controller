@@ -2,13 +2,28 @@
 
 use aftertouch_protocol::{InputState, TouchPoint};
 use serde::Deserialize;
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::path::PathBuf;
+use std::process::Command;
 use std::time::{Duration, Instant};
+#[cfg(windows)]
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_KEYUP, MOUSEEVENTF_LEFTDOWN,
     MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP,
     MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
 };
+#[cfg(not(windows))]
+const MOUSEEVENTF_MOVE: u32 = 0x0001;
+#[cfg(not(windows))]
+const MOUSEEVENTF_LEFTDOWN: u32 = 0x0002;
+#[cfg(not(windows))]
+const MOUSEEVENTF_LEFTUP: u32 = 0x0004;
+#[cfg(not(windows))]
+const MOUSEEVENTF_RIGHTDOWN: u32 = 0x0008;
+#[cfg(not(windows))]
+const MOUSEEVENTF_RIGHTUP: u32 = 0x0010;
+#[cfg(not(windows))]
+const MOUSEEVENTF_WHEEL: u32 = 0x0800;
 
 const VK_LEFT: u16 = 0x25;
 const VK_RIGHT: u16 = 0x27;
@@ -117,6 +132,15 @@ pub struct DesktopMapper {
     touch_previous: Option<TouchPoint>,
     scroll_last: Option<Instant>,
     wheel_remainder: f32,
+    launches: Vec<PcLaunchBinding>,
+    launch_held: HashSet<u8>,
+    last_launch: HashMap<u8, Instant>,
+}
+
+#[derive(Clone, Debug)]
+pub struct PcLaunchBinding {
+    pub button: u8,
+    pub path: PathBuf,
 }
 
 impl Default for DesktopMapper {
@@ -134,6 +158,9 @@ impl Default for DesktopMapper {
             touch_previous: None,
             scroll_last: None,
             wheel_remainder: 0.0,
+            launches: Vec::new(),
+            launch_held: HashSet::new(),
+            last_launch: HashMap::new(),
         }
     }
 }
@@ -190,6 +217,7 @@ impl DesktopMapper {
         click_threshold: f32,
         pointer_sensitivity: f32,
         reverse_scroll: bool,
+        launches: Vec<PcLaunchBinding>,
     ) {
         self.release_all();
         self.keyboard.set(true, bindings);
@@ -198,6 +226,7 @@ impl DesktopMapper {
         self.click_threshold = click_threshold.clamp(0.05, 0.95);
         self.pointer_sensitivity = pointer_sensitivity.clamp(0.4, 1.5);
         self.reverse_scroll = reverse_scroll;
+        self.launches = launches;
         self.wait_release = true;
     }
 
@@ -218,6 +247,7 @@ impl DesktopMapper {
         self.touch_previous = None;
         self.scroll_last = None;
         self.wheel_remainder = 0.0;
+        self.launch_held.clear();
     }
 
     pub fn update(&mut self, input: &InputState) {
@@ -236,6 +266,23 @@ impl DesktopMapper {
             self.keyboard.set_suspended(false);
         }
         self.keyboard.update(input);
+        let now = Instant::now();
+        for launch in &self.launches {
+            if down[launch.button as usize] {
+                if !self.launch_held.contains(&launch.button)
+                    && self
+                        .last_launch
+                        .get(&launch.button)
+                        .is_none_or(|last| now.duration_since(*last) >= Duration::from_secs(1))
+                {
+                    let _ = Command::new(&launch.path).spawn();
+                    self.last_launch.insert(launch.button, now);
+                }
+                self.launch_held.insert(launch.button);
+            } else {
+                self.launch_held.remove(&launch.button);
+            }
+        }
         for (button, previous, down_flag, up_flag) in [
             (
                 6,
@@ -304,6 +351,8 @@ pub struct GyroAimConfig {
     pub invert_y: bool,
     pub activation: GyroActivation,
     pub bias: [i16; 3],
+    pub deadzone: u16,
+    pub smoothing: f32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -348,6 +397,7 @@ pub struct GyroAimMapper {
     remainder_x: f32,
     remainder_y: f32,
     last_sample: Option<Instant>,
+    filtered: [f32; 2],
 }
 
 impl GyroAimMapper {
@@ -356,6 +406,7 @@ impl GyroAimMapper {
         self.remainder_x = 0.0;
         self.remainder_y = 0.0;
         self.last_sample = None;
+        self.filtered = [0.0; 2];
     }
 
     pub fn update(&mut self, input: &InputState) {
@@ -363,6 +414,7 @@ impl GyroAimMapper {
             self.last_sample = None;
             self.remainder_x = 0.0;
             self.remainder_y = 0.0;
+            self.filtered = [0.0; 2];
             return;
         }
         let now = Instant::now();
@@ -376,18 +428,20 @@ impl GyroAimMapper {
         }
         // The Linux driver documents 1024 raw units per degree per second.
         // Integrating with elapsed time keeps pointer speed stable across USB and BT rates.
-        let yaw = (input.gyro[2] as i32 - self.config.bias[2] as i32) as f32;
-        let pitch = (input.gyro[0] as i32 - self.config.bias[0] as i32) as f32;
+        let raw_yaw = (input.gyro[2] as i32 - self.config.bias[2] as i32) as f32;
+        let raw_pitch = (input.gyro[0] as i32 - self.config.bias[0] as i32) as f32;
+        let deadzone = self.config.deadzone.min(512) as f32;
+        let suppress_noise = |value: f32| value.signum() * (value.abs() - deadzone).max(0.0);
+        let target = [suppress_noise(raw_yaw), suppress_noise(raw_pitch)];
+        let tau = 0.002 + self.config.smoothing.clamp(0.0, 0.85) * 0.065;
+        let blend = 1.0 - (-dt / tau).exp();
+        for (filtered, target) in self.filtered.iter_mut().zip(target) {
+            *filtered += (target - *filtered) * blend;
+        }
         let sens = self.config.sensitivity.clamp(0.05, 8.0);
-        let to_pixels = |raw: f32| {
-            if raw.abs() < 90.0 {
-                0.0
-            } else {
-                raw / 1024.0 * dt * 18.0
-            }
-        };
-        let dx = to_pixels(yaw) * self.config.yaw_scale.clamp(0.0, 4.0) * sens;
-        let mut dy = to_pixels(pitch) * self.config.pitch_scale.clamp(0.0, 4.0) * sens;
+        let to_pixels = |raw: f32| raw / 1024.0 * dt * 18.0;
+        let dx = to_pixels(self.filtered[0]) * self.config.yaw_scale.clamp(0.0, 4.0) * sens;
+        let mut dy = to_pixels(self.filtered[1]) * self.config.pitch_scale.clamp(0.0, 4.0) * sens;
         if self.config.invert_y {
             dy = -dy;
         }
@@ -826,6 +880,7 @@ impl MouseMapper {
     }
 }
 
+#[cfg(windows)]
 fn send_mouse(dx: i32, dy: i32, wheel: i32, flags: u32) {
     let input = INPUT {
         r#type: INPUT_MOUSE,
@@ -845,6 +900,7 @@ fn send_mouse(dx: i32, dy: i32, wheel: i32, flags: u32) {
     }
 }
 
+#[cfg(windows)]
 fn send_key(vk: u16, up: bool) {
     let input = INPUT {
         r#type: INPUT_KEYBOARD,
@@ -862,6 +918,11 @@ fn send_key(vk: u16, up: bool) {
         SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
     }
 }
+
+#[cfg(not(windows))]
+fn send_mouse(_dx: i32, _dy: i32, _wheel: i32, _flags: u32) {}
+#[cfg(not(windows))]
+fn send_key(_vk: u16, _up: bool) {}
 
 fn tap_key(vk: u16) {
     send_key(vk, false);

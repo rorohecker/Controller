@@ -19,6 +19,13 @@ const RATE: u32 = 48_000;
 const QUEUE_FRAMES: usize = 960; // at most 20 ms buffered at 48 kHz
 const MAX_AMPLITUDE: f32 = 0.22;
 const SPEAKER_CHIRP_SECONDS: f32 = 0.36;
+const MAX_SPEAKER_SAMPLES: usize = RATE as usize * 3;
+
+#[derive(Clone)]
+struct SpeakerPcm {
+    started: Instant,
+    samples: Arc<[i16]>,
+}
 
 #[derive(Clone, Copy)]
 struct SpeakerChirp {
@@ -104,7 +111,9 @@ impl VoiceClip {
             Shape::Saw => phase.fract() * 2.0 - 1.0,
             Shape::Noise => ((phase * 73.37).sin() * (phase * 127.91).cos()).clamp(-1.0, 1.0),
         };
-        let amplitude = wave * envelope * self.strength * MAX_AMPLITUDE;
+        // The output limiter applies MAX_AMPLITUDE. Applying it here as well
+        // made a full-strength preview reach only a small fraction of that cap.
+        let amplitude = wave * envelope * self.strength;
         Some([
             amplitude * (1.0 - self.pan.max(0.0)),
             amplitude * (1.0 + self.pan.min(0.0)),
@@ -115,6 +124,7 @@ impl VoiceClip {
 struct Shared {
     clip: Mutex<Option<VoiceClip>>,
     speaker: Mutex<Option<SpeakerChirp>>,
+    speaker_pcm: Mutex<Option<SpeakerPcm>>,
     bridge: Mutex<VecDeque<[f32; 2]>>,
     gain_bits: AtomicU32,
     preset: AtomicU32,
@@ -129,6 +139,7 @@ impl Default for Shared {
         Self {
             clip: Mutex::new(None),
             speaker: Mutex::new(None),
+            speaker_pcm: Mutex::new(None),
             bridge: Mutex::new(VecDeque::with_capacity(QUEUE_FRAMES)),
             gain_bits: AtomicU32::new(0.5f32.to_bits()),
             preset: AtomicU32::new(3),
@@ -272,8 +283,22 @@ impl AudioEngine {
 
     pub fn play_speaker_chirp(&mut self) -> Result<&str, String> {
         self.start_output()?;
+        *self.shared.speaker_pcm.lock().map_err(|e| e.to_string())? = None;
         *self.shared.speaker.lock().map_err(|e| e.to_string())? = Some(SpeakerChirp {
             started: Instant::now(),
+        });
+        Ok(self.endpoint.as_deref().unwrap_or("DualSense"))
+    }
+
+    pub fn play_speaker_pcm(&mut self, samples: Vec<i16>) -> Result<&str, String> {
+        if samples.is_empty() || samples.len() > MAX_SPEAKER_SAMPLES {
+            return Err("Choose a sound between 1 sample and 3 seconds.".into());
+        }
+        self.start_output()?;
+        *self.shared.speaker.lock().map_err(|e| e.to_string())? = None;
+        *self.shared.speaker_pcm.lock().map_err(|e| e.to_string())? = Some(SpeakerPcm {
+            started: Instant::now(),
+            samples: samples.into(),
         });
         Ok(self.endpoint.as_deref().unwrap_or("DualSense"))
     }
@@ -325,6 +350,9 @@ impl AudioEngine {
         if let Ok(mut chirp) = self.shared.speaker.lock() {
             *chirp = None;
         }
+        if let Ok(mut sound) = self.shared.speaker_pcm.lock() {
+            *sound = None;
+        }
         if let Ok(mut ring) = self.shared.bridge.lock() {
             ring.clear();
         }
@@ -356,15 +384,20 @@ fn fill_frames(
 ) {
     let mut clip_guard = shared.clip.try_lock().ok();
     let mut speaker_guard = shared.speaker.try_lock().ok();
+    let mut pcm_guard = shared.speaker_pcm.try_lock().ok();
     let mut ring_guard = shared.bridge.try_lock().ok();
     let clip = clip_guard.as_ref().and_then(|guard| **guard);
     let speaker = speaker_guard.as_ref().and_then(|guard| **guard);
+    let pcm = pcm_guard.as_ref().and_then(|guard| guard.as_ref());
     let elapsed = clip
         .map(|c| c.started.elapsed().as_secs_f32())
         .unwrap_or(0.0);
     let speaker_elapsed = speaker
         .map(|chirp| chirp.started.elapsed().as_secs_f32())
         .unwrap_or(0.0);
+    let pcm_start = pcm
+        .map(|sound| (sound.started.elapsed().as_secs_f32() * RATE as f32) as usize)
+        .unwrap_or(0);
     let bridge_on = shared.bridge_on.load(Ordering::Relaxed);
     for index in 0..frames {
         let tone = clip
@@ -382,7 +415,11 @@ fn fill_frames(
         let r = soft_limit(tone[1] + audio[1], duty);
         let chirp = speaker
             .and_then(|sound| sound.sample(speaker_elapsed + index as f32 / RATE as f32))
-            .unwrap_or(0.0);
+            .unwrap_or(0.0)
+            + pcm
+                .and_then(|sound| sound.samples.get(pcm_start + index))
+                .map(|sample| *sample as f32 / i16::MAX as f32 * 0.16)
+                .unwrap_or(0.0);
         write(index, [chirp, chirp, l, r]);
     }
     if clip.is_some_and(|c| elapsed + frames as f32 / RATE as f32 >= c.attack + c.release)
@@ -393,6 +430,11 @@ fn fill_frames(
     if speaker
         .is_some_and(|_| speaker_elapsed + frames as f32 / RATE as f32 >= SPEAKER_CHIRP_SECONDS)
         && let Some(guard) = speaker_guard.as_mut()
+    {
+        **guard = None;
+    }
+    if pcm.is_some_and(|sound| pcm_start + frames >= sound.samples.len())
+        && let Some(guard) = pcm_guard.as_mut()
     {
         **guard = None;
     }
@@ -603,6 +645,44 @@ mod tests {
             && f[2].abs() <= MAX_AMPLITUDE
             && f[3].abs() <= MAX_AMPLITUDE));
         assert!(pcm.as_chunks::<4>().0.iter().any(|f| f[2] != 0.0));
+    }
+    #[test]
+    fn full_strength_preview_reaches_useful_level_without_exceeding_cap() {
+        let shared = Shared::default();
+        let mut clip = VoiceClip::new("square", 90, 2, 100, 100, 0);
+        clip.started = Instant::now() - std::time::Duration::from_millis(15);
+        *shared.clip.lock().unwrap() = Some(clip);
+        let mut frames = [0.0f32; 4096];
+        render_output(&mut frames, &shared, &mut 0, &mut 0.0);
+        let peak = frames
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|frame| frame[2].abs())
+            .fold(0.0f32, f32::max);
+        assert!(peak > 0.1, "peak {peak} should be audible at full strength");
+        assert!(peak <= MAX_AMPLITUDE);
+    }
+    #[test]
+    fn custom_speaker_pcm_stays_on_front_channels() {
+        let shared = Shared::default();
+        *shared.speaker_pcm.lock().unwrap() = Some(SpeakerPcm {
+            started: Instant::now(),
+            samples: vec![i16::MAX; 2048].into(),
+        });
+        let mut frames = [0.0f32; 4096];
+        render_output(&mut frames, &shared, &mut 0, &mut 0.0);
+        assert!(frames.as_chunks::<4>().0.iter().any(|frame| frame[0] > 0.1));
+        assert!(
+            frames
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|frame| frame[0].abs() <= 0.16
+                    && frame[1] == frame[0]
+                    && frame[2] == 0.0
+                    && frame[3] == 0.0)
+        );
     }
     #[test]
     fn explicit_chirp_uses_only_speaker_channels_and_stays_quiet() {

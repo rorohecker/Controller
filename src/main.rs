@@ -4,8 +4,16 @@ mod audio_haptics;
 mod device;
 mod haptics;
 mod input_map;
+#[cfg(windows)]
+mod processes;
+#[cfg(not(windows))]
+#[path = "processes_portable.rs"]
 mod processes;
 mod profiles;
+#[cfg(windows)]
+mod screen_color;
+#[cfg(not(windows))]
+#[path = "screen_color_portable.rs"]
 mod screen_color;
 mod script;
 mod telemetry;
@@ -26,6 +34,82 @@ use std::{
 
 use serde_json::{Value, json};
 use tauri::{Emitter, Manager, State};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+};
+use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AppSettings {
+    close_to_tray: bool,
+    start_on_login: bool,
+}
+
+struct TraySettings {
+    close_to_tray: AtomicBool,
+}
+
+fn settings_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app
+        .path()
+        .app_config_dir()
+        .map_err(|e| e.to_string())?
+        .join("settings.json"))
+}
+
+fn read_close_to_tray(app: &tauri::AppHandle) -> bool {
+    settings_path(app)
+        .ok()
+        .and_then(|path| std::fs::read(path).ok())
+        .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .and_then(|json| json.get("closeToTray")?.as_bool())
+        .unwrap_or(true)
+}
+
+#[tauri::command]
+fn get_app_settings(app: tauri::AppHandle, tray: State<'_, TraySettings>) -> AppSettings {
+    AppSettings {
+        close_to_tray: tray.close_to_tray.load(Ordering::SeqCst),
+        start_on_login: app.autolaunch().is_enabled().unwrap_or(false),
+    }
+}
+
+#[tauri::command]
+fn set_close_to_tray(
+    enabled: bool,
+    app: tauri::AppHandle,
+    tray: State<'_, TraySettings>,
+) -> Result<(), String> {
+    let path = settings_path(&app)?;
+    std::fs::create_dir_all(path.parent().ok_or("Settings folder missing")?)
+        .map_err(|e| e.to_string())?;
+    let temp = path.with_extension("tmp");
+    std::fs::write(
+        &temp,
+        serde_json::to_vec(&json!({"closeToTray": enabled})).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::rename(temp, path).map_err(|e| e.to_string())?;
+    tray.close_to_tray.store(enabled, Ordering::SeqCst);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_start_on_login(enabled: bool, app: tauri::AppHandle) -> Result<(), String> {
+    if enabled {
+        app.autolaunch().enable()
+    } else {
+        app.autolaunch().disable()
+    }
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn platform_capabilities() -> Value {
+    json!({"os": std::env::consts::OS, "desktopInput": cfg!(windows), "xinput": cfg!(windows), "screenColor": cfg!(windows), "systemAudioBridge": cfg!(windows)})
+}
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -312,7 +396,7 @@ fn run_core() {
         .spawn(move || {
             for line in io::stdin().lock().lines() {
                 match line {
-                    Ok(line) if line.len() <= 65_536 => {
+                    Ok(line) if line.len() <= 450_000 => {
                         match serde_json::from_str::<device::DeviceCommand>(&line) {
                             Ok(command) => {
                                 if commands_tx.send(command).is_err() {
@@ -364,10 +448,37 @@ fn main() {
     }
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
         .setup(|app| {
             let bridge = Bridge::spawn(app.handle().clone())?;
             app.manage(bridge);
             app.manage(updates::PendingUpdate::default());
+            app.manage(TraySettings {
+                close_to_tray: AtomicBool::new(read_close_to_tray(app.handle())),
+            });
+            let show = MenuItem::with_id(app, "show", "Show CONTROLLER", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit CONTROLLER", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &quit])?;
+            let icon = app.default_window_icon().ok_or("App icon missing")?.clone();
+            TrayIconBuilder::new()
+                .icon(icon)
+                .tooltip("CONTROLLER")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .build(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -377,16 +488,35 @@ fn main() {
             save_profiles,
             export_profiles,
             send_demo_telemetry,
+            get_app_settings,
+            set_close_to_tray,
+            set_start_on_login,
+            platform_capabilities,
             updates::check_update,
             updates::install_update
         ])
         .build(tauri::generate_context!())
         .expect("CONTROLLER desktop shell");
-    app.run(|handle, event| {
-        if let tauri::RunEvent::Exit = event
-            && let Some(bridge) = handle.try_state::<Arc<Bridge>>()
+    app.run(|handle, event| match event {
+        tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == "main"
+            && handle
+                .try_state::<TraySettings>()
+                .is_some_and(|s| s.close_to_tray.load(Ordering::SeqCst)) =>
         {
-            bridge.shutdown();
+            api.prevent_close();
+            if let Some(window) = handle.get_webview_window("main") {
+                let _ = window.hide();
+            }
         }
+        tauri::RunEvent::Exit => {
+            if let Some(bridge) = handle.try_state::<Arc<Bridge>>() {
+                bridge.shutdown();
+            }
+        }
+        _ => {}
     });
 }

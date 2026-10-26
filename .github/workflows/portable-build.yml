@@ -1,0 +1,48 @@
+name: macOS and Linux preview builds
+
+on:
+  push:
+    branches: [main, port-preview]
+  workflow_dispatch:
+
+jobs:
+  portable:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            bundle: deb,appimage
+            config: tauri.linux.conf.json
+          - os: macos-latest
+            bundle: dmg
+            config: tauri.macos.conf.json
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libasound2-dev libudev-dev
+      - name: macOS icon
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p icons/App.iconset
+          for size in 16 32 128 256; do sips -z "$size" "$size" icons/icon.png --out "icons/App.iconset/icon_${size}x${size}.png" >/dev/null; done
+          for size in 16 32 128 256; do pixels=$((size * 2)); sips -z "$pixels" "$pixels" icons/icon.png --out "icons/App.iconset/icon_${size}x${size}@2x.png" >/dev/null; done
+          iconutil -c icns icons/App.iconset -o icons/icon.icns
+      - name: Check and test
+        run: cargo test --workspace && cargo check --workspace && cargo clippy --workspace --all-targets -- -D warnings
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version 2.11.1 --locked
+      - name: Bundle preview
+        run: cargo tauri build --bundles ${{ matrix.bundle }} --config ${{ matrix.config }} --ci
+      - uses: actions/upload-artifact@v4
+        with:
+          name: controller-${{ runner.os }}-preview
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/dmg/*.dmg
+          if-no-files-found: error

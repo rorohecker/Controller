@@ -11,6 +11,7 @@
     {vk: 0x11, label: 'Ctrl'}, {vk: 0x10, label: 'Shift'}, {vk: 0x12, label: 'Alt'},
     {vk: 0x20, label: 'Space'}, {vk: 0x0D, label: 'Enter'}, {vk: 0x1B, label: 'Esc'}, {vk: 0x09, label: 'Tab'},
     {vk: 0x25, label: 'Left'}, {vk: 0x26, label: 'Up'}, {vk: 0x27, label: 'Right'}, {vk: 0x28, label: 'Down'},
+    {vk: 0xAD, label: 'Volume mute'}, {vk: 0xAE, label: 'Volume down'}, {vk: 0xAF, label: 'Volume up'}, {vk: 0xB3, label: 'Play / pause'}, {vk: 0xB0, label: 'Next track'}, {vk: 0xB1, label: 'Previous track'},
     {vk: 0x70, label: 'F1'}, {vk: 0x71, label: 'F2'}, {vk: 0x72, label: 'F3'}, {vk: 0x73, label: 'F4'},
     {vk: 0x41, label: 'A'}, {vk: 0x42, label: 'B'}, {vk: 0x43, label: 'C'}, {vk: 0x45, label: 'E'},
     {vk: 0x51, label: 'Q'}, {vk: 0x52, label: 'R'}, {vk: 0x56, label: 'V'}, {vk: 0x58, label: 'X'}, {vk: 0x5A, label: 'Z'}
@@ -22,9 +23,9 @@
     Swell: [0,.02,.06,.13,.22,.34,.48,.65,.8,.92,1],
     Pulse: [.04,.21,.67,.16,.74,.22,.77,.27,.78,.31,.8]
   };
-  const defaultGyro = () => ({enabled:false,sensitivity:1,yawScale:1,pitchScale:1,invertY:false,activation:'always',bias:[0,0,0]});
+  const defaultGyro = () => ({enabled:false,sensitivity:1,yawScale:1,pitchScale:1,invertY:false,activation:'always',bias:[0,0,0],deadzone:90,smoothing:.18});
   const defaultRemap = () => ({enabled:false,bindings:[]});
-  const defaultInputEffects = () => ({enabled:false,threshold:.82,strength:55});
+  const defaultInputEffects = () => ({enabled:false,threshold:.82,strength:55,kind:'click',rate:10});
   const defaultProfiles = [
     {id:'standard',name:'Standard',description:'L2 stays even. R2 gets firmer as you pull.',tag:'GENERAL',matchExe:'',autoApply:true,triggers:{left:{mode:'resistance',strength:40,curve:clone(presets.Linear)},right:{mode:'resistance',strength:55,curve:clone(presets.Swell)}},haptics:{shape:'sine',frequency:90,attack:12,release:220,strength:44,pan:0},gyroAim:defaultGyro(),remap:defaultRemap(),inputEffects:defaultInputEffects()},
     {id:'rally',name:'Rally',description:'L2 brakes hard. R2 pulses for throttle.',tag:'RACING',matchExe:'',autoApply:true,triggers:{left:{mode:'resistance',strength:73,curve:clone(presets.Wall)},right:{mode:'vibration',strength:54,curve:clone(presets.Pulse)}},haptics:{shape:'saw',frequency:65,attack:8,release:240,strength:55,pan:-10},gyroAim:defaultGyro(),remap:defaultRemap(),inputEffects:defaultInputEffects()},
@@ -61,7 +62,7 @@
     currentView:'live',playUntil:0,playStart:0,playDuration:0,lastExternalExe:'',
     leaseUntil:0,leaseDuration:0,fullReport:false,manualScan:false,
     autoApply:true,coreStatus:'ready',foregroundExe:'',foregroundTitle:'',foregroundPath:'',lastExternalPath:'',autoMatchId:'',autoSuppressed:false,
-    sequenceGaps:0,invalidReports:0,stickTest:null,batteryHistory:[],audioBridge:false,audioRoute:'off',telemetryOn:false,telemetryLast:0,scriptEnabled:false,inputEffectsActive:false,gyroCalibration:null,lowBatteryAlert:false,timerUntil:0
+    sequenceGaps:0,invalidReports:0,stickTest:null,batteryHistory:[],audioBridge:false,audioRoute:'off',telemetryOn:false,telemetryLast:0,scriptEnabled:false,inputEffectsActive:false,gyroCalibration:null,lowBatteryAlert:false,timerUntil:0,platformDesktopInput:true
   };
   const pcButtons=[0,1,2,3,4,5,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22];
   const defaultPcBindings=()=>[
@@ -87,7 +88,7 @@
   }catch{}
   try{
     const saved=JSON.parse(localStorage.getItem('aftertouch.pcBindings')||'null');
-    if(Array.isArray(saved)&&saved.length<=pcButtons.length&&saved.every(b=>pcButtons.includes(b.button)&&vkChoices.some(k=>k.vk===b.vk)&&['hold','tap','macro'].includes(b.behavior)&&Array.isArray(b.sequence)&&b.sequence.length<=5&&b.sequence.every(vk=>vkChoices.some(k=>k.vk===vk))))pcBindings=saved;
+    if(Array.isArray(saved)&&saved.length<=pcButtons.length&&saved.every(b=>pcButtons.includes(b.button)&&(vkChoices.some(k=>k.vk===b.vk)||b.behavior==='launch'&&b.vk===0)&&['hold','tap','macro','launch'].includes(b.behavior)&&Array.isArray(b.sequence)&&b.sequence.length<=5&&b.sequence.every(vk=>vkChoices.some(k=>k.vk===vk))&&(!b.launchPath||typeof b.launchPath==='string'&&b.launchPath.length<=1024)))pcBindings=saved;
     const click=Number(localStorage.getItem('aftertouch.pcClickThreshold'));
     if(Number.isFinite(click)&&click>=.05&&click<=.95)pcClickThreshold=click;
     const pointer=Number(localStorage.getItem('aftertouch.pcPointerSensitivity'));
@@ -204,7 +205,7 @@
     catch (error) { toast(String(error)); log(`CORE ERROR / ${error}`); return false; }
   }
   function sendPcBindings(){
-    if(state.connected)send({action:'setPcBindings',bindings:pcBindings,click_threshold:pcClickThreshold,pointer_sensitivity:pcPointerSensitivity,reverse_scroll:pcReverseScroll});
+    if(state.connected)send({action:'setPcBindings',bindings:pcBindings.filter(b=>b.behavior!=='launch'||/^[a-zA-Z]:\\.*\.exe$/i.test(b.launchPath||'')),click_threshold:pcClickThreshold,pointer_sensitivity:pcPointerSensitivity,reverse_scroll:pcReverseScroll});
   }
   function sendCalibration(){
     if(state.connected)return send({action:'setCalibration',calibration:inputCalibration||defaultCalibration()});
@@ -356,7 +357,7 @@
       localStorage.setItem('aftertouch.pcReverseScroll',String(pcReverseScroll));
     }catch{}
     sendPcBindings();
-    $('#pc-bindings-status').textContent='Saved locally. Shortcuts take effect in PC control while another window is focused.';
+    $('#pc-bindings-status').textContent=pcBindings.some(b=>b.behavior==='launch'&&!/^[a-zA-Z]:\\.*\.exe$/i.test(b.launchPath||''))?'Enter an absolute .exe path to finish the app shortcut.':'Saved locally. Shortcuts take effect in PC control while another window is focused.';
   }
   function renderPcBindings(){
     const host=$('#pc-bindings');host.replaceChildren();
@@ -369,12 +370,14 @@
       for(const choice of vkChoices)key.add(new Option(choice.label,String(choice.vk)));
       key.value=binding?String(binding.vk):'';
       const behavior=document.createElement('select');behavior.setAttribute('aria-label',`${names[button]} action`);
-      for(const [value,text] of [['hold','Hold'],['tap','Tap'],['macro','Key sequence']])behavior.add(new Option(text,value));
+      for(const [value,text] of [['hold','Hold'],['tap','Tap'],['macro','Key sequence'],['launch','Open app']])behavior.add(new Option(text,value));
       behavior.value=binding?.behavior||'tap';behavior.disabled=!binding;
+      key.hidden=behavior.value==='launch';
       const sequence=document.createElement('input');sequence.type='text';sequence.maxLength=60;
       sequence.placeholder='Then: E, Space';sequence.setAttribute('aria-label',`${names[button]} following keys`);
       sequence.value=(binding?.sequence||[]).map(vk=>vkChoices.find(item=>item.vk===vk)?.label||'').join(', ');
       sequence.hidden=behavior.value!=='macro';
+      const launch=document.createElement('input');launch.type='text';launch.maxLength=1024;launch.placeholder='C:\\Path\\App.exe';launch.setAttribute('aria-label',`${names[button]} app path`);launch.value=binding?.launchPath||'';launch.hidden=behavior.value!=='launch';
       key.addEventListener('change',()=>{
         pcBindings=pcBindings.filter(item=>item.button!==button);
         if(key.value)pcBindings.push({button,vk:+key.value,behavior:'tap',sequence:[]});
@@ -382,9 +385,10 @@
       });
       behavior.addEventListener('change',()=>{
         const selected=pcBindings.find(item=>item.button===button);if(!selected)return;
-        selected.behavior=behavior.value;selected.sequence=behavior.value==='macro'?[32]:[];
+        selected.behavior=behavior.value;selected.sequence=behavior.value==='macro'?[32]:[];selected.vk=behavior.value==='launch'?0:(selected.vk||13);selected.launchPath=behavior.value==='launch'?(selected.launchPath||''):undefined;
         savePcBindings();renderPcBindings();
       });
+      launch.addEventListener('change',()=>{const selected=pcBindings.find(item=>item.button===button);if(!selected)return;selected.launchPath=launch.value.trim();savePcBindings();});
       sequence.addEventListener('change',()=>{
         const selected=pcBindings.find(item=>item.button===button);if(!selected)return;
         const labels=sequence.value.split(',').map(value=>value.trim().toLowerCase()).filter(Boolean);
@@ -395,7 +399,7 @@
         }
         selected.sequence=keys;savePcBindings();
       });
-      row.append(label,key,behavior,sequence);host.append(row);
+      row.append(label,key,behavior,sequence,launch);host.append(row);
     }
     $('#pc-click-threshold').value=String(Math.round(pcClickThreshold*100));
     $('#pc-click-value').textContent=`${Math.round(pcClickThreshold*100)}%`;
@@ -439,16 +443,36 @@
   $$('[data-goto]').forEach(b => b.addEventListener('click',() => navigate(b.dataset.goto)));
   window.addEventListener('hashchange',() => navigate(location.hash.slice(1)));
 
-  const padPages = ['live','triggers','haptics','touch','pc-controls','lights','profiles','calibration','diagnostics'];
+  const padPages = ['live','triggers','haptics','touch','pc-controls','lights','profiles','calibration','settings','diagnostics'];
+  async function loadAppSettings(){
+    if(!native){$('#app-settings-status').textContent='These settings work in the installed app.';return;}
+    try{const settings=await invoke('get_app_settings');$('#close-to-tray').checked=settings.closeToTray;$('#start-on-login').checked=settings.startOnLogin;$('#app-settings-status').textContent='Settings loaded.';}
+    catch(error){$('#app-settings-status').textContent=`Could not load settings: ${error}`;}
+  }
+  for(const [id,command] of [['close-to-tray','set_close_to_tray'],['start-on-login','set_start_on_login']]){
+    $(`#${id}`).addEventListener('change',async event=>{
+      const enabled=event.target.checked;event.target.disabled=true;
+      try{await invoke(command,{enabled});$('#app-settings-status').textContent='Saved.';}
+      catch(error){event.target.checked=!enabled;$('#app-settings-status').textContent=`Could not save: ${error}`;}
+      finally{event.target.disabled=false;}
+    });
+  }
+  loadAppSettings();
+  if(native)invoke('platform_capabilities').then(cap=>{
+    if(!cap)return;
+    state.platformDesktopInput=!!cap.desktopInput;
+    $('#platform-support').textContent=cap.desktopInput?'Windows: desktop controls, XInput, and system audio capture are available.':`${cap.os}: USB/Bluetooth input, triggers, lights, profiles, and USB audio are available. Desktop controls and system audio capture are still Windows only.`;
+    if(!cap.desktopInput){renderPcMode();renderGyroControls();}
+  }).catch(()=>{});
   let padNavPrev = null, padFocus = null;
   function renderPcMode(){
     const enabled=state.pcMode;
     const button=$('#input-mode-toggle');
-    button.disabled=!state.connected;
+    button.disabled=!state.connected||!state.platformDesktopInput;
     button.setAttribute('aria-pressed',String(enabled));
     button.classList.toggle('is-active',enabled);
     $('strong',button).textContent=enabled?'PC control':'Game mode';
-    $('#input-mode-help').textContent=enabled
+    $('#input-mode-help').textContent=!state.platformDesktopInput?'Game mode is available. PC control is still Windows only.':enabled
       ?'Touchpad: pointer. Right stick: scroll. L2/R2: clicks. Edit shortcuts under PC controls.'
       :'Game mode: games receive input. PC control: pad controls this app and Windows.';
     if(!enabled){padNavPrev=null;clearPadFocus();}
@@ -551,8 +575,12 @@
       && Number.isFinite(g.pitchScale) && g.pitchScale>=0 && g.pitchScale<=4
       && ['always','l1','r1','l2','r2','touchpad'].includes(g.activation)
       && (!g.bias || (Array.isArray(g.bias)&&g.bias.length===3&&g.bias.every(n=>Number.isInteger(n)&&Math.abs(n)<=4096)))
+      && Number.isInteger(g.deadzone??90) && (g.deadzone??90)>=0 && (g.deadzone??90)<=512
+      && Number.isFinite(g.smoothing??.18) && (g.smoothing??.18)>=0 && (g.smoothing??.18)<=.85
       && Number.isFinite(c.threshold) && c.threshold>=.2 && c.threshold<=.95
       && Number.isInteger(c.strength) && c.strength>=0 && c.strength<=100
+      && ['click','pistol','sniper','burst','smg'].includes(c.kind||'click')
+      && Number.isInteger(c.rate??10) && (c.rate??10)>=3 && (c.rate??10)<=20
       && bindings.length<=46 && bindings.every(b=>Number.isInteger(b.button)&&b.button>=0&&b.button<23&&Number.isInteger(b.vk)&&b.vk>=1&&b.vk<=255
         && (b.modifier==null||(Number.isInteger(b.modifier)&&b.modifier>=0&&b.modifier<23&&b.modifier!==b.button))
         && ['hold','tap','macro'].includes(b.behavior||'hold') && Array.isArray(b.sequence||[])
@@ -595,7 +623,7 @@
     }
     const ok = await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right});
     if (!ok) return false;
-    if (!await send({action:'setInputEffects',enabled:!!p.inputEffects?.enabled,threshold:p.inputEffects?.threshold??.82,strength:p.inputEffects?.strength??55})) return false;
+    if (!await send({action:'setInputEffects',enabled:!!p.inputEffects?.enabled,threshold:p.inputEffects?.threshold??.82,strength:p.inputEffects?.strength??55,kind:p.inputEffects?.kind||'click',rate:p.inputEffects?.rate??10})) return false;
     if (p.gyroAim) {
       if (!await send({
         action:'setGyroAim',
@@ -605,7 +633,9 @@
         pitchScale: Number(p.gyroAim.pitchScale)||1,
         invertY: !!p.gyroAim.invertY,
         activation: p.gyroAim.activation || 'always',
-        bias: p.gyroAim.bias || [0,0,0]
+        bias: p.gyroAim.bias || [0,0,0],
+        deadzone: p.gyroAim.deadzone??90,
+        smoothing: p.gyroAim.smoothing??.18
       })) return false;
     }
     if (p.remap) {
@@ -845,6 +875,10 @@
       :'Choose Bow or Weapon mode to set explicit break positions.';
     const c=profile().inputEffects||defaultInputEffects();
     $('#click-enabled').checked=!!c.enabled;
+    $('#weapon-kind').value=c.kind||'click';
+    $('#weapon-rate').value=String(c.rate??10);
+    $('#weapon-rate-value').textContent=`${c.rate??10} shots/s`;
+    $('#weapon-rate-row').hidden=!['burst','smg'].includes(c.kind);
     $('#click-threshold').value=Math.round(c.threshold*100);$('#click-threshold-value').textContent=`${Math.round(c.threshold*100)}%`;
     $('#click-strength').value=c.strength;$('#click-strength-value').textContent=`${c.strength}%`;
     fillRange($('#click-threshold'));fillRange($('#click-strength'));
@@ -892,10 +926,17 @@
     svg.addEventListener('pointerup',finishCurve);svg.addEventListener('pointercancel',finishCurve);
     svg.addEventListener('keydown',e=>{const p=e.target.closest('[data-point]');if(!p||!['ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const side=svg.dataset.curveSide,i=+p.dataset.point,t=profile().triggers[side];state.side=side;t.zoneForces[i]=Math.round(clamp(t.zoneForces[i]+(e.key==='ArrowUp'?.02:-.02))*100)/100;renderTriggerControls();svg.querySelector(`[data-point="${i}"]`).focus();saveProfiles();});
   });
+  $('#click-enabled').closest('.input-click-block').insertAdjacentHTML('afterbegin',`<div class="weapon-library"><h3>Weapon cues</h3><p>R2 creates a haptic recoil cue from your pull. Game events are needed for exact shot timing.</p><div class="weapon-preset-list"><button type="button" data-weapon-preset="pistol">Pistol</button><button type="button" data-weapon-preset="sniper">Sniper</button><button type="button" data-weapon-preset="burst">Burst</button><button type="button" data-weapon-preset="smg">SMG</button></div><label class="control-label" for="weapon-kind">Recoil pattern</label><select id="weapon-kind"><option value="click">Click</option><option value="pistol">Pistol</option><option value="sniper">Sniper</option><option value="burst">Three shot burst</option><option value="smg">Automatic</option></select><label class="control-label" id="weapon-rate-row" for="weapon-rate"><span>Rate</span><b id="weapon-rate-value">10 shots/s</b></label><input id="weapon-rate" type="range" min="3" max="20" value="10"></div>`);
+  $('#click-enabled').closest('.input-click-block').querySelector(':scope > h3').textContent='R2 cue';
+  $('#click-enabled').closest('.input-click-block').querySelector(':scope > p').textContent='The cue starts when R2 crosses the pull point. Release to rearm single shots.';
+  const weaponPresets={pistol:{kind:'pistol',threshold:.72,strength:62,rate:6,mode:'weapon',startZone:4,endZone:6},sniper:{kind:'sniper',threshold:.85,strength:90,rate:3,mode:'weapon',startZone:5,endZone:7},burst:{kind:'burst',threshold:.68,strength:68,rate:10,mode:'weapon',startZone:3,endZone:5},smg:{kind:'smg',threshold:.42,strength:52,rate:12,mode:'vibration',startZone:1,endZone:7}};
+  $('.weapon-preset-list').addEventListener('click',e=>{const button=e.target.closest('[data-weapon-preset]');if(!button)return;const spec=weaponPresets[button.dataset.weaponPreset];if(!spec)return;profile().inputEffects={enabled:true,threshold:spec.threshold,strength:spec.strength,kind:spec.kind,rate:spec.rate};const t=profile().triggers.right;t.mode=spec.mode;t.strength=spec.strength;t.startZone=spec.startZone;t.endZone=spec.endZone;t.curve=clone(spec.mode==='vibration'?presets.Pulse:presets.Break);t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);state.side='right';renderTriggerControls();saveProfiles();toast(`${button.textContent} loaded · Apply to feel it`);});
+  $('#weapon-kind').addEventListener('change',e=>{profile().inputEffects.kind=e.target.value;renderTriggerControls();saveProfiles();});
+  $('#weapon-rate').addEventListener('input',e=>{profile().inputEffects.rate=+e.target.value;$('#weapon-rate-value').textContent=`${e.target.value} shots/s`;saveProfiles();});
   $('#click-enabled').addEventListener('change',e=>{profile().inputEffects.enabled=e.target.checked;saveProfiles();});
   $('#click-threshold').addEventListener('input',e=>{profile().inputEffects.threshold=+e.target.value/100;$('#click-threshold-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
   $('#click-strength').addEventListener('input',e=>{profile().inputEffects.strength=+e.target.value;$('#click-strength-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
-  $('#apply-triggers').addEventListener('click',async()=>{const p=profile();if(await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right}))send({action:'setInputEffects',enabled:!!p.inputEffects.enabled,threshold:p.inputEffects.threshold,strength:p.inputEffects.strength});});
+  $('#apply-triggers').addEventListener('click',async()=>{const p=profile();if(await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right}))send({action:'setInputEffects',enabled:!!p.inputEffects.enabled,threshold:p.inputEffects.threshold,strength:p.inputEffects.strength,kind:p.inputEffects.kind||'click',rate:p.inputEffects.rate??10});});
   $('#reset-effects').addEventListener('click',()=>send({action:'reset'}));
 
   function renderHapticControls(){
@@ -965,6 +1006,34 @@
   $('#alert-ping').insertAdjacentHTML('afterend','<button id="speaker-chirp" class="quiet-action" type="button" disabled title="Play a short, quiet chirp through the controller speaker over USB">Speaker chirp · USB</button>');
   $('.alert-body > div > p').textContent='Low battery and timer alerts tap the grips. Find my pad taps them now. Speaker chirp uses the controller speaker over USB. Reset, disconnect, or exit to stop alerts.';
   $('#speaker-chirp').addEventListener('click',()=>send({action:'playSpeakerChirp'}));
+  let speakerSound=null;
+  $('#speaker-file').addEventListener('change',async event=>{
+    speakerSound=null;$('#speaker-file-play').disabled=true;
+    const file=event.target.files[0];if(!file)return;
+    if(file.size>6_000_000){$('#speaker-file-status').textContent='Choose a file under 6 MB.';return;}
+    try{
+      audioContext=audioContext||new(window.AudioContext||window.webkitAudioContext)();
+      const decoded=await audioContext.decodeAudioData(await file.arrayBuffer());
+      const count=Math.min(144_000,Math.ceil(Math.min(3,decoded.duration)*48_000));
+      if(!count)throw Error('The file has no audio.');
+      const channels=Array.from({length:Math.min(2,decoded.numberOfChannels)},(_,i)=>decoded.getChannelData(i));
+      const mono=new Float32Array(count);let peak=0;
+      for(let i=0;i<count;i++){
+        const position=i*decoded.sampleRate/48_000,index=Math.floor(position),mix=position-index;
+        let sample=0;
+        for(const data of channels)sample+=(data[index]||0)*(1-mix)+(data[index+1]||0)*mix;
+        sample/=channels.length;mono[i]=sample;peak=Math.max(peak,Math.abs(sample));
+      }
+      const scale=peak>0?Math.min(2,.9/peak):1;
+      const bytes=new Uint8Array(count*2),view=new DataView(bytes.buffer);
+      for(let i=0;i<count;i++)view.setInt16(i*2,Math.round(clamp(mono[i]*scale,-1,1)*32767),true);
+      let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
+      speakerSound=btoa(binary);
+      $('#speaker-file-status').textContent=`${file.name} · ${Math.round(count/48)/1000}s ready`;
+      $('#speaker-file-play').disabled=!state.connected||state.transport!=='USB';
+    }catch(error){$('#speaker-file-status').textContent=`Could not read sound: ${error.message}`;}
+  });
+  $('#speaker-file-play').addEventListener('click',()=>{if(speakerSound)send({action:'playSpeakerSound',pcmBase64:speakerSound});});
   $('#alert-low-battery').addEventListener('click',()=>send({action:'setLowBatteryAlert',enabled:!state.lowBatteryAlert}));
   $('#alert-timer-start').addEventListener('click',()=>send({action:'setHapticTimer',seconds:Number($('#alert-timer-minutes').value)*60}));
   $('#alert-timer-cancel').addEventListener('click',()=>send({action:'setHapticTimer',seconds:0}));
@@ -1088,11 +1157,14 @@
   $('#touch-gesture-toggle').parentElement.querySelector('p').textContent='Swipe inward for an arrow key. Rotate two fingers for circle scrolling. Requires Touchpad mouse.';
   function renderGestureSwitch(){const b=$('#touch-gesture-toggle');b.classList.toggle('is-active',state.gestures&&state.mouse);b.setAttribute('aria-pressed',String(state.gestures));b.disabled=!state.connected||!state.mouse;b.textContent=state.gestures?(state.mouse?'On':'Paused'):'Off';}
 
+  $('#gyro-sens').insertAdjacentHTML('afterend',`<label class="control-label" for="gyro-deadzone"><span>Noise floor</span><b id="gyro-deadzone-value">90</b></label><input id="gyro-deadzone" type="range" min="0" max="512" step="16" value="90"><label class="control-label" for="gyro-smoothing"><span>Smoothing</span><b id="gyro-smoothing-value">18%</b></label><input id="gyro-smoothing" type="range" min="0" max="85" value="18">`);
   function syncGyroCommand() {
     const g = profile().gyroAim;
     g.sensitivity = (+$('#gyro-sens').value) / 10;
     g.activation = $('#gyro-activation').value;
     g.invertY = $('#gyro-invert').checked;
+    g.deadzone = +$('#gyro-deadzone').value;
+    g.smoothing = +$('#gyro-smoothing').value/100;
     g.enabled = state.gyroAim;
     $('#gyro-sens-value').textContent = `${g.sensitivity.toFixed(1)}×`;
     fillRange($('#gyro-sens'));
@@ -1106,7 +1178,7 @@
         pitchScale: g.pitchScale || 1,
         invertY: g.invertY,
         activation: g.activation,
-        bias: g.bias || [0,0,0]
+        bias: g.bias || [0,0,0],deadzone:g.deadzone,smoothing:g.smoothing
       });
     }
   }
@@ -1116,9 +1188,14 @@
     $('#gyro-sens-value').textContent = `${Number(g.sensitivity||1).toFixed(1)}×`;
     $('#gyro-activation').value = g.activation || 'always';
     $('#gyro-invert').checked = !!g.invertY;
+    $('#gyro-deadzone').value=g.deadzone??90;
+    $('#gyro-deadzone-value').textContent=String(g.deadzone??90);
+    $('#gyro-smoothing').value=Math.round((g.smoothing??.18)*100);
+    $('#gyro-smoothing-value').textContent=`${Math.round((g.smoothing??.18)*100)}%`;
     fillRange($('#gyro-sens'));
+    fillRange($('#gyro-deadzone'));fillRange($('#gyro-smoothing'));
     const b = $('#gyro-aim-toggle');
-    b.disabled=!state.connected||!state.fullReport;
+    b.disabled=!state.connected||!state.fullReport||!state.platformDesktopInput;
     b.classList.toggle('is-active', state.gyroAim);
     b.setAttribute('aria-pressed', String(state.gyroAim));
     b.textContent = state.gyroAim ? 'On' : 'Off';
@@ -1133,6 +1210,7 @@
   });
   $('#gyro-sens').addEventListener('input', () => { fillRange($('#gyro-sens')); $('#gyro-sens-value').textContent = `${(+$('#gyro-sens').value/10).toFixed(1)}×`; });
   $('#gyro-sens').addEventListener('change', syncGyroCommand);
+  for(const [id,label] of [['gyro-deadzone','gyro-deadzone-value'],['gyro-smoothing','gyro-smoothing-value']]){$(`#${id}`).addEventListener('input',()=>{$(`#${label}`).textContent=$(`#${id}`).value+(id==='gyro-smoothing'?'%':'');fillRange($(`#${id}`));});$(`#${id}`).addEventListener('change',syncGyroCommand);}
   $('#gyro-activation').addEventListener('change', syncGyroCommand);
   $('#gyro-invert').addEventListener('change', syncGyroCommand);
   $('#gyro-calibrate').addEventListener('click',()=>{
@@ -1251,6 +1329,7 @@
     $('#owner-square').classList.toggle('is-live',connected);
     $$('#apply-triggers,#reset-effects,#touch-mouse-toggle,#gyro-aim-toggle,#xinput-toggle,#send-light,#set-player-leds,#release-light,#temperature-light,#screen-light,#diag-reset,#quick-reset,#apply-profile-now,#alert-ping,#alert-low-battery,#alert-timer-start').forEach(b=>b.disabled=!connected);
     $('#speaker-chirp').disabled=!connected||transport!=='USB';
+    $('#speaker-file-play').disabled=!connected||transport!=='USB'||!speakerSound;
     if(!connected){clearPadFocus();calibrationRun=null;if(state.gyroCalibration)clearTimeout(state.gyroCalibration.timer);state.gyroCalibration=null;state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.pcMode=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.temperatureLight=false;state.screenLight=false;state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderTemperatureLight();renderScreenLight();renderInput();}
     renderPcMode();
     if(!connected){state.lowBatteryAlert=false;state.timerUntil=0;}

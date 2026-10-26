@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "targets": ["dmg"],
+    "createUpdaterArtifacts": false,
+    "icon": ["icons/icon.icns"],
+    "resources": ["resources/DualSense-artwork-LICENSE.txt"]
+  }
+}
