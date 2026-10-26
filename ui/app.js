@@ -460,8 +460,8 @@
     button.classList.toggle('is-active',enabled);
     $('strong',button).textContent=enabled?'PC control':'Game mode';
     $('#input-mode-help').textContent=enabled
-      ?'PC control: use the pad to navigate this app. In other windows, touch the pad to move the pointer, use two fingers to scroll, and pull L2/R2 to click. Customize button shortcuts in PC controls.'
-      :'Game mode: controller input stays available to games and lights up here. Switch to PC control to navigate this app or the desktop.';
+      ?'PC control uses the touchpad for the pointer, the right stick to scroll, and L2/R2 to click. Edit shortcuts in PC controls.'
+      :'Game mode sends input to games. PC control uses the pad for this app and the desktop.';
     if(!enabled){padNavPrev=null;clearPadFocus();}
   }
   $('#input-mode-toggle').addEventListener('click',()=>send({action:'setPcMode',enabled:!state.pcMode}));
@@ -1382,11 +1382,11 @@
     $('#diag-l2').textContent=(b[6]||0).toFixed(2);$('#diag-r2').textContent=(b[7]||0).toFixed(2);
     $('#left-stick-cap').setAttribute('transform',`translate(${a[0]*38} ${a[1]*38})`);
     $('#right-stick-cap').setAttribute('transform',`translate(${a[2]*38} ${a[3]*38})`);
-    $('#map-l2').setAttribute('transform',`translate(0 ${l*.28})`);
-    $('#map-r2').setAttribute('transform',`translate(0 ${r*.28})`);
+    $('#map-l2 .map-trigger-motion').setAttribute('transform',`translate(0 ${l*.18})`);
+    $('#map-r2 .map-trigger-motion').setAttribute('transform',`translate(0 ${r*.18})`);
     state.touch.forEach((point,i)=>{
       const mark=$(`#map-touch-${i}`);mark.classList.toggle('is-active',!!point);
-      if(point){mark.setAttribute('cx',String(480+clamp(point.x)*507));mark.setAttribute('cy',String(195+clamp(point.y)*252));}
+      if(point){const y=clamp(point.y),inset=y*36;mark.setAttribute('cx',String(480+inset+clamp(point.x)*(507-2*inset)));mark.setAttribute('cy',String(195+y*230));}
     });
     const info=state.batteryInfo;
     const chargeNames={discharging:'Discharging',charging:'Charging',full:'Full',voltageOrTempFault:'Voltage / temp fault',temperatureFault:'Temperature fault',chargingError:'Charging error',unknown:'Unknown'};

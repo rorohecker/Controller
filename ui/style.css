@@ -751,11 +751,16 @@ main{max-width:1900px;margin-inline:auto;padding-block:22px 30px}
 .controller-map .map-art{opacity:1}
 .controller-map .map-hit{fill:var(--gold);stroke:var(--gold-soft);stroke-width:4;opacity:0;transition:opacity .08s linear;filter:drop-shadow(0 0 9px var(--gold))}
 .controller-map .map-control.is-pressed .map-hit{opacity:.64}
+.controller-map .map-press-overlay{opacity:0;transition:opacity .08s linear;filter:drop-shadow(0 0 9px #63d7e9)}
+.controller-map .map-control.is-pressed .map-press-overlay{opacity:.76}
+.controller-map .map-trigger.is-pressed .map-press-overlay{opacity:.58}
+.controller-map .map-touchpad.is-pressed .map-press-overlay{opacity:.28}
+.controller-map .map-trigger-motion{transition:transform .04s linear}
 .controller-map .map-trigger-body{fill:#171c22;stroke:#60696b;stroke-width:3}
 .controller-map .map-trigger-seam{fill:none;stroke:#666f71;stroke-width:3}
 .controller-map .map-trigger text{fill:#899194;font:700 18px var(--body);text-anchor:middle;letter-spacing:.08em}
-.controller-map .map-trigger.is-pressed .map-trigger-body{fill:#6f653f;stroke:var(--gold);filter:drop-shadow(0 0 14px var(--gold))}
-.controller-map .map-trigger.is-pressed text{fill:#fff6de}
+.controller-map .map-trigger.is-pressed .map-trigger-body{fill:#171c22;stroke:#97c8d2;filter:none}
+.controller-map .map-trigger.is-pressed text{fill:#d0e8e9}
 .controller-map .map-stick-cap{transition:transform .04s linear;filter:drop-shadow(0 4px 3px rgba(0,0,0,.25))}
 .controller-map .map-stick-press{fill:var(--gold);opacity:0;mix-blend-mode:screen;filter:blur(9px)}
 .controller-map .map-stick.is-pressed .map-stick-press{opacity:.46}
@@ -766,6 +771,7 @@ main{max-width:1900px;margin-inline:auto;padding-block:22px 30px}
 .light-controller-preview .controller-map .map-light-halo{stroke:var(--light);stroke-width:33;opacity:.62;filter:blur(14px)}
 .light-controller-preview .controller-map .map-light-strip{stroke:color-mix(in srgb,var(--light) 55%,#c3d7e0);stroke-width:9;opacity:1;filter:drop-shadow(0 0 11px var(--light))}
 .light-controller-preview .controller-map .map-hit{opacity:0}
+.light-controller-preview .controller-map .map-press-overlay{opacity:0}
 .light-controller-preview .controller-map .map-trigger-body{fill:#171c22;stroke:#60696b;filter:none}
 .light-controller-preview .controller-map .map-trigger text{fill:#899194}
 .map-player-indicators circle{fill:#45494b;stroke:#747b7e;stroke-width:2}
@@ -799,11 +805,16 @@ main{max-width:1900px;margin-inline:auto;padding-block:22px 30px}
   main{padding:24px 24px}.masthead,.footer,.session-rail{padding-left:24px;padding-right:24px}
 }
 @media(max-width:1120px){
-  .shell{grid-template-columns:72px 1fr}
-  .brand{justify-content:center;padding:18px 8px}
-  .brand>div,.side-caption,.nav-link span:not(.nav-index),.side-bottom{display:none}
-  .nav-link{display:grid;place-items:center;padding:0}
-  .page-heading{grid-template-columns:1fr}.page-heading p{display:none}
+  .shell{grid-template-columns:180px minmax(0,1fr)}
+  .live-layout{grid-template-columns:1fr}
+  .brand{padding:18px 12px;gap:8px}
+  .brand strong{font-size:15px}
+  .nav-link{padding:0 9px;grid-template-columns:26px 1fr;font-size:13px}
+  .page-heading{grid-template-columns:1fr}
+  .page-heading p{max-width:620px}
+}
+@media(max-height:850px){
+  .sidebar::after{display:none}
 }
 @media(max-width:900px){
   .script-body{grid-template-columns:1fr}
@@ -823,8 +834,11 @@ main{max-width:1900px;margin-inline:auto;padding-block:22px 30px}
   .shell{display:block}
   .sidebar{position:sticky;top:0;z-index:30;width:100%;height:56px;flex-direction:row;border-right:0}
   .brand{padding:8px 10px;border-bottom:0;border-right:1px solid rgba(212,168,75,.25)}
+  .brand>div,.side-caption,.side-bottom,.sidebar::after{display:none}
   #nav{display:flex;overflow-x:auto;flex-direction:row;flex:1;padding:0}
-  .nav-link{min-width:44px;height:56px;border-radius:0}
+  .nav-link{display:flex;align-items:center;justify-content:center;gap:6px;flex:0 0 auto;min-width:78px;height:56px;border-radius:0;padding:0 8px;font-size:11px;white-space:nowrap}
+  .nav-link span:not(.nav-index){display:inline}
+  .nav-index{font-size:10px}
   .masthead{height:48px;padding:0 12px}
   .mast-title,#clock,.mast-separator{display:none}
   .mast-actions{width:100%;justify-content:space-between;gap:8px}

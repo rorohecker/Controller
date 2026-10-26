@@ -154,9 +154,13 @@ def main():
           touch:[{x:.25,y:.75},null],gyro:[0,0,0],battery:75,
           charging:false,fullReport:true}})""")
         assert page.locator("#left-stick-cap").get_attribute("transform") == "translate(-38 38)"
-        assert abs(float(page.locator("#map-l2").get_attribute("transform").split()[-1][:-1]) - 14) < .01
-        assert abs(float(page.locator("#map-r2").get_attribute("transform").split()[-1][:-1]) - 21) < .01
+        assert abs(float(page.locator("#map-l2 .map-trigger-motion").get_attribute("transform").split()[-1][:-1]) - 9) < .01
+        assert abs(float(page.locator("#map-r2 .map-trigger-motion").get_attribute("transform").split()[-1][:-1]) - 13.5) < .01
+        assert page.locator("#map-r2 .map-press-overlay").get_attribute("x") == "1099"
         assert page.locator("#map-touch-0").get_attribute("class").endswith("is-active")
+        page.evaluate("""window.coreHandler({type:'input',input:{buttons:Array(23).fill(0),axes:[0,0,0,0],touch:[{x:0,y:1},null],gyro:[0,0,0],battery:75,charging:false,fullReport:true}})""")
+        assert page.locator("#map-touch-0").get_attribute("cx") == "516"
+        assert page.locator("#map-touch-0").get_attribute("cy") == "425"
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-input-map.png"), full_page=True)
         page.locator("#input-mode-toggle").click()
         assert page.evaluate("window.sent.at(-1).action") == "setPcMode"
@@ -389,6 +393,8 @@ def main():
             mock_core(sized)
             sized.goto((ROOT / "ui" / "index.html").as_uri())
             sized.wait_for_function("!!window.coreHandler")
+            if width <= 900:
+                assert sized.locator('[data-view="live"] span').last.is_visible()
             for view in ("live", "lights", "triggers", "profiles"):
                 sized.locator(f'[data-view="{view}"]').click()
                 assert sized.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), (width, view)
