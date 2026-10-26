@@ -12,7 +12,7 @@ def mock_core(page):
       window.__TAURI__ = {
         core: {invoke: async (name, args) => {
           if (name === 'load_profiles') return null;
-          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.11.5'}; }
+          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.11.6'}; }
           if (name === 'install_update') { window.installedUpdate=true; return null; }
           if (name === 'send_demo_telemetry') { window.demoPort=args.port; return null; }
           if (name === 'open_driver_setup') { window.driverOpened=args.kind; return 'Driver setup opened'; }
@@ -64,11 +64,15 @@ def main():
         assert page.locator("#scan-button").get_attribute("aria-busy") == "false"
         assert page.evaluate("document.querySelector('.brand strong').getBoundingClientRect().right <= document.querySelector('.sidebar').getBoundingClientRect().right")
         assert page.locator(".photo-stage .controller-map").is_visible()
+        assert page.locator(".photo-stage .map-art").count() == 1
+        assert page.locator(".photo-stage .map-art").get_attribute("mask") is None
         assert page.locator(".photo-stage .map-front-shoulder").count() == 2
-        assert page.locator('.photo-stage .map-shoulder[data-button="4"]').get_attribute("clip-path") == "url(#map-left-shoulder-clip)"
+        assert page.locator(".photo-stage .map-shoulder-well").count() == 0
+        assert page.locator(".photo-stage .map-shoulder-recess").count() == 2
+        assert page.locator('.photo-stage .map-shoulder[data-button="4"] .map-shoulder-motion').get_attribute("clip-path") == "url(#map-left-shoulder-clip)"
         assert page.locator('.photo-stage .map-shoulder[data-button="4"] .map-press-overlay').evaluate("e => e.localName") == "use"
         assert page.locator('.photo-stage .map-shoulder[data-button="4"] .map-press-overlay').evaluate("e => getComputedStyle(e).filter") == "none"
-        assert page.locator('#light-controller-map .map-shoulder').first.get_attribute("clip-path") == "url(#light-map-left-shoulder-clip)"
+        assert page.locator('#light-controller-map .map-shoulder .map-shoulder-motion').first.get_attribute("clip-path") == "url(#light-map-left-shoulder-clip)"
         assert page.locator("#connection-guide").is_visible()
         assert "No controller connected" in page.locator("#connection-guide").inner_text()
         page.locator('[data-goto="profiles"]').last.click()
@@ -84,7 +88,7 @@ def main():
         assert not page.evaluate("window.sent.some(c=>c.action==='playHaptic')")
         page.locator('[data-view="diagnostics"]').click()
         page.locator("#check-update").click()
-        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.11.5 is current')")
+        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.11.6 is current')")
         assert page.locator("#install-update").is_hidden()
         page.evaluate("window.mockUpdateVersion='0.12.0'")
         page.locator("#check-update").click()
@@ -160,10 +164,10 @@ def main():
         assert page.locator("#input-mode-toggle").inner_text().endswith("Game mode")
         page.add_style_tag(content=".controller-map .map-shoulder-motion{transition:none!important}")
         pad_event(page, 4)
-        assert page.locator('.photo-stage .map-shoulder[data-button="4"] .map-shoulder-motion').evaluate("e => new DOMMatrixReadOnly(getComputedStyle(e).transform).m42") >= 4
+        assert page.locator('.photo-stage .map-shoulder[data-button="4"] .map-shoulder-motion').evaluate("e => new DOMMatrixReadOnly(getComputedStyle(e).transform).m42") >= 3
         assert page.locator(".photo-stage .map-shoulder-label").count() == 0
         pad_event(page, 5)
-        assert page.locator('.photo-stage .map-shoulder[data-button="5"] .map-shoulder-motion').evaluate("e => new DOMMatrixReadOnly(getComputedStyle(e).transform).m42") >= 4
+        assert page.locator('.photo-stage .map-shoulder[data-button="5"] .map-shoulder-motion').evaluate("e => new DOMMatrixReadOnly(getComputedStyle(e).transform).m42") >= 3
         pad_event(page)
         pad_event(page, 5)
         assert page.locator("#live").is_visible()

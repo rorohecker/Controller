@@ -759,11 +759,12 @@ main{max-width:1900px;margin-inline:auto;padding-block:22px 30px}
 .controller-map .map-control.is-pressed .map-press-overlay{opacity:.76}
 .controller-map .map-trigger.is-pressed .map-press-overlay{opacity:.58}
 .controller-map .map-touchpad.is-pressed .map-press-overlay{opacity:.28}
-.controller-map .map-shoulder-well{fill:#171c22}
+.controller-map .map-shoulder-recess{fill:#171c22;opacity:0}
+.controller-map .map-shoulder.is-pressed .map-shoulder-recess{opacity:1}
 .controller-map .map-shoulder-motion{transition:transform .07s ease-out}
-.controller-map .map-shoulder.is-pressed .map-shoulder-motion{transform:translateY(clamp(4px,.65vw,10px))}
-.controller-map .map-shoulder .map-press-overlay{fill:#4bb6bb;filter:none}
-.controller-map .map-shoulder.is-pressed .map-press-overlay{opacity:.34}
+.controller-map .map-shoulder.is-pressed .map-shoulder-motion{transform:translateY(clamp(3px,.35vw,6px))}
+.controller-map .map-shoulder .map-press-overlay{fill:#3aa9b5;filter:none;mix-blend-mode:screen}
+.controller-map .map-shoulder.is-pressed .map-press-overlay{opacity:.24}
 .controller-map .map-trigger-motion{transition:transform .04s linear}
 .controller-map .map-trigger-body{fill:#171c22;stroke:#60696b;stroke-width:3}
 .controller-map .map-trigger-seam{fill:none;stroke:#666f71;stroke-width:3}
