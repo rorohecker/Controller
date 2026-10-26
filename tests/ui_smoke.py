@@ -49,8 +49,24 @@ def main():
         page.goto((ROOT / "ui" / "index.html").as_uri())
         page.wait_for_function("!!window.coreHandler")
         assert page.title() == "CONTROLLER"
+        assert page.locator("#clock").count() == 0
+        page.evaluate("document.fonts.ready")
+        assert page.evaluate("document.fonts.check('400 14px Geist')")
+        page.evaluate("window.scrollTo({top:80,behavior:'instant'})")
+        assert page.locator(".masthead").bounding_box()["y"] >= 0
+        scan_width = page.locator("#scan-button").bounding_box()["width"]
+        page.locator("#scan-button").click()
+        assert page.locator("#scan-button").inner_text() == "Scan"
+        assert page.locator("#scan-button").get_attribute("aria-busy") == "true"
+        assert abs(page.locator("#scan-button").bounding_box()["width"] - scan_width) <= 1
+        assert page.locator(".masthead").bounding_box()["y"] >= 0
+        page.evaluate("window.coreHandler({type:'devices',items:[]})")
+        assert page.locator("#scan-button").get_attribute("aria-busy") == "false"
         assert page.evaluate("document.querySelector('.brand strong').getBoundingClientRect().right <= document.querySelector('.sidebar').getBoundingClientRect().right")
         assert page.locator(".photo-stage .controller-map").is_visible()
+        assert page.locator(".photo-stage .map-front-shoulder").count() == 2
+        assert page.locator('.photo-stage .map-shoulder[data-button="4"]').get_attribute("clip-path") == "url(#map-left-shoulder-clip)"
+        assert page.locator('#light-controller-map .map-shoulder').first.get_attribute("clip-path") == "url(#light-map-left-shoulder-clip)"
         assert page.locator("#connection-guide").is_visible()
         assert "No controller connected" in page.locator("#connection-guide").inner_text()
         page.locator('[data-goto="profiles"]').last.click()
@@ -140,6 +156,12 @@ def main():
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-lightbar-preview.png"), full_page=True)
         page.locator('[data-view="live"]').click()
         assert page.locator("#input-mode-toggle").inner_text().endswith("Game mode")
+        page.add_style_tag(content=".controller-map .map-shoulder-motion{transition:none!important}")
+        pad_event(page, 4)
+        assert page.locator('.photo-stage .map-shoulder[data-button="4"] .map-shoulder-motion').evaluate("e => new DOMMatrixReadOnly(getComputedStyle(e).transform).m42") >= 4
+        assert page.locator(".photo-stage .map-shoulder-label").count() == 0
+        pad_event(page, 5)
+        assert page.locator('.photo-stage .map-shoulder[data-button="5"] .map-shoulder-motion').evaluate("e => new DOMMatrixReadOnly(getComputedStyle(e).transform).m42") >= 4
         pad_event(page)
         pad_event(page, 5)
         assert page.locator("#live").is_visible()
@@ -156,7 +178,7 @@ def main():
         assert page.locator("#left-stick-cap").get_attribute("transform") == "translate(-38 38)"
         assert abs(float(page.locator("#map-l2 .map-trigger-motion").get_attribute("transform").split()[-1][:-1]) - 9) < .01
         assert abs(float(page.locator("#map-r2 .map-trigger-motion").get_attribute("transform").split()[-1][:-1]) - 13.5) < .01
-        assert page.locator("#map-r2 .map-press-overlay").get_attribute("x") == "1099"
+        assert page.locator("#map-r2 .map-press-overlay").get_attribute("x") == "1105"
         assert page.locator("#map-touch-0").get_attribute("class").endswith("is-active")
         page.evaluate("""window.coreHandler({type:'input',input:{buttons:Array(23).fill(0),axes:[0,0,0,0],touch:[{x:0,y:1},null],gyro:[0,0,0],battery:75,charging:false,fullReport:true}})""")
         assert page.locator("#map-touch-0").get_attribute("cx") == "516"
@@ -388,16 +410,29 @@ def main():
         mobile.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-touch-mobile.png"), full_page=True)
         assert mobile.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
         assert not mobile_errors, mobile_errors
-        for width, height in ((640, 560), (900, 690), (1920, 1080)):
+        for width, height in ((640, 560), (900, 690), (1060, 690), (1920, 1080)):
             sized = browser.new_page(viewport={"width": width, "height": height})
             mock_core(sized)
             sized.goto((ROOT / "ui" / "index.html").as_uri())
             sized.wait_for_function("!!window.coreHandler")
+            scan_before = sized.locator("#scan-button").bounding_box()
+            sized.locator("#scan-button").click()
+            scan_busy = sized.locator("#scan-button").bounding_box()
+            assert abs(scan_busy["x"] - scan_before["x"]) <= 1, width
+            assert abs(scan_busy["width"] - scan_before["width"]) <= 1, width
+            assert scan_busy["x"] + scan_busy["width"] <= width + 1, width
+            sized.evaluate("window.coreHandler({type:'devices',items:[]})")
             if width <= 900:
                 assert sized.locator('[data-view="live"] span').last.is_visible()
-            for view in ("live", "lights", "triggers", "profiles"):
+            views = ("live", "triggers", "haptics", "touch", "pc-controls", "lights", "profiles", "calibration", "diagnostics") if width == 1060 else ("live", "lights", "triggers", "profiles")
+            for view in views:
                 sized.locator(f'[data-view="{view}"]').click()
                 assert sized.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), (width, view)
+                if width == 1060:
+                    assert sized.evaluate("""() => [...document.querySelectorAll('main *')].every(e => {
+                        const s=getComputedStyle(e);
+                        return s.display==='none' || s.visibility==='hidden' || !e.clientWidth || e.scrollWidth<=e.clientWidth+6 || !e.textContent.trim() || ['TEXTAREA','CODE','INPUT'].includes(e.tagName);
+                    })"""), view
             if width == 640:
                 assert sized.locator(".session-rail").bounding_box()["height"] < 150
             sized.close()

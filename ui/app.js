@@ -26,14 +26,14 @@
   const defaultRemap = () => ({enabled:false,bindings:[]});
   const defaultInputEffects = () => ({enabled:false,threshold:.82,strength:55});
   const defaultProfiles = [
-    {id:'standard',name:'Standard',description:'L2 has even resistance. R2 resistance rises through the pull.',tag:'GENERAL',matchExe:'',autoApply:true,triggers:{left:{mode:'resistance',strength:40,curve:clone(presets.Linear)},right:{mode:'resistance',strength:55,curve:clone(presets.Swell)}},haptics:{shape:'sine',frequency:90,attack:12,release:220,strength:44,pan:0},gyroAim:defaultGyro(),remap:defaultRemap(),inputEffects:defaultInputEffects()},
-    {id:'rally',name:'Rally',description:'L2 has a braking wall. R2 pulses for throttle input.',tag:'RACING',matchExe:'',autoApply:true,triggers:{left:{mode:'resistance',strength:73,curve:clone(presets.Wall)},right:{mode:'vibration',strength:54,curve:clone(presets.Pulse)}},haptics:{shape:'saw',frequency:65,attack:8,release:240,strength:55,pan:-10},gyroAim:defaultGyro(),remap:defaultRemap(),inputEffects:defaultInputEffects()},
-    {id:'arcade',name:'Arcade',description:'Both triggers have a firm break. Lower strength for longer sessions.',tag:'ACTION',matchExe:'',autoApply:true,triggers:{left:{mode:'weapon',strength:57,curve:clone(presets.Break)},right:{mode:'weapon',strength:70,curve:clone(presets.Break)}},haptics:{shape:'square',frequency:180,attack:3,release:110,strength:39,pan:0},gyroAim:defaultGyro(),remap:defaultRemap(),inputEffects:defaultInputEffects()}
+    {id:'standard',name:'Standard',description:'L2 stays even. R2 gets firmer as you pull.',tag:'GENERAL',matchExe:'',autoApply:true,triggers:{left:{mode:'resistance',strength:40,curve:clone(presets.Linear)},right:{mode:'resistance',strength:55,curve:clone(presets.Swell)}},haptics:{shape:'sine',frequency:90,attack:12,release:220,strength:44,pan:0},gyroAim:defaultGyro(),remap:defaultRemap(),inputEffects:defaultInputEffects()},
+    {id:'rally',name:'Rally',description:'L2 brakes hard. R2 pulses for throttle.',tag:'RACING',matchExe:'',autoApply:true,triggers:{left:{mode:'resistance',strength:73,curve:clone(presets.Wall)},right:{mode:'vibration',strength:54,curve:clone(presets.Pulse)}},haptics:{shape:'saw',frequency:65,attack:8,release:240,strength:55,pan:-10},gyroAim:defaultGyro(),remap:defaultRemap(),inputEffects:defaultInputEffects()},
+    {id:'arcade',name:'Arcade',description:'A firm break on both triggers.',tag:'ACTION',matchExe:'',autoApply:true,triggers:{left:{mode:'weapon',strength:57,curve:clone(presets.Break)},right:{mode:'weapon',strength:70,curve:clone(presets.Break)}},haptics:{shape:'square',frequency:180,attack:3,release:110,strength:39,pan:0},gyroAim:defaultGyro(),remap:defaultRemap(),inputEffects:defaultInputEffects()}
   ];
   const overwatchTemplates = {
-    hanzo:{name:'Hanzo · Storm Bow',description:'R2 adds bow resistance. Preview a low bow pulse on Haptics. Release and Storm Arrows effects need game events.',left:{mode:'off',strength:0,curve:clone(presets.Linear)},right:{mode:'bow',strength:72,curve:clone(presets.Swell),startZone:0,endZone:8,snapStrength:62,zoneForces:[.12,.18,.25,.34,.44,.56,.69,.83,.94,.94]},haptics:{shape:'sine',frequency:50,attack:80,release:180,strength:45,pan:0},inputEffects:{enabled:false,threshold:.95,strength:45}},
-    genji:{name:'Genji · Shuriken',description:'R2 stays light. L2 has a Deflect pulse. Throw, dash, and impact effects need game events.',left:{mode:'vibration',strength:42,curve:clone(presets.Pulse),zoneForces:[0,.28,.48,.48,.48,.48,.48,.48,.48,.48]},right:{mode:'resistance',strength:28,curve:clone(presets.Linear),zoneForces:[0,0,.08,.12,.14,.16,.18,.2,.2,.2]},haptics:{shape:'square',frequency:120,attack:2,release:45,strength:42,pan:0},inputEffects:{enabled:true,threshold:.82,strength:32}},
-    soldier:{name:'Soldier: 76 · Pulse Rifle',description:'R2 vibrates for rifle fire. L2 has a Helix Rocket break. Shot timing and impact need game events.',left:{mode:'weapon',strength:78,curve:clone(presets.Break),startZone:4,endZone:6,snapStrength:55},right:{mode:'vibration',strength:66,curve:clone(presets.Pulse),zoneForces:[0,.42,.66,.66,.66,.66,.66,.66,.66,.66]},haptics:{shape:'square',frequency:95,attack:3,release:135,strength:65,pan:0},inputEffects:{enabled:true,threshold:.78,strength:48}}
+    hanzo:{name:'Hanzo · Storm Bow',description:'Bow resistance on R2. Release and Storm Arrows cues need game events.',left:{mode:'off',strength:0,curve:clone(presets.Linear)},right:{mode:'bow',strength:72,curve:clone(presets.Swell),startZone:0,endZone:8,snapStrength:62,zoneForces:[.12,.18,.25,.34,.44,.56,.69,.83,.94,.94]},haptics:{shape:'sine',frequency:50,attack:80,release:180,strength:45,pan:0},inputEffects:{enabled:false,threshold:.95,strength:45}},
+    genji:{name:'Genji · Shuriken',description:'Light R2, pulsing L2. Throw and dash cues need game events.',left:{mode:'vibration',strength:42,curve:clone(presets.Pulse),zoneForces:[0,.28,.48,.48,.48,.48,.48,.48,.48,.48]},right:{mode:'resistance',strength:28,curve:clone(presets.Linear),zoneForces:[0,0,.08,.12,.14,.16,.18,.2,.2,.2]},haptics:{shape:'square',frequency:120,attack:2,release:45,strength:42,pan:0},inputEffects:{enabled:true,threshold:.82,strength:32}},
+    soldier:{name:'Soldier: 76 · Pulse Rifle',description:'R2 rifle recoil, L2 rocket break. Shot cues need game events.',left:{mode:'weapon',strength:78,curve:clone(presets.Break),startZone:4,endZone:6,snapStrength:55},right:{mode:'vibration',strength:66,curve:clone(presets.Pulse),zoneForces:[0,.42,.66,.66,.66,.66,.66,.66,.66,.66]},haptics:{shape:'square',frequency:95,attack:3,release:135,strength:65,pan:0},inputEffects:{enabled:true,threshold:.78,strength:48}}
   };
   const textures = [
     {name:'Soft tick',type:'Light',settings:{shape:'sine',frequency:175,attack:3,release:80,strength:30,pan:0}},
@@ -448,7 +448,6 @@
   $('#nav').addEventListener('click',e => { const b = e.target.closest('[data-view]'); if (b) navigate(b.dataset.view); });
   $$('[data-goto]').forEach(b => b.addEventListener('click',() => navigate(b.dataset.goto)));
   window.addEventListener('hashchange',() => navigate(location.hash.slice(1)));
-  setInterval(() => $('#clock').textContent = timeLabel(),1000); $('#clock').textContent = timeLabel();
 
   const padPages = ['live','triggers','haptics','touch','pc-controls','lights','profiles','calibration','diagnostics'];
   let padNavPrev = null, padFocus = null;
@@ -460,8 +459,8 @@
     button.classList.toggle('is-active',enabled);
     $('strong',button).textContent=enabled?'PC control':'Game mode';
     $('#input-mode-help').textContent=enabled
-      ?'PC control uses the touchpad for the pointer, the right stick to scroll, and L2/R2 to click. Edit shortcuts in PC controls.'
-      :'Game mode sends input to games. PC control uses the pad for this app and the desktop.';
+      ?'Touchpad: pointer. Right stick: scroll. L2/R2: clicks. Edit shortcuts under PC controls.'
+      :'Game mode: games receive input. PC control: pad controls this app and Windows.';
     if(!enabled){padNavPrev=null;clearPadFocus();}
   }
   $('#input-mode-toggle').addEventListener('click',()=>send({action:'setPcMode',enabled:!state.pcMode}));
@@ -974,7 +973,7 @@
   }
   $('#alert-ping').addEventListener('click',()=>send({action:'playHaptic',shape:'sine',frequency:125,attack:5,release:160,strength:26,pan:0}));
   $('#alert-ping').insertAdjacentHTML('afterend','<button id="speaker-chirp" class="quiet-action" type="button" disabled title="Play a short, quiet chirp through the controller speaker over USB">Speaker chirp · USB</button>');
-  $('.alert-body > div > p').textContent='Use a short grip cue for a low battery or a finished timer. Find my pad taps the grips; Speaker chirp plays a quiet tone through the controller speaker when connected by USB. Reset, disconnect, and app exit stop the alerts.';
+  $('.alert-body > div > p').textContent='Low battery and timer alerts tap the grips. Find my pad taps them now. Speaker chirp uses the controller speaker over USB. Reset, disconnect, or exit to stop alerts.';
   $('#speaker-chirp').addEventListener('click',()=>send({action:'playSpeakerChirp'}));
   $('#alert-low-battery').addEventListener('click',()=>send({action:'setLowBatteryAlert',enabled:!state.lowBatteryAlert}));
   $('#alert-timer-start').addEventListener('click',()=>send({action:'setHapticTimer',seconds:Number($('#alert-timer-minutes').value)*60}));
@@ -986,6 +985,7 @@
   lightMap.querySelectorAll('*').forEach(node=>{
     for(const attribute of [...node.attributes]){
       if(attribute.value.includes('url(#'))node.setAttribute(attribute.name,attribute.value.replace(/url\(#([^)]*)\)/g,'url(#light-$1)'));
+      if(attribute.name==='href'&&attribute.value.startsWith('#'))node.setAttribute('href',`#light-${attribute.value.slice(1)}`);
     }
     node.removeAttribute('data-button');
     node.classList.remove('is-pressed');
@@ -1047,7 +1047,7 @@
   $('#battery-light').insertAdjacentHTML('afterend','<button class="quiet-action" id="temperature-light" type="button" aria-pressed="false" disabled>Sensor color: off</button><small class="screen-light-status" id="temperature-light-status" role="status">Maps an uncalibrated raw byte to color.</small>');
   $('#temperature-light').addEventListener('click',()=>send({action:'setTemperatureLightbar',enabled:!state.temperatureLight}));
   $('#screen-light').addEventListener('click',()=>send({action:'setScreenLightbar',enabled:!state.screenLight}));
-  $('#lights .page-heading p').textContent='Set a fixed RGB color, or follow battery, telemetry, sensor, or screen color.';
+  $('#lights .page-heading p').textContent='Set a color or follow battery, race data, sensor, or screen color.';
   $('#release-light').addEventListener('click',()=>send({action:'releaseLightbar'}));
   document.querySelector('label[for="telemetry-port"]').insertAdjacentHTML('beforebegin','<label for="telemetry-format">Input format</label><select id="telemetry-format"><option value="forza">Forza Data Out · Dash</option><option value="json">Local JSON adapter</option></select><details id="telemetry-json-help" class="telemetry-schema" hidden><summary>JSON packet format</summary><code>{"rpm":6100,"maxRpm":8000,"speedKmh":108,"gear":4,"brake":150,"slip":1.4,"frontSlip":1.3,"kerb":[true,false,false,false]}</code><p>Send one UTF-8 JSON object per UDP datagram. Keep each under 512 bytes. Fields after maxRpm are optional.</p></details>');
   function renderTelemetryFormat(){
@@ -1070,7 +1070,7 @@
     if(state.telemetryOn&&Number.isInteger(port)&&port>=1024&&port<=65535)send({action:'setTelemetry',enabled:true,port,lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});
   });
   $('#telemetry-lan').addEventListener('change',()=>{if(state.telemetryOn)send({action:'setTelemetry',enabled:true,port:Number($('#telemetry-port').value),lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});});
-  $('.light-layout').insertAdjacentHTML('afterend',`<div class="script-panel framed"><div class="panel-cap"><span>Telemetry rules</span><span>LOCAL SCRIPT</span></div><div class="script-body"><div class="script-intro"><span class="script-kicker">01 / Rule</span><h2>Edit telemetry rule</h2><p>Use race data to set a light color or short grip cue. Rules run locally at up to 10 Hz.</p><div class="script-signals"><strong>Signals</strong><span>rpm · max_rpm · speed_kmh · gear · brake · slip · front_slip · kerb_left · kerb_right</span></div><div class="script-signals"><strong>Outputs</strong><span>light: [red, green, blue] · cue: "pulse", "grit", or "shift"</span></div><p class="script-boundary">A script can change only these effects. It cannot read files, use the network, send key presses, or change trigger settings. A runaway or invalid script stops automatically.</p></div><div class="script-editor"><label for="script-source">Effect rule <small>Rhai · 4 KB max</small></label><textarea id="script-source" maxlength="4096" spellcheck="false" rows="8" aria-describedby="script-status"></textarea><div class="script-actions"><button id="script-example" class="quiet-action" type="button">Load example</button><button id="script-toggle" class="main-action" type="button" aria-pressed="false">Arm rule</button><button id="telemetry-demo" class="quiet-action" type="button" disabled>Send test lap</button></div><p id="script-status" role="status">Off · start telemetry to see a response</p><div class="script-monitor"><span>Last output</span><strong id="script-output">Waiting for a signal</strong></div></div></div></div>`);
+  $('.light-layout').insertAdjacentHTML('afterend',`<div class="script-panel framed"><div class="panel-cap"><span>Telemetry rules</span><span>LOCAL SCRIPT</span></div><div class="script-body"><div class="script-intro"><span class="script-kicker">01 / Rule</span><h2>Edit telemetry rule</h2><p>Use race data to set a light color or grip cue. Runs locally up to 10 Hz.</p><div class="script-signals"><strong>Signals</strong><span>rpm · max_rpm · speed_kmh · gear · brake · slip · front_slip · kerb_left · kerb_right</span></div><div class="script-signals"><strong>Outputs</strong><span>light: [red, green, blue] · cue: "pulse", "grit", or "shift"</span></div><p class="script-boundary">Rules can set lights and grip cues only. They cannot access files, the network, keys, or triggers. Invalid rules stop automatically.</p></div><div class="script-editor"><label for="script-source">Effect rule <small>Rhai · 4 KB max</small></label><textarea id="script-source" maxlength="4096" spellcheck="false" rows="8" aria-describedby="script-status"></textarea><div class="script-actions"><button id="script-example" class="quiet-action" type="button">Load example</button><button id="script-toggle" class="main-action" type="button" aria-pressed="false">Arm rule</button><button id="telemetry-demo" class="quiet-action" type="button" disabled>Send test lap</button></div><p id="script-status" role="status">Off · start telemetry to see a response</p><div class="script-monitor"><span>Last output</span><strong id="script-output">Waiting for a signal</strong></div></div></div></div>`);
   const scriptExample='if rpm / max_rpm > 0.8 { #{ light: [220, 40, 20], cue: "pulse" } } else { #{ light: [40, 145, 130] } }';
   try{$('#script-source').value=localStorage.getItem('aftertouch.script.v1')||scriptExample;}catch{$('#script-source').value=scriptExample;}
   $('#script-source').addEventListener('input',()=>{try{localStorage.setItem('aftertouch.script.v1',$('#script-source').value);}catch{}});
@@ -1095,7 +1095,7 @@
   function renderMouseSwitch(){const b=$('#touch-mouse-toggle');b.classList.toggle('is-active',state.mouse);b.setAttribute('aria-pressed',String(state.mouse));b.textContent=state.mouse?'On':'Off';renderGestureSwitch();}
   $('#touch-gesture-toggle').addEventListener('click',()=>send({action:'setTouchGestures',enabled:!state.gestures}));
   $('#touch-gesture-toggle').parentElement.querySelector('strong').textContent='Edge and circle gestures';
-  $('#touch-gesture-toggle').parentElement.querySelector('p').textContent='Swipe inward for an arrow key. Rotate two fingers for circle scrolling. Edge entry plays a short cue. Requires Touchpad mouse.';
+  $('#touch-gesture-toggle').parentElement.querySelector('p').textContent='Swipe inward for an arrow key. Rotate two fingers for circle scrolling. Requires Touchpad mouse.';
   function renderGestureSwitch(){const b=$('#touch-gesture-toggle');b.classList.toggle('is-active',state.gestures&&state.mouse);b.setAttribute('aria-pressed',String(state.gestures));b.disabled=!state.connected||!state.mouse;b.textContent=state.gestures?(state.mouse?'On':'Paused'):'Off';}
 
   function syncGyroCommand() {
@@ -1133,7 +1133,7 @@
     b.setAttribute('aria-pressed', String(state.gyroAim));
     b.textContent = state.gyroAim ? 'On' : 'Off';
     $('#gyro-calibrate').disabled=!state.connected||!state.fullReport||!!state.gyroCalibration;
-    if(!state.gyroCalibration)$('#gyro-calibration-status').textContent=(g.bias||[]).some(n=>n!==0)?`Saved still bias: ${(g.bias||[]).join(' / ')}. Calibrate again if the pad drifts.`:'Place the pad on a steady surface for two seconds. Calibration is saved with this profile.';
+    if(!state.gyroCalibration)$('#gyro-calibration-status').textContent=(g.bias||[]).some(n=>n!==0)?`Saved still bias: ${(g.bias||[]).join(' / ')}. Calibrate again if the pad drifts.`:'Set the pad down for two seconds. Saves to this profile.';
   }
   $('#gyro-aim-toggle').addEventListener('click', () => {
     if (!state.connected) { toast('Connect a controller.'); return; }
@@ -1179,7 +1179,7 @@
     if (!state.connected) { toast('Connect a controller.'); return; }
     send({action:'setXinput', enabled: !state.xinput});
   });
-  $('.xinput-block').insertAdjacentHTML('beforeend','<div class="driver-actions"><button id="setup-vigem" class="quiet-action" type="button">Set up XInput driver</button><button id="setup-hidhide" class="quiet-action" type="button">HidHide download</button><small>ViGEmBus is needed only for the virtual Xbox pad. HidHide is optional when games see both the physical and virtual controller.</small></div>');
+  $('.xinput-block').insertAdjacentHTML('beforeend','<div class="driver-actions"><button id="setup-vigem" class="quiet-action" type="button">Set up XInput driver</button><button id="setup-hidhide" class="quiet-action" type="button">HidHide download</button><small>ViGEmBus creates the virtual Xbox pad. Use HidHide if a game sees both pads.</small></div>');
   for(const [id,kind] of [['setup-vigem','vigem'],['setup-hidhide','hidhide']]){
     $(`#${id}`).addEventListener('click',async()=>{
       if(!native){toast('Open the Windows app to set up drivers.');return;}
@@ -1190,9 +1190,10 @@
 
   $('#diag-reset').addEventListener('click',()=>send({action:'reset'}));
   $('#quick-reset').addEventListener('click',()=>send({action:'reset'}));
-  function finishScan(){clearTimeout(scanTimeout);state.manualScan=false;$('#scan-button').disabled=false;$('#scan-button').textContent='Scan';}
+  function finishScan(){clearTimeout(scanTimeout);state.manualScan=false;$('#scan-button').setAttribute('aria-busy','false');$('#scan-button').setAttribute('aria-label','Scan for controllers');}
   async function manualScan(){
-    state.manualScan=true;$('#scan-button').disabled=true;$('#scan-button').textContent='Scanning…';
+    if(state.manualScan)return;
+    state.manualScan=true;$('#scan-button').setAttribute('aria-busy','true');$('#scan-button').setAttribute('aria-label','Scanning for controllers');
     scanTimeout=setTimeout(finishScan,4000);
     if(!await send({action:'listDevices'}))finishScan();
   }

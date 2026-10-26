@@ -116,4 +116,4 @@ The system audio bridge uses the [Windows WASAPI loopback API](https://learn.mic
 
 CONTROLLER is independent and is not affiliated with Sony Interactive Entertainment.
 
-Figtree and Spectral are bundled for offline typography under the SIL Open Font License; their license files are in `ui/assets/fonts/`.
+Geist Sans, Mono, and Pixel are bundled for offline typography under the SIL Open Font License. The license is in `ui/assets/fonts/Geist-OFL.txt`.
