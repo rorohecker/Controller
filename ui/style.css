@@ -762,7 +762,8 @@ main{max-width:1900px;margin-inline:auto;padding-block:22px 30px}
 .controller-map .map-shoulder-well{fill:#171c22}
 .controller-map .map-shoulder-motion{transition:transform .07s ease-out}
 .controller-map .map-shoulder.is-pressed .map-shoulder-motion{transform:translateY(clamp(4px,.65vw,10px))}
-.controller-map .map-shoulder.is-pressed .map-press-overlay{opacity:.48}
+.controller-map .map-shoulder .map-press-overlay{fill:#4bb6bb;filter:none}
+.controller-map .map-shoulder.is-pressed .map-press-overlay{opacity:.34}
 .controller-map .map-trigger-motion{transition:transform .04s linear}
 .controller-map .map-trigger-body{fill:#171c22;stroke:#60696b;stroke-width:3}
 .controller-map .map-trigger-seam{fill:none;stroke:#666f71;stroke-width:3}
