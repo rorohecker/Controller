@@ -91,10 +91,7 @@ def main():
         page.locator("#install-update").click()
         page.wait_for_function("window.installedUpdate===true")
         page.locator('[data-view="live"]').click()
-        assert page.locator("#theme-select option").count() == 4
-        for palette in ("cinder", "tide", "verdigris", "dusk"):
-            page.locator("#theme-select").select_option(palette)
-            assert page.locator("body").get_attribute("data-theme") == palette
+        assert page.locator("#theme-select").count() == 0
         page.evaluate("window.coreHandler({type:'device',connected:true,name:'DualSense',transport:'USB',path:'test'})")
         assert page.evaluate("window.sent.some(c=>c.action==='setPcBindings')")
         assert page.evaluate("window.sent.some(c=>c.action==='setCalibration')")
@@ -225,11 +222,7 @@ def main():
         assert page.locator("#live").is_visible()
         pad_event(page)
         pad_event(page, 13)
-        assert page.locator(".pad-focused").get_attribute("id") == "theme-select"
-        pad_event(page)
-        pad_event(page, 15)
-        assert page.locator("body").get_attribute("data-theme") == "cinder"
-        page.locator("#theme-select").select_option("dusk")
+        assert page.locator(".pad-focused").get_attribute("id") == "scan-button"
         page.locator("#input-mode-toggle").click()
         assert page.evaluate("window.sent.at(-1).action") == "setPcMode"
         assert page.evaluate("window.sent.at(-1).enabled") is False

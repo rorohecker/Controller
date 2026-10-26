@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 120" aria-hidden="true">
+  <!-- Multi-accent pixel sky: sea, coral, gold, mint, lavender -->
+  <g shape-rendering="crispEdges">
+    <g fill="#8bdbd5" opacity=".9">
+      <rect x="42" y="28" width="3" height="3"/><rect x="186" y="42" width="3" height="3"/>
+      <rect x="318" y="36" width="3" height="3"/><rect x="448" y="48" width="3" height="3"/>
+    </g>
+    <g fill="#ffc090" opacity=".85">
+      <rect x="118" y="18" width="2" height="2"/><rect x="260" y="14" width="2" height="2"/>
+      <rect x="392" y="22" width="2" height="2"/><rect x="512" y="16" width="2" height="2"/>
+    </g>
+    <g fill="#ffda86" opacity=".8">
+      <rect x="78" y="52" width="2" height="2"/><rect x="210" y="64" width="2" height="2"/>
+      <rect x="350" y="56" width="2" height="2"/><rect x="480" y="60" width="2" height="2"/>
+    </g>
+    <g fill="#c5e6a5" opacity=".7">
+      <rect x="150" y="72" width="2" height="2"/><rect x="300" y="78" width="2" height="2"/>
+      <rect x="430" y="70" width="2" height="2"/>
+    </g>
+    <g fill="#b8a9e8" opacity=".55">
+      <rect x="96" y="40" width="2" height="2"/><rect x="240" y="30" width="2" height="2"/>
+      <rect x="400" y="44" width="2" height="2"/>
+    </g>
+    <!-- Tiny pixel clusters -->
+    <g fill="#8bdbd5">
+      <rect x="54" y="34" width="2" height="2"/><rect x="56" y="36" width="2" height="2"/>
+    </g>
+    <g fill="#ffc090">
+      <rect x="330" y="40" width="2" height="2"/><rect x="332" y="42" width="2" height="2"/>
+    </g>
+  </g>
+  <path fill="none" stroke="#ffda86" stroke-opacity=".28" stroke-width="1.5" d="M20 96 C120 72 200 108 280 84 S440 60 540 90"/>
+  <path fill="none" stroke="#8bdbd5" stroke-opacity=".2" stroke-width="1" d="M0 108 C140 88 260 118 380 96 S520 78 560 104"/>
+  <path fill="none" stroke="#ffc090" stroke-opacity=".16" stroke-width="1" d="M40 100 C160 110 280 70 400 92 S520 108 560 88"/>
+</svg>

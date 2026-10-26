@@ -103,15 +103,7 @@
     try{localStorage.setItem('aftertouch.pcAudioSketch',String(pcAudioSketch));}catch{}
   });
   let updateChecking=false, updateInstalling=false, availableVersion='';
-  const palettes=['dusk','cinder','tide','verdigris'];
-  function setPalette(palette){
-    const choice=palettes.includes(palette)?palette:'dusk';
-    document.body.dataset.theme=choice;
-    $('#theme-select').value=choice;
-    try{localStorage.setItem('aftertouch.palette',choice);}catch{}
-  }
-  try{setPalette(localStorage.getItem('aftertouch.palette')||'dusk');}catch{setPalette('dusk');}
-  $('#theme-select').addEventListener('change',e=>setPalette(e.target.value));
+  try{localStorage.removeItem('aftertouch.palette');}catch{}
 
   const profile = () => state.profiles.find(p => p.id === state.profileId) || state.profiles[0];
   const trigger = () => profile().triggers[state.side];
