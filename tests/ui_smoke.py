@@ -12,7 +12,7 @@ def mock_core(page):
       window.__TAURI__ = {
         core: {invoke: async (name, args) => {
           if (name === 'load_profiles') return null;
-          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.11.2'}; }
+          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.11.4'}; }
           if (name === 'install_update') { window.installedUpdate=true; return null; }
           if (name === 'send_demo_telemetry') { window.demoPort=args.port; return null; }
           if (name === 'open_driver_setup') { window.driverOpened=args.kind; return 'Driver setup opened'; }
@@ -52,7 +52,7 @@ def main():
         assert page.evaluate("document.querySelector('.brand strong').getBoundingClientRect().right <= document.querySelector('.sidebar').getBoundingClientRect().right")
         assert page.locator(".photo-stage .controller-map").is_visible()
         assert page.locator("#connection-guide").is_visible()
-        assert "Studio ready without a pad" in page.locator("#connection-guide").inner_text()
+        assert "No controller connected" in page.locator("#connection-guide").inner_text()
         page.locator('[data-goto="profiles"]').last.click()
         page.locator("#profile-description").fill("Edited while disconnected")
         page.locator("#save-profile").click()
@@ -66,7 +66,7 @@ def main():
         assert not page.evaluate("window.sent.some(c=>c.action==='playHaptic')")
         page.locator('[data-view="diagnostics"]').click()
         page.locator("#check-update").click()
-        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.11.2 is current')")
+        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.11.4 is current')")
         assert page.locator("#install-update").is_hidden()
         page.evaluate("window.mockUpdateVersion='0.12.0'")
         page.locator("#check-update").click()
@@ -123,6 +123,9 @@ def main():
         assert page.evaluate("window.sent.at(-1).action==='setCalibration'")
         page.locator('[data-view="lights"]').click()
         assert page.locator("#light-controller-map .controller-map").count() == 1
+        assert page.locator("#light-controller-map .map-art").get_attribute("href") == "./assets/dualsense-front.png"
+        assert page.locator("#lights .light-left-column .telemetry-panel").count() == 1
+        assert page.locator("#lights > .script-panel").count() == 1
         assert page.locator("#light-presets [data-color]").count() == 24
         for led in (0, 2, 4):
             page.locator(f'#player-leds [data-player-led="{led}"]').click()
@@ -145,14 +148,14 @@ def main():
           buttons:Array(23).fill(0),axes:[0,0,1,0],touch:[null,null],gyro:[0,0,0],
           battery:75,charging:false,fullReport:true}})""")
         assert page.locator("#activity-scope").get_attribute("aria-label") == "Input activity 25 percent"
-        assert "18" in page.locator("#right-stick-cap").get_attribute("transform")
+        assert page.locator("#right-stick-cap").get_attribute("transform") == "translate(38 0)"
         page.evaluate("""window.coreHandler({type:'input',input:{
           buttons:[0,0,0,0,0,0,.5,.75,...Array(15).fill(0)],axes:[-1,1,.5,-.5],
           touch:[{x:.25,y:.75},null],gyro:[0,0,0],battery:75,
           charging:false,fullReport:true}})""")
-        assert page.locator("#left-stick-cap").get_attribute("transform") == "translate(-18 18)"
-        assert page.locator("#map-l2").get_attribute("transform") == "translate(0 8)"
-        assert page.locator("#map-r2").get_attribute("transform") == "translate(0 12)"
+        assert page.locator("#left-stick-cap").get_attribute("transform") == "translate(-38 38)"
+        assert abs(float(page.locator("#map-l2").get_attribute("transform").split()[-1][:-1]) - 14) < .01
+        assert abs(float(page.locator("#map-r2").get_attribute("transform").split()[-1][:-1]) - 21) < .01
         assert page.locator("#map-touch-0").get_attribute("class").endswith("is-active")
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-input-map.png"), full_page=True)
         page.locator("#input-mode-toggle").click()
@@ -381,8 +384,19 @@ def main():
         mobile.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-touch-mobile.png"), full_page=True)
         assert mobile.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
         assert not mobile_errors, mobile_errors
+        for width, height in ((640, 560), (900, 690), (1920, 1080)):
+            sized = browser.new_page(viewport={"width": width, "height": height})
+            mock_core(sized)
+            sized.goto((ROOT / "ui" / "index.html").as_uri())
+            sized.wait_for_function("!!window.coreHandler")
+            for view in ("live", "lights", "triggers", "profiles"):
+                sized.locator(f'[data-view="{view}"]').click()
+                assert sized.evaluate("document.documentElement.scrollWidth <= innerWidth + 1"), (width, view)
+            if width == 640:
+                assert sized.locator(".session-rail").bounding_box()["height"] < 150
+            sized.close()
         browser.close()
-        print("UI smoke passed: live vector map, Game/PC modes, palettes, input, report status, battery, stick checks, remap, mobile")
+        print("UI smoke passed: live map, light preview, Game/PC modes, input, battery, profiles, responsive layouts")
 
 
 if __name__ == "__main__":

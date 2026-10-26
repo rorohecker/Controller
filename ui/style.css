@@ -738,6 +738,62 @@ body[data-theme="verdigris"]{--stage:#142822;--stage-mid:#1d3c30;--stage-lift:#3
 body[data-theme="cinder"],body[data-theme="tide"],body[data-theme="verdigris"]{background:var(--stage)}
 body[data-theme="cinder"] .workspace,body[data-theme="tide"] .workspace,body[data-theme="verdigris"] .workspace{background:var(--parchment);background-image:radial-gradient(ellipse 80% 50% at 20% 0%,rgba(255,255,255,.14),transparent 50%),linear-gradient(180deg,var(--parchment),var(--parchment-dim))}
 
+/* Live controller artwork and a compact desktop workbench. */
+main{max-width:1900px;margin-inline:auto;padding-block:22px 30px}
+.live-layout{grid-template-columns:minmax(0,1.55fr) minmax(320px,.82fr);align-items:start}
+.controller-photo-wrap{max-width:none;aspect-ratio:1467/816;padding:8px 10px 4px}
+.photo-stage{background:
+  radial-gradient(circle at 50% 30%,rgba(114,173,188,.18),transparent 58%),
+  linear-gradient(180deg,#dce4df 0%,#c3cfcc 48%,#aabdc2 100%)}
+.photo-stage::before{content:'';position:absolute;inset:auto 0 0;height:40%;pointer-events:none;opacity:.23;background:url('./assets/mountain-ornament.svg') center bottom/auto 100% repeat-x}
+.photo-ruler{position:absolute;z-index:1;top:7px;left:14px;right:14px;padding:0;border:0;color:#445b65;opacity:.72}
+.controller-map{filter:drop-shadow(0 18px 14px rgba(21,39,53,.24))}
+.controller-map .map-art{opacity:1}
+.controller-map .map-hit{fill:var(--gold);stroke:var(--gold-soft);stroke-width:4;opacity:0;transition:opacity .08s linear;filter:drop-shadow(0 0 9px var(--gold))}
+.controller-map .map-control.is-pressed .map-hit{opacity:.64}
+.controller-map .map-trigger-body{fill:#171c22;stroke:#60696b;stroke-width:3}
+.controller-map .map-trigger-seam{fill:none;stroke:#666f71;stroke-width:3}
+.controller-map .map-trigger text{fill:#899194;font:700 18px var(--body);text-anchor:middle;letter-spacing:.08em}
+.controller-map .map-trigger.is-pressed .map-trigger-body{fill:#6f653f;stroke:var(--gold);filter:drop-shadow(0 0 14px var(--gold))}
+.controller-map .map-trigger.is-pressed text{fill:#fff6de}
+.controller-map .map-stick-cap{transition:transform .04s linear;filter:drop-shadow(0 4px 3px rgba(0,0,0,.25))}
+.controller-map .map-stick-press{fill:var(--gold);opacity:0;mix-blend-mode:screen;filter:blur(9px)}
+.controller-map .map-stick.is-pressed .map-stick-press{opacity:.46}
+.controller-map .map-touch-contact{fill:var(--gold);stroke:#fff8dc;stroke-width:4;filter:drop-shadow(0 0 12px var(--gold))}
+.controller-map .map-touch-contact.second{fill:var(--teal-glow);stroke:#e4fffa;filter:drop-shadow(0 0 12px var(--teal))}
+.controller-map .map-light-strip{stroke:#5a93cb;stroke-width:8;opacity:.65;filter:drop-shadow(0 0 6px #4687c6)}
+.light-controller-preview .controller-map .map-light-plastic{fill:var(--light);opacity:.13;filter:blur(22px)}
+.light-controller-preview .controller-map .map-light-halo{stroke:var(--light);stroke-width:33;opacity:.62;filter:blur(14px)}
+.light-controller-preview .controller-map .map-light-strip{stroke:color-mix(in srgb,var(--light) 55%,#c3d7e0);stroke-width:9;opacity:1;filter:drop-shadow(0 0 11px var(--light))}
+.light-controller-preview .controller-map .map-hit{opacity:0}
+.light-controller-preview .controller-map .map-trigger-body{fill:#171c22;stroke:#60696b;filter:none}
+.light-controller-preview .controller-map .map-trigger text{fill:#899194}
+.map-player-indicators circle{fill:#45494b;stroke:#747b7e;stroke-width:2}
+.map-player-indicators circle.is-active{fill:#fff;stroke:#fff;filter:drop-shadow(0 0 10px #fff)}
+.battery-history-wrap{border-top-color:rgba(212,168,75,.2)}
+.battery-history-wrap .scope-label,.battery-history{color:rgba(243,236,222,.62)}
+.battery-history-wrap.is-empty{display:none}
+.light-layout{align-items:start}
+.light-left-column{display:grid;gap:16px;min-width:0;align-content:start}
+.light-display{min-height:0}
+.light-controller-preview{min-height:0;padding-top:20px}
+.telemetry-panel{margin-top:0}
+.light-palette-head,.light-palette-head small,.light-empty,.light-palette-row{color:rgba(243,236,222,.76)}
+.light-palette-head strong{color:var(--cream)}
+.telemetry-scope{flex:0 0 auto}
+.telemetry-main{min-height:0;padding:17px 18px}
+.telemetry-main strong{margin:6px 0 8px}
+.battery-band{padding:12px 18px}
+.battery-segments{margin:7px 0}
+.telemetry-axes>div{padding:10px 14px}
+.connection-guide{padding:12px 18px}
+.sidebar::after{content:'';position:absolute;inset:auto 0 110px;height:160px;pointer-events:none;opacity:.42;background:url('./assets/mountain-ornament.svg') center bottom/auto 100% no-repeat}
+.eyebrow span:first-child{border-radius:2px;box-shadow:3px 3px 0 rgba(42,34,24,.15)}
+.module-topline{background:linear-gradient(90deg,rgba(126,201,188,.1),transparent 60%)}
+.framed{border-radius:7px}
+.framed::before{border-radius:4px}
+.framed::after{border-radius:7px}
+
 @media(max-width:1370px){
   .shell{grid-template-columns:180px 1fr}
   main{padding:24px 24px}.masthead,.footer,.session-rail{padding-left:24px;padding-right:24px}
@@ -773,6 +829,8 @@ body[data-theme="cinder"] .workspace,body[data-theme="tide"] .workspace,body[dat
   .mast-title,#clock,.mast-separator{display:none}
   .mast-actions{width:100%;justify-content:space-between;gap:8px}
   .session-rail>.session-reset{grid-column:1/-1;min-height:36px}
+  .session-rail{grid-template-columns:repeat(3,minmax(0,1fr))}
+  .session-rail>.session-reset{grid-column:auto}
   main{padding:16px 12px}
   .session-rail{padding:0 12px}
   .page-heading h1{font-size:clamp(28px,8vw,40px)}
@@ -780,6 +838,10 @@ body[data-theme="cinder"] .workspace,body[data-theme="tide"] .workspace,body[dat
   .footer{padding:12px;flex-wrap:wrap}
   .stick-checks{grid-template-columns:1fr}
   .theme-control{font-size:0}
+}
+@media(max-width:480px){
+  .session-rail{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .session-rail>.session-reset{grid-column:1/-1}
 }
 @media(prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}

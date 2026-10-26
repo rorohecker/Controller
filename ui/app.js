@@ -992,17 +992,18 @@
   });
   lightMap.querySelectorAll('.map-touch-contact').forEach(node=>node.remove());
   const ns='http://www.w3.org/2000/svg';
-  const plastic=document.createElementNS(ns,'path');plastic.setAttribute('class','map-light-plastic');plastic.setAttribute('d','M371 134 Q500 164 629 134 L610 285 Q500 314 390 285 Z');
+  const plastic=document.createElementNS(ns,'path');plastic.setAttribute('class','map-light-plastic');plastic.setAttribute('d','M493 167 Q734 139 974 167 Q1027 171 1041 232 L997 413 Q988 463 942 468 H525 Q479 463 470 413 L426 232 Q440 171 493 167 Z');
   lightMap.querySelector('.map-touchpad').before(plastic);
-  lightMap.querySelector('.map-light-strip').remove();
-  for(const path of ['M391 145 Q400 203 407 266','M609 145 Q600 203 593 266'].map(d=>{const side=document.createElementNS(ns,'path');side.setAttribute('class','map-light-side');side.setAttribute('d',d);return side;})){
-    lightMap.querySelector('.map-touchpad').after(path);
-    const halo=path.cloneNode(true);halo.setAttribute('class','map-light-halo');path.before(halo);
-  }
+  const lightStrip=lightMap.querySelector('.map-light-strip');
+  const halo=lightStrip.cloneNode(true);halo.setAttribute('class','map-light-halo');lightStrip.before(halo);
   const playerIndicators=document.createElementNS(ns,'g');playerIndicators.setAttribute('class','map-player-indicators');
-  for(let i=0;i<5;i++){const dot=document.createElementNS(ns,'circle');dot.setAttribute('cx',String(440+i*30));dot.setAttribute('cy','294');dot.setAttribute('r','5');dot.setAttribute('data-player-preview',String(i));playerIndicators.append(dot);}
+  for(let i=0;i<5;i++){const dot=document.createElementNS(ns,'circle');dot.setAttribute('cx',String(680+i*27));dot.setAttribute('cy','500');dot.setAttribute('r','8');dot.setAttribute('data-player-preview',String(i));playerIndicators.append(dot);}
   lightMap.append(playerIndicators);
   $('#light-controller-map').append(lightMap);
+  const lightColumn=document.createElement('div');
+  lightColumn.className='light-left-column';
+  $('.light-layout').prepend(lightColumn);
+  lightColumn.append($('.light-display'),$('#lights .telemetry-panel'));
   let playerLedMask=0;
   function renderPlayerLeds(){
     $$('#player-leds [data-player-led]').forEach(button=>{const on=!!(playerLedMask&(1<<Number(button.dataset.playerLed)));button.setAttribute('aria-pressed',String(on));button.classList.toggle('is-active',on);});
@@ -1046,7 +1047,7 @@
   $('#battery-light').insertAdjacentHTML('afterend','<button class="quiet-action" id="temperature-light" type="button" aria-pressed="false" disabled>Sensor color: off</button><small class="screen-light-status" id="temperature-light-status" role="status">Maps an uncalibrated raw byte to color.</small>');
   $('#temperature-light').addEventListener('click',()=>send({action:'setTemperatureLightbar',enabled:!state.temperatureLight}));
   $('#screen-light').addEventListener('click',()=>send({action:'setScreenLightbar',enabled:!state.screenLight}));
-  $('#lights .page-heading p').textContent='Choose a fixed color or follow battery level, a sensor estimate, race telemetry, or your primary screen.';
+  $('#lights .page-heading p').textContent='Set a fixed RGB color, or follow battery, telemetry, sensor, or screen color.';
   $('#release-light').addEventListener('click',()=>send({action:'releaseLightbar'}));
   document.querySelector('label[for="telemetry-port"]').insertAdjacentHTML('beforebegin','<label for="telemetry-format">Input format</label><select id="telemetry-format"><option value="forza">Forza Data Out · Dash</option><option value="json">Local JSON adapter</option></select><details id="telemetry-json-help" class="telemetry-schema" hidden><summary>JSON packet format</summary><code>{"rpm":6100,"maxRpm":8000,"speedKmh":108,"gear":4,"brake":150,"slip":1.4,"frontSlip":1.3,"kerb":[true,false,false,false]}</code><p>Send one UTF-8 JSON object per UDP datagram. Keep each under 512 bytes. Fields after maxRpm are optional.</p></details>');
   function renderTelemetryFormat(){
@@ -1054,8 +1055,8 @@
     $('.telemetry-panel .panel-cap span').textContent=json?'Local adapter':'Forza Data Out';
     $('#telemetry-json-help').hidden=!json;
     $('.telemetry-intro p').textContent=json
-      ?'Receive bounded game signals from a local adapter. Revs drive the lightbar; gear changes, braking slip, tyre slip, and kerbs make short grip cues. Use localhost unless another trusted device sends the packets.'
-      :"Set Forza's Data Out format to Dash. Motorsport 2023 can send to 127.0.0.1; for Horizon 4/5 or a console, enable LAN listening and use this PC's IPv4 address in the game. Engine revs color the lightbar; gear changes make a short grip cue. The brake slip reading is an estimate from wheel slip, not a direct ABS signal.";
+      ?'Send local JSON telemetry to drive light color and short grip cues. Enable LAN only for a trusted sender.'
+      :"Set Forza Data Out to Dash. Motorsport 2023 sends to 127.0.0.1. For Horizon 4/5 or a console, enable LAN and use this PC's IPv4 address. Revs set light color; gear changes play a short grip cue. Brake slip is estimated from wheel slip.";
   }
   $('#telemetry-format').addEventListener('change',()=>{renderTelemetryFormat();renderTelemetry();if(state.telemetryOn)send({action:'setTelemetry',enabled:true,port:Number($('#telemetry-port').value),lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});});
   renderTelemetryFormat();
@@ -1069,7 +1070,7 @@
     if(state.telemetryOn&&Number.isInteger(port)&&port>=1024&&port<=65535)send({action:'setTelemetry',enabled:true,port,lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});
   });
   $('#telemetry-lan').addEventListener('change',()=>{if(state.telemetryOn)send({action:'setTelemetry',enabled:true,port:Number($('#telemetry-port').value),lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});});
-  $('.telemetry-panel').insertAdjacentHTML('afterend',`<div class="script-panel framed"><div class="panel-cap"><span>Telemetry rules</span><span>LOCAL SCRIPT</span></div><div class="script-body"><div class="script-intro"><span class="script-kicker">01 / Rule</span><h2>Edit telemetry rule</h2><p>Use race data to set a light color or short grip cue. Rules run locally at up to 10 Hz.</p><div class="script-signals"><strong>Signals</strong><span>rpm · max_rpm · speed_kmh · gear · brake · slip · front_slip · kerb_left · kerb_right</span></div><div class="script-signals"><strong>Outputs</strong><span>light: [red, green, blue] · cue: "pulse", "grit", or "shift"</span></div><p class="script-boundary">A script can change only these effects. It cannot read files, use the network, send key presses, or change trigger settings. A runaway or invalid script stops automatically.</p></div><div class="script-editor"><label for="script-source">Effect rule <small>Rhai · 4 KB max</small></label><textarea id="script-source" maxlength="4096" spellcheck="false" rows="8" aria-describedby="script-status"></textarea><div class="script-actions"><button id="script-example" class="quiet-action" type="button">Load example</button><button id="script-toggle" class="main-action" type="button" aria-pressed="false">Arm rule</button><button id="telemetry-demo" class="quiet-action" type="button" disabled>Send test lap</button></div><p id="script-status" role="status">Off · start telemetry to see a response</p><div class="script-monitor"><span>Last output</span><strong id="script-output">Waiting for a signal</strong></div></div></div></div>`);
+  $('.light-layout').insertAdjacentHTML('afterend',`<div class="script-panel framed"><div class="panel-cap"><span>Telemetry rules</span><span>LOCAL SCRIPT</span></div><div class="script-body"><div class="script-intro"><span class="script-kicker">01 / Rule</span><h2>Edit telemetry rule</h2><p>Use race data to set a light color or short grip cue. Rules run locally at up to 10 Hz.</p><div class="script-signals"><strong>Signals</strong><span>rpm · max_rpm · speed_kmh · gear · brake · slip · front_slip · kerb_left · kerb_right</span></div><div class="script-signals"><strong>Outputs</strong><span>light: [red, green, blue] · cue: "pulse", "grit", or "shift"</span></div><p class="script-boundary">A script can change only these effects. It cannot read files, use the network, send key presses, or change trigger settings. A runaway or invalid script stops automatically.</p></div><div class="script-editor"><label for="script-source">Effect rule <small>Rhai · 4 KB max</small></label><textarea id="script-source" maxlength="4096" spellcheck="false" rows="8" aria-describedby="script-status"></textarea><div class="script-actions"><button id="script-example" class="quiet-action" type="button">Load example</button><button id="script-toggle" class="main-action" type="button" aria-pressed="false">Arm rule</button><button id="telemetry-demo" class="quiet-action" type="button" disabled>Send test lap</button></div><p id="script-status" role="status">Off · start telemetry to see a response</p><div class="script-monitor"><span>Last output</span><strong id="script-output">Waiting for a signal</strong></div></div></div></div>`);
   const scriptExample='if rpm / max_rpm > 0.8 { #{ light: [220, 40, 20], cue: "pulse" } } else { #{ light: [40, 145, 130] } }';
   try{$('#script-source').value=localStorage.getItem('aftertouch.script.v1')||scriptExample;}catch{$('#script-source').value=scriptExample;}
   $('#script-source').addEventListener('input',()=>{try{localStorage.setItem('aftertouch.script.v1',$('#script-source').value);}catch{}});
@@ -1285,7 +1286,8 @@
   }
   function renderBatteryHistory(){
     const host=$('#battery-history');host.replaceChildren();
-    if(!state.batteryHistory.length){host.textContent='Readings appear here after the controller reports battery level.';return;}
+    host.parentElement.classList.toggle('is-empty',!state.batteryHistory.length);
+    if(!state.batteryHistory.length)return;
     state.batteryHistory.forEach(({time,level,charging})=>{
       const bar=document.createElement('span');bar.className='battery-history-bar'+(charging?' is-charging':'');
       bar.style.height=`${Math.max(8,level)}%`;
@@ -1378,13 +1380,13 @@
     $('#live-l2-fill').style.width=l+'%';$('#live-r2-fill').style.width=r+'%';
     $('#left-axis').textContent=`${formatAxis(a[0])} / ${formatAxis(a[1])}`;$('#right-axis').textContent=`${formatAxis(a[2])} / ${formatAxis(a[3])}`;
     $('#diag-l2').textContent=(b[6]||0).toFixed(2);$('#diag-r2').textContent=(b[7]||0).toFixed(2);
-    $('#left-stick-cap').setAttribute('transform',`translate(${a[0]*18} ${a[1]*18})`);
-    $('#right-stick-cap').setAttribute('transform',`translate(${a[2]*18} ${a[3]*18})`);
-    $('#map-l2').setAttribute('transform',`translate(0 ${l*.16})`);
-    $('#map-r2').setAttribute('transform',`translate(0 ${r*.16})`);
+    $('#left-stick-cap').setAttribute('transform',`translate(${a[0]*38} ${a[1]*38})`);
+    $('#right-stick-cap').setAttribute('transform',`translate(${a[2]*38} ${a[3]*38})`);
+    $('#map-l2').setAttribute('transform',`translate(0 ${l*.28})`);
+    $('#map-r2').setAttribute('transform',`translate(0 ${r*.28})`);
     state.touch.forEach((point,i)=>{
       const mark=$(`#map-touch-${i}`);mark.classList.toggle('is-active',!!point);
-      if(point){mark.setAttribute('cx',String(409+clamp(point.x)*182));mark.setAttribute('cy',String(165+clamp(point.y)*94));}
+      if(point){mark.setAttribute('cx',String(480+clamp(point.x)*507));mark.setAttribute('cy',String(195+clamp(point.y)*252));}
     });
     const info=state.batteryInfo;
     const chargeNames={discharging:'Discharging',charging:'Charging',full:'Full',voltageOrTempFault:'Voltage / temp fault',temperatureFault:'Temperature fault',chargingError:'Charging error',unknown:'Unknown'};
