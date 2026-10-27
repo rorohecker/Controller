@@ -1,0 +1,35 @@
+name: Cache Windows build tools
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cache-tools:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        id: tauri-cli
+        with:
+          path: ~/.cargo/bin/cargo-tauri*
+          key: tauri-cli-2.11.1-${{ runner.os }}-${{ runner.arch }}
+      - name: Install verified Tauri CLI
+        if: steps.tauri-cli.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./scripts/install_tauri_cli.ps1
+      - name: Check CLI
+        shell: pwsh
+        run: |
+          $cli = Join-Path $env:USERPROFILE '.cargo/bin/cargo-tauri.exe'
+          & $cli --version
+          if ($LASTEXITCODE -ne 0) { throw 'Tauri CLI failed to run' }
+      - uses: actions/cache/save@v4
+        if: steps.tauri-cli.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cargo/bin/cargo-tauri*
+          key: tauri-cli-2.11.1-${{ runner.os }}-${{ runner.arch }}
