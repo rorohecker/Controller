@@ -34,6 +34,8 @@ pub struct TriggerSetting {
     pub end_zone: Option<u8>,
     #[serde(default)]
     pub snap_strength: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_cap: Option<u8>,
 }
 
 impl TriggerSetting {
@@ -68,6 +70,9 @@ impl TriggerSetting {
             .is_some_and(|value| !value.is_finite() || !(0.0..=100.0).contains(&value))
         {
             return Err("Snap strength must be 0–100");
+        }
+        if self.force_cap.is_some_and(|level| !(1..=8).contains(&level)) {
+            return Err("Trigger force cap must be 1–8");
         }
         if matches!(self.mode.as_str(), "weapon" | "bow") {
             let (max_start, max_end) = if self.mode == "weapon" {
@@ -315,6 +320,7 @@ pub fn parse_input(data: &[u8]) -> Option<InputState> {
 
 pub fn encode_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str> {
     setting.validate()?;
+    let max_level = setting.force_cap.unwrap_or(MAX_TRIGGER_LEVEL);
     let mut block = [0u8; 11];
     if setting.mode == "off" || setting.strength < 1.0 {
         block[0] = 0x05;
@@ -328,7 +334,7 @@ pub fn encode_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str
             .map_or((setting.curve[i] + setting.curve[i + 1]) / 2.0, |zones| {
                 zones[i]
             });
-        *level = (midpoint * setting.strength / 100.0 * MAX_TRIGGER_LEVEL as f32).round() as u8;
+        *level = (midpoint * setting.strength / 100.0 * max_level as f32).round() as u8;
     }
     if matches!(setting.mode.as_str(), "resistance" | "vibration")
         && levels.iter().all(|&level| level == 0)
@@ -377,7 +383,7 @@ pub fn encode_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str
             let mask = (1u16 << start) | (1u16 << stop);
             block[1..3].copy_from_slice(&mask.to_le_bytes());
             block[3] =
-                ((setting.strength / 100.0 * MAX_TRIGGER_LEVEL as f32).round() as u8).max(1) - 1;
+                ((setting.strength / 100.0 * max_level as f32).round() as u8).max(1) - 1;
         }
         "bow" => {
             // Unofficial mode 0x22. Choose a start and peak from the authored curve;
@@ -398,13 +404,13 @@ pub fn encode_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str
                 .unwrap_or(inferred_peak)
                 .clamp(start + 1, 9);
             let mask = (1u16 << start) | (1u16 << peak);
-            let force = ((setting.strength / 100.0 * MAX_TRIGGER_LEVEL as f32).round() as u8)
-                .clamp(1, MAX_TRIGGER_LEVEL);
+            let force = ((setting.strength / 100.0 * max_level as f32).round() as u8)
+                .clamp(1, max_level);
             let snap = setting
                 .snap_strength
                 .map(|strength| {
-                    ((strength / 100.0 * MAX_TRIGGER_LEVEL as f32).round() as u8)
-                        .clamp(1, MAX_TRIGGER_LEVEL)
+                    ((strength / 100.0 * max_level as f32).round() as u8)
+                        .clamp(1, max_level)
                 })
                 .unwrap_or((force / 2).max(1));
             block[0] = 0x22;
@@ -645,6 +651,13 @@ mod tests {
         assert_eq!(u16::from_le_bytes([encoded[1], encoded[2]]).count_ones(), 2);
         assert!(encoded[3] & 7 < MAX_TRIGGER_LEVEL);
         assert!(encoded[3] >> 3 < MAX_TRIGGER_LEVEL);
+        setting.force_cap = Some(8);
+        setting.snap_strength = Some(100.0);
+        let full = encode_trigger(&setting).unwrap();
+        assert_eq!(full[3] & 7, 7);
+        assert_eq!(full[3] >> 3, 7);
+        setting.force_cap = Some(9);
+        assert!(encode_trigger(&setting).is_err());
     }
 
     #[test]

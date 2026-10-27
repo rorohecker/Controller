@@ -280,6 +280,7 @@ struct InputEffect {
 
 impl InputEffect {
     fn advance(&mut self, now: Instant, right_pull: f32) -> bool {
+        let interval = Duration::from_secs_f64(1.0 / f64::from(self.rate.max(1)));
         if right_pull < self.threshold - 0.08 {
             self.armed = true;
             if self.kind == WeaponKind::Smg {
@@ -290,7 +291,7 @@ impl InputEffect {
         if first {
             self.armed = false;
             self.remaining = if self.kind == WeaponKind::Burst { 2 } else { 0 };
-            self.next_pulse = Some(now + Duration::from_millis(1000 / u64::from(self.rate.max(1))));
+            self.next_pulse = Some(now + interval);
             return true;
         }
         let repeat = self.next_pulse.is_some_and(|at| now >= at)
@@ -298,7 +299,7 @@ impl InputEffect {
                 || (self.kind == WeaponKind::Smg && right_pull >= self.threshold));
         if repeat {
             self.remaining = self.remaining.saturating_sub(1);
-            self.next_pulse = Some(now + Duration::from_millis(1000 / u64::from(self.rate.max(1))));
+            self.next_pulse = Some(now + interval);
         }
         repeat
     }
@@ -328,8 +329,8 @@ impl WeaponKind {
         match self {
             Self::Click => ("square", 145, 2, 75, (strength / 2).max(1), 45),
             Self::Pistol => ("square", 155, 2, 105, strength, 35),
-            Self::Sniper => ("square", 55, 2, 280, strength, 0),
-            Self::Burst => ("square", 110, 2, 110, strength, 20),
+            Self::Sniper => ("sniper", 55, 2, 300, strength, 0),
+            Self::Burst => ("square", 110, 2, 65, strength, 20),
             Self::Smg => ("square", 95, 2, 75, strength, 20),
         }
     }
@@ -560,6 +561,7 @@ impl Connected {
             mode: if vibration { "vibration" } else { "weapon" }.into(),
             strength: strength as f32,
             curve,
+            force_cap: (kind == WeaponKind::Sniper).then_some(8),
             ..TriggerSetting::default()
         })
         .map_err(str::to_string)?;
@@ -577,14 +579,21 @@ impl Connected {
         self.input_effect_until = Some(
             Instant::now()
                 + Duration::from_millis(match kind {
-                    WeaponKind::Sniper => 160,
-                    WeaponKind::Burst => 110,
+                    WeaponKind::Sniper => 210,
+                    WeaponKind::Burst => 70,
                     WeaponKind::Smg => 65,
                     _ => 65,
                 }),
         );
         let (shape, frequency, attack, release, power, pan) = kind.cue(strength);
         self.play_feedback(shape, frequency, attack, release, power, pan);
+        if kind == WeaponKind::Sniper && matches!(self.transport, BusType::Usb) {
+            self.write_rumble([72, 88])?;
+            self.rumble_until = Some(Instant::now() + Duration::from_millis(145));
+        } else if kind == WeaponKind::Burst && matches!(self.transport, BusType::Usb) {
+            self.write_rumble([38, 50])?;
+            self.rumble_until = Some(Instant::now() + Duration::from_millis(60));
+        }
         Ok(())
     }
 }
@@ -1558,7 +1567,7 @@ fn handle_command(
             } else {
                 let output = device.audio.start_output().map(|_| ());
                 output.and_then(|_| device.set_speaker_route(true)).and_then(|_| device.audio.play_speaker_chirp()).map(|endpoint| {
-                    device.speaker_route_until = Some(Instant::now() + Duration::from_millis(460));
+                    device.speaker_route_until = Some(Instant::now() + Duration::from_millis(950));
                     emit(proxy, json!({"type":"speakerStatus","source":"chirp","message":format!("Chirp sent to {endpoint}")}));
                     "Controller speaker chirp playing"
                 })
@@ -2345,22 +2354,26 @@ mod tests {
     }
 
     #[test]
-    fn burst_fires_three_times_and_smg_stops_on_release() {
+    fn burst_fires_three_separate_kicks_and_smg_stops_on_release() {
         let now = Instant::now();
         let mut burst = InputEffect {
             threshold: 0.6,
             strength: 60,
             kind: WeaponKind::Burst,
-            rate: 10,
+            rate: 6,
             armed: true,
             remaining: 0,
             next_pulse: None,
         };
         assert!(burst.advance(now, 0.7));
+        let (_, _, attack, release, _, _) = WeaponKind::Burst.cue(78);
+        assert!(u64::from(attack + release) < 1000 / 6);
         assert!(!burst.advance(now + Duration::from_millis(90), 0.7));
-        assert!(burst.advance(now + Duration::from_millis(100), 0.7));
-        assert!(burst.advance(now + Duration::from_millis(200), 0.7));
+        assert!(!burst.advance(now + Duration::from_millis(166), 0.7));
+        assert!(burst.advance(now + Duration::from_millis(167), 0.7));
         assert!(!burst.advance(now + Duration::from_millis(300), 0.7));
+        assert!(burst.advance(now + Duration::from_millis(334), 0.7));
+        assert!(!burst.advance(now + Duration::from_millis(500), 0.7));
         let mut smg = InputEffect {
             kind: WeaponKind::Smg,
             ..burst
@@ -2369,8 +2382,8 @@ mod tests {
         smg.remaining = 0;
         smg.next_pulse = None;
         assert!(smg.advance(now, 0.7));
-        assert!(smg.advance(now + Duration::from_millis(100), 0.7));
-        assert!(!smg.advance(now + Duration::from_millis(200), 0.0));
-        assert!(smg.advance(now + Duration::from_millis(300), 0.7));
+        assert!(smg.advance(now + Duration::from_millis(167), 0.7));
+        assert!(!smg.advance(now + Duration::from_millis(334), 0.0));
+        assert!(smg.advance(now + Duration::from_millis(500), 0.7));
     }
 }

@@ -18,7 +18,7 @@ use cpal::{
 const RATE: u32 = 48_000;
 const QUEUE_FRAMES: usize = 960; // at most 20 ms buffered at 48 kHz
 const MAX_AMPLITUDE: f32 = 0.22;
-const SPEAKER_CHIRP_SECONDS: f32 = 0.36;
+const SPEAKER_CHIRP_SECONDS: f32 = 0.8;
 const MAX_SPEAKER_SAMPLES: usize = RATE as usize * 3;
 
 #[derive(Clone)]
@@ -42,7 +42,7 @@ impl SpeakerChirp {
         let position = elapsed / SPEAKER_CHIRP_SECONDS;
         let envelope = (std::f32::consts::PI * position).sin().powi(2);
         let phase = 560.0 * elapsed + 450.0 * elapsed * elapsed;
-        Some((phase * std::f32::consts::TAU).sin() * envelope * 0.08)
+        Some((phase * std::f32::consts::TAU).sin() * envelope * 0.30)
     }
 }
 
@@ -63,6 +63,7 @@ pub enum Shape {
     Square,
     Saw,
     Noise,
+    Sniper,
 }
 
 impl VoiceClip {
@@ -84,6 +85,7 @@ impl VoiceClip {
                 "square" => Shape::Square,
                 "saw" => Shape::Saw,
                 "noise" => Shape::Noise,
+                "sniper" => Shape::Sniper,
                 _ => Shape::Sine,
             },
             started: Instant::now(),
@@ -112,6 +114,12 @@ impl VoiceClip {
             }
             Shape::Saw => phase.fract() * 2.0 - 1.0,
             Shape::Noise => ((phase * 73.37).sin() * (phase * 127.91).cos()).clamp(-1.0, 1.0),
+            Shape::Sniper => {
+                let low = if phase.fract() < 0.5 { 1.0 } else { -1.0 };
+                let crack = (1.0 - elapsed / 0.055).max(0.0)
+                    * (elapsed * 175.0 * std::f32::consts::TAU).sin();
+                low * 0.95 + crack * 0.8
+            }
         };
         // The output limiter applies MAX_AMPLITUDE. Applying it here as well
         // made a full-strength preview reach only a small fraction of that cap.
@@ -379,7 +387,7 @@ fn low_bass(samples: &[i16]) -> Arc<[f32]> {
             low += lp_alpha * (x - low);
             high = hp_alpha * (high + low - previous_low);
             previous_low = low;
-            (high * 1.25).clamp(-1.0, 1.0)
+            (high * 2.5).clamp(-1.0, 1.0)
         })
         .collect::<Vec<_>>()
         .into()
@@ -450,7 +458,7 @@ fn fill_frames(
             + pcm
                 .filter(|sound| sound.speaker)
                 .and_then(|sound| sound.samples.get(pcm_start + index))
-                .map(|sample| *sample as f32 / i16::MAX as f32 * 0.16)
+                .map(|sample| *sample as f32 / i16::MAX as f32 * 0.35)
                 .unwrap_or(0.0);
         write(index, [chirp, chirp, l, r]);
     }
@@ -712,7 +720,7 @@ mod tests {
                 .as_chunks::<4>()
                 .0
                 .iter()
-                .all(|frame| frame[0].abs() <= 0.16
+                .all(|frame| frame[0].abs() <= 0.35
                     && frame[1] == frame[0]
                     && frame[2] == 0.0
                     && frame[3] == 0.0)
@@ -745,7 +753,7 @@ mod tests {
         render_output(&mut pcm, &shared, &mut 0, &mut 0.0);
         let frames = pcm.as_chunks::<4>().0;
         assert!(frames.iter().any(|frame| frame[0].abs() > 0.0));
-        assert!(frames.iter().all(|frame| frame[0].abs() <= 0.08
+        assert!(frames.iter().all(|frame| frame[0].abs() <= 0.30
             && frame[0] == frame[1]
             && frame[2] == 0.0
             && frame[3] == 0.0));

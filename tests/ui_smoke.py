@@ -346,21 +346,40 @@ def main():
         assert page.locator("#script-source").get_attribute("readonly") is None
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-telemetry-new.png"), full_page=True)
         page.locator('[data-view="triggers"]').click()
-        page.locator('[data-mode="bow"]').click()
+        page.locator('.side-tab[data-side="left"]').click()
+        page.locator('#trigger-modes [data-mode="bow"]').click()
+        assert page.locator('[data-curve-card="left"]').evaluate("el => el.classList.contains('is-mode-inactive')")
+        assert page.locator('#curve-presets button').first.is_disabled()
         assert page.locator(".trigger-curve-svg").count() == 2
         assert page.locator('.trigger-curve-svg[data-curve-side="left"] [data-point]').count() == 10
+        page.locator('.side-tab[data-side="right"]').click()
+        page.locator('#trigger-modes [data-mode="resistance"]').click()
         right_zone = page.locator('.trigger-curve-svg[data-curve-side="right"] [data-point="5"]')
         before = float(right_zone.get_attribute("cy"))
         right_zone.focus()
         right_zone.press("ArrowUp")
         assert float(page.locator('.trigger-curve-svg[data-curve-side="right"] [data-point="5"]').get_attribute("cy")) < before
         assert page.locator("#curve-side-label").inner_text() == "R2"
+        page.locator('#trigger-modes [data-mode="bow"]').click()
         page.locator("#break-start").fill("3")
         page.locator("#break-end").fill("8")
-        page.locator("#break-snap").fill("75")
+        page.locator("#break-snap").fill("5")
+        assert page.locator("#break-snap-value").inner_text() == "5 / 6"
+        assert page.locator("#break-start-value").inner_text() == "Zone 4"
+        assert page.locator("#break-preview-track .is-draw").count() == 5
         page.locator("#apply-triggers").click()
-        assert page.evaluate("window.sent.some(c=>c.action==='applyTriggers' && [c.left,c.right].some(t=>t?.mode==='bow'&&t.startZone===3&&t.endZone===8&&t.snapStrength===75))")
-        page.locator('[data-mode="resistance"]').click()
+        assert page.evaluate("window.sent.some(c=>c.action==='applyTriggers' && [c.left,c.right].some(t=>t?.mode==='bow'&&t.startZone===3&&t.endZone===8&&t.snapStrength===83))")
+        page.locator("#break-force-cap").select_option("8")
+        page.locator("#break-snap").fill("7")
+        assert page.locator("#break-snap-value").inner_text() == "7 / 8"
+        page.locator("#zone-cal-start").click()
+        page.wait_for_function("window.sent.some(c=>c.action==='applyTriggers' && c.right?.mode==='resistance' && c.right.zoneForces?.[1]===1)")
+        for zone in range(1, 10):
+            page.evaluate("value => window.coreHandler({type:'input',input:{buttons:Array.from({length:23},(_,i)=>i===7?value:0),axes:[0,0,0,0],touch:[null,null],gyro:[0,0,0],battery:75,charging:false,fullReport:true}})", zone / 10)
+            page.locator("#zone-cal-capture").click()
+        page.wait_for_function("!!JSON.parse(localStorage.getItem('controller.motorZones')).right")
+        assert "is-uncalibrated" not in (page.locator("#break-preview-track").get_attribute("class") or "")
+        page.locator('#trigger-modes [data-mode="resistance"]').click()
         page.locator("#click-enabled").check()
         page.locator("#click-threshold").fill("78")
         page.locator("#apply-triggers").click()

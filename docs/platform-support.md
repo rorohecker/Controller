@@ -1,6 +1,6 @@
 # Platform builds
 
-The Windows installer remains the fully tested release. macOS and Linux builds are preview artifacts from `portable-build.yml`; they require hardware testing before release. The 26 October 2026 preview workflow [built a `.dmg`, `.deb`, and `.AppImage` successfully](https://github.com/rorohecker/Controller/actions/runs/40393759458). Its source commit predates the final speaker routing and trigger tuning changes, so a fresh preview build is required for version 0.13.0.
+The Windows installer remains the fully tested release. macOS and Linux builds are preview artifacts from `portable-build.yml`; they require hardware testing before release. The 26 October 2026 preview workflow [built a `.dmg`, `.deb`, and `.AppImage` successfully](https://github.com/rorohecker/Controller/actions/runs/40398076055). Its source commit predates the final Bow editor and trigger tuning changes, so a fresh preview build is required for version 0.13.0.
 
 | Capability | Windows | macOS preview | Ubuntu/Bazzite preview |
 | --- | --- | --- | --- |

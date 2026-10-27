@@ -82,6 +82,12 @@
   let pcPointerSensitivity=.7,pcReverseScroll=true;
   const defaultCalibration=()=>({axisCenters:[0,0,0,0],axisMins:[-1,-1,-1,-1],axisMaxs:[1,1,1,1],triggerRests:[0,0],triggerFulls:[1,1],touchMins:[0,0],touchMaxs:[1,1]});
   let inputCalibration=null,calibrationRun=null;
+  const validMotorZones=map=>Array.isArray(map)&&map.length===11&&map[0]===0&&map[10]===1&&Array.from({length:11},(_,i)=>Number.isFinite(map[i])&&(i===0||map[i]>map[i-1])).every(Boolean);
+  let motorZones={left:null,right:null},zoneRun=null,zoneRenewal=null;
+  try{
+    const saved=JSON.parse(localStorage.getItem('controller.motorZones')||'null');
+    for(const side of ['left','right'])if(validMotorZones(saved?.[side]))motorZones[side]=saved[side];
+  }catch{}
   try{
     const saved=JSON.parse(localStorage.getItem('aftertouch.inputCalibration')||'null');
     if(saved&&['axisCenters','axisMins','axisMaxs','triggerRests','triggerFulls','touchMins','touchMaxs'].every(key=>Array.isArray(saved[key])&&saved[key].every(Number.isFinite)))inputCalibration=saved;
@@ -124,6 +130,7 @@
       t.startZone=Number.isInteger(t.startZone)?t.startZone:(t.mode==='weapon'?5:2);
       t.endZone=Number.isInteger(t.endZone)?t.endZone:(t.mode==='weapon'?6:8);
       t.snapStrength=Number.isFinite(t.snapStrength)?t.snapStrength:50;
+      t.forceCap=t.forceCap===8?8:6;
       if(!Array.isArray(t.zoneForces)||t.zoneForces.length!==10)t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);
     }
     n.remap.bindings = Array.isArray(n.remap.bindings) ? n.remap.bindings.map(b=>({button:b.button,vk:b.vk,modifier:b.modifier??null,behavior:b.behavior||'hold',sequence:Array.isArray(b.sequence)?b.sequence:[]})) : [];
@@ -431,6 +438,7 @@
   document.addEventListener('visibilitychange',reportUiFocus);
   function navigate(view) {
     if (!$('#' + view)?.classList.contains('screen')) return;
+    if(zoneRun&&view!=='triggers')stopZoneCalibration();
     clearPadFocus();
     state.currentView = view;
     $$('.screen').forEach(s => { const active = s.id === view; s.hidden = !active; s.classList.toggle('is-current',active); });
@@ -857,22 +865,8 @@
     $$('.side-tab').forEach(b=>b.classList.toggle('is-active',b.dataset.side===state.side));
     $('#curve-side-label').textContent=state.side==='left'?'L2':'R2';
     $('#trigger-modes').innerHTML=Object.entries(modeLabel).map(([key,label])=>`<button class="mode-button ${t.mode===key?'is-active':''}" data-mode="${key}" type="button"><span>${label}</span><small>${key}</small></button>`).join('');
-    $('#trigger-strength').value=t.strength; $('#trigger-strength-number').textContent=`${t.strength}%`; fillRange($('#trigger-strength'));renderCurve();
-    const positioned=t.mode==='weapon'||t.mode==='bow';
-    $('#break-side-label').textContent=state.side==='left'?'L2':'R2';
-    $('#break-start').min=t.mode==='weapon'?2:0;
-    $('#break-end').max=t.mode==='weapon'?8:9;
-    t.startZone=clamp(t.startZone??(t.mode==='weapon'?5:2),+$('#break-start').min,7);
-    t.endZone=clamp(t.endZone??(t.mode==='weapon'?6:8),t.startZone+1,+$('#break-end').max);
-    $('#break-start').value=t.startZone;$('#break-end').value=t.endZone;$('#break-snap').value=t.snapStrength??50;
-    $('#break-start-value').textContent=`${t.startZone*10}%`;
-    $('#break-end-value').textContent=`${t.endZone*10}%`;
-    $('#break-snap-value').textContent=`${t.snapStrength??50}%`;
-    $$('#break-start,#break-end').forEach(input=>input.disabled=!positioned);
-    $('#break-snap').disabled=t.mode!=='bow';
-    $('#break-guide').textContent=positioned
-      ?`${t.mode==='bow'?'Bow':'Weapon'}: resistance begins at ${t.startZone*10}% and breaks at ${t.endZone*10}% of reported travel. Firmware intensity remains capped at 6 of 8.`
-      :'Choose Bow or Weapon mode to set explicit break positions.';
+    $('#trigger-strength').value=t.strength;renderTriggerStrength(t);fillRange($('#trigger-strength'));renderCurve();
+    renderBreakControls(t);
     const c=profile().inputEffects||defaultInputEffects();
     $('#click-enabled').checked=!!c.enabled;
     $('#weapon-kind').value=c.kind||'click';
@@ -883,34 +877,163 @@
     $('#click-strength').value=c.strength;$('#click-strength-value').textContent=`${c.strength}%`;
     fillRange($('#click-threshold'));fillRange($('#click-strength'));
   }
-  $$('.side-tab').forEach(b=>b.addEventListener('click',()=>{state.side=b.dataset.side;renderTriggerControls();}));
-  $('#trigger-modes').addEventListener('click',e=>{const b=e.target.closest('[data-mode]');if(!b)return;trigger().mode=b.dataset.mode;renderTriggerControls();saveProfiles();});
+  function renderTriggerStrength(t){
+    const cap=t.forceCap===8?8:6;
+    $('#trigger-strength-label').textContent=t.mode==='bow'?'Draw force':'Strength';
+    $('#trigger-strength-number').textContent=t.mode==='bow'||t.mode==='weapon'
+      ?`${t.strength}% · ${t.strength?Math.max(1,Math.round(t.strength*cap/100)):0} / ${cap}`
+      :`${t.strength}%`;
+    $('.ceiling-note').textContent=t.mode==='bow'||t.mode==='weapon'
+      ?`Force range: ${cap} of 8 motor levels.`
+      :'Force points apply to Resistance and Vibration.';
+  }
+  function renderBreakControls(t) {
+    const positioned=t.mode==='weapon'||t.mode==='bow';
+    const cap=t.forceCap===8?8:6,map=motorZones[state.side];
+    const measured=validMotorZones(map);
+    $('.trigger-break-controls').dataset.mode=t.mode;
+    $('#break-side-label').textContent=state.side==='left'?'L2':'R2';
+    $('#break-start').min=t.mode==='weapon'?2:0;
+    $('#break-end').max=t.mode==='weapon'?8:9;
+    t.startZone=clamp(t.startZone??(t.mode==='weapon'?5:2),+$('#break-start').min,7);
+    t.endZone=clamp(t.endZone??(t.mode==='weapon'?6:8),t.startZone+1,+$('#break-end').max);
+    $('#break-end').min=t.startZone+1;
+    const snapLevel=clamp(Math.round((t.snapStrength??50)*cap/100),1,cap);
+    $('#break-snap').max=cap;
+    $('#break-force-cap').value=String(cap);
+    $('#break-force-cap').disabled=!positioned;
+    $('#break-start').value=t.startZone;$('#break-end').value=t.endZone;$('#break-snap').value=snapLevel;
+    $('#break-start-value').textContent=`Zone ${t.startZone+1}`;
+    $('#break-end-value').textContent=`Zone ${t.endZone+1}`;
+    $('#break-snap-value').textContent=`${snapLevel} / ${cap}`;
+    $$('#break-start,#break-end').forEach(input=>input.disabled=!positioned);
+    $('#break-snap').disabled=t.mode!=='bow';
+    $('#break-snap-control').hidden=t.mode!=='bow';
+    $('#break-title').textContent=t.mode==='bow'?'Bow draw':'Trigger break';
+    $('#break-guide').textContent=positioned
+      ?measured?`Measured pull: start near ${Math.round(map[t.startZone]*100)}%, break near ${Math.round(map[t.endZone]*100)}%.`:'Motor zones are not equal parts of trigger travel. Measure them below to align the marker.'
+      :'Choose Bow or Weapon mode to edit these points.';
+    const track=$('#break-preview-track');
+    track.innerHTML=Array.from({length:10},(_,i)=>`<span class="${i<t.startZone?'':i<t.endZone?'is-draw':i===t.endZone?'is-break':'is-after'}" aria-hidden="true"></span>`).join('');
+    track.classList.toggle('is-uncalibrated',!measured);
+    track.style.gridTemplateColumns=measured?Array.from({length:10},(_,i)=>`${(map[i+1]-map[i])*1000}fr`).join(' '):'';
+    $('#break-preview').setAttribute('aria-label',measured?'Measured motor zones and live trigger pull':'Motor zone order; positions need measurement');
+    for(const button of $$('[data-break-step]')){
+      const [key,direction]=button.dataset.breakStep.split(':');
+      const input=$(`#break-${key}`);
+      button.disabled=!positioned||(key==='snap'&&t.mode!=='bow')||(direction==='-1'?+input.value<=+input.min:+input.value>=+input.max);
+    }
+    $$('#break-start,#break-end,#break-snap').forEach(fillRange);
+    updateBreakPull();
+    renderZoneCalibration();
+  }
+  function renderZoneCalibration(){
+    const active=!!zoneRun,side=active?zoneRun.side:state.side,map=motorZones[side];
+    $('#zone-cal-start').hidden=active;
+    $('#zone-cal-start').disabled=!state.connected;
+    $('#zone-cal-start').textContent=validMotorZones(map)?`Measure ${side==='left'?'L2':'R2'} again`:`Measure ${side==='left'?'L2':'R2'} zones`;
+    $('#zone-cal-capture').hidden=!active;
+    $('#zone-cal-cancel').hidden=!active;
+    if(active){
+      const pull=Math.round(clamp(state.buttons[side==='left'?6:7]||0)*100);
+      $('#zone-cal-capture').textContent=`Capture zone ${zoneRun.zone+1}`;
+      $('#zone-cal-status').textContent=zoneRun.message||`Step ${zoneRun.zone} of 9. Release, then pull slowly to the wall. Hold there and capture. Reported pull: ${pull}%. No timer.`;
+    }else $('#zone-cal-status').textContent=validMotorZones(map)
+      ?`${side==='left'?'L2':'R2'} motor zones measured. The green marker now follows your reported pull.`
+      :'Zone widths are schematic. Measure them with a trigger wall for an accurate live marker.';
+  }
+  async function applyZoneWall(run){
+    if(!run||!state.connected)return false;
+    const wall={mode:'resistance',strength:100,forceCap:6,curve:Array(11).fill(0),zoneForces:Array.from({length:10},(_,i)=>i>=run.zone?1:0)};
+    const p=profile();
+    return send({action:'applyTriggers',left:run.side==='left'?wall:p.triggers.left,right:run.side==='right'?wall:p.triggers.right});
+  }
+  async function stopZoneCalibration(restore=true){
+    if(!zoneRun)return;
+    clearInterval(zoneRenewal);zoneRenewal=null;zoneRun=null;
+    if(restore&&state.connected){
+      const p=profile(),c=p.inputEffects||defaultInputEffects();
+      await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right});
+      await send({action:'setInputEffects',enabled:!!c.enabled,threshold:c.threshold,strength:c.strength,kind:c.kind||'click',rate:c.rate||10});
+    }
+    renderBreakControls(trigger());
+  }
+  $('#zone-cal-start').addEventListener('click',async()=>{
+    if(!state.connected||zoneRun)return;
+    const run={side:state.side,zone:1,positions:[0],message:''};
+    zoneRun=run;renderZoneCalibration();
+    await send({action:'setInputEffects',enabled:false,threshold:.82,strength:0,kind:'click',rate:10});
+    if(!await applyZoneWall(run)){await stopZoneCalibration();return;}
+    zoneRenewal=setInterval(()=>{if(zoneRun===run)applyZoneWall(run);},10000);
+    renderZoneCalibration();
+  });
+  $('#zone-cal-capture').addEventListener('click',async()=>{
+    const run=zoneRun;if(!run)return;
+    const pull=clamp(state.buttons[run.side==='left'?6:7]||0);
+    if(pull<=run.positions[run.zone-1]+.005||pull>=.995){
+      run.message='Hold at the new wall before capturing. Release and pull slowly if the reading has not moved.';
+      renderZoneCalibration();return;
+    }
+    run.positions[run.zone]=Math.round(pull*1000)/1000;
+    run.message='';
+    if(run.zone===9){
+      run.positions[10]=1;
+      if(!validMotorZones(run.positions)){run.message='The zone positions crossed. Repeat this zone.';renderZoneCalibration();return;}
+      motorZones[run.side]=run.positions;
+      try{localStorage.setItem('controller.motorZones',JSON.stringify(motorZones));}catch{}
+      await stopZoneCalibration();
+      toast(`${run.side==='left'?'L2':'R2'} motor zones saved`);
+    }else{
+      run.zone++;
+      await applyZoneWall(run);
+      renderZoneCalibration();
+    }
+  });
+  $('#zone-cal-cancel').addEventListener('click',()=>stopZoneCalibration());
+  $$('.side-tab').forEach(b=>b.addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration();state.side=b.dataset.side;renderTriggerControls();}));
+  $('#trigger-modes').addEventListener('click',async e=>{const b=e.target.closest('[data-mode]');if(!b)return;if(zoneRun)await stopZoneCalibration();trigger().mode=b.dataset.mode;renderTriggerControls();saveProfiles();});
   $('#break-start').addEventListener('input',event=>{
     const t=trigger();t.startZone=+event.target.value;
     if(t.endZone<=t.startZone)t.endZone=t.startZone+1;
-    renderTriggerControls();saveProfiles();
+    renderBreakControls(t);saveProfiles();
   });
   $('#break-end').addEventListener('input',event=>{
     const t=trigger();t.endZone=Math.max(t.startZone+1,+event.target.value);
-    renderTriggerControls();saveProfiles();
+    renderBreakControls(t);saveProfiles();
   });
   $('#break-snap').addEventListener('input',event=>{
-    trigger().snapStrength=+event.target.value;renderTriggerControls();saveProfiles();
+    trigger().snapStrength=Math.round(+event.target.value*100/(trigger().forceCap||6));renderBreakControls(trigger());saveProfiles();
+  });
+  $('#break-force-cap').addEventListener('change',event=>{
+    const t=trigger();t.forceCap=+event.target.value;renderTriggerStrength(t);renderBreakControls(t);saveProfiles();
+  });
+  $('.break-control-grid').addEventListener('click',event=>{
+    const button=event.target.closest('[data-break-step]');if(!button||button.disabled)return;
+    const [key,direction]=button.dataset.breakStep.split(':');
+    const input=$(`#break-${key}`);
+    input.value=clamp(+input.value+Number(direction),+input.min,+input.max);
+    input.dispatchEvent(new Event('input',{bubbles:true}));
   });
   function fillRange(el){const f=(+el.value-(+el.min||0))/((+el.max||100)-(+el.min||0))*100;el.style.setProperty('--fill',`${f}%`);}
-  $('#trigger-strength').addEventListener('input',e=>{trigger().strength=+e.target.value;$('#trigger-strength-number').textContent=`${trigger().strength}%`;fillRange(e.target);saveProfiles();});
+  $('#trigger-strength').addEventListener('input',e=>{trigger().strength=+e.target.value;renderTriggerStrength(trigger());fillRange(e.target);saveProfiles();});
   $('#curve-presets').innerHTML=Object.keys(presets).map(n=>`<button type="button" data-preset="${n}">${n}</button>`).join('');
-  $('#curve-presets').addEventListener('click',e=>{const b=e.target.closest('[data-preset]');if(!b)return;trigger().curve=clone(presets[b.dataset.preset]);trigger().zoneForces=Array.from({length:10},(_,i)=>(trigger().curve[i]+trigger().curve[i+1])/2);renderCurve();saveProfiles();toast(`${state.side==='left'?'L2':'R2'} ${b.dataset.preset}`);});
+  $('#curve-presets').addEventListener('click',e=>{const b=e.target.closest('[data-preset]');if(!b||b.disabled)return;trigger().curve=clone(presets[b.dataset.preset]);trigger().zoneForces=Array.from({length:10},(_,i)=>(trigger().curve[i]+trigger().curve[i+1])/2);renderCurve();saveProfiles();toast(`${state.side==='left'?'L2':'R2'} ${b.dataset.preset}`);});
   function renderCurve(){
     for(const side of ['left','right']){
-      const svg=$(`.trigger-curve-svg[data-curve-side="${side}"]`),zones=profile().triggers[side].zoneForces,grid=svg.querySelector('.curve-grid');
+      const setting=profile().triggers[side],svg=$(`.trigger-curve-svg[data-curve-side="${side}"]`),zones=setting.zoneForces,grid=svg.querySelector('.curve-grid');
+      const active=setting.mode==='resistance'||setting.mode==='vibration';
       if(!grid.childElementCount){let g='';for(let i=0;i<=10;i++){const x=45+i*67;g+=`<line x1="${x}" y1="18" x2="${x}" y2="205" class="grid-line"/>`;}for(let i=0;i<=5;i++){const y=205-i*35;g+=`<line x1="45" y1="${y}" x2="715" y2="${y}" class="grid-line"/>`;}grid.innerHTML=g;}
       const xy=(v,i)=>`${78.5+i*67},${205-v*175}`;
       svg.querySelector('.curve-line').setAttribute('d',zones.map((v,i)=>(i?'L':'M')+xy(v,i)).join(' '));
       svg.querySelector('.curve-zone-steps').setAttribute('d',zones.map((v,i)=>`M${45+i*67},${205-v*175} L${45+(i+1)*67},${205-v*175}`).join(' '));
       svg.querySelector('.curve-points').innerHTML=zones.map((v,i)=>`<circle data-point="${i}" data-side="${side}" cx="${78.5+i*67}" cy="${205-v*175}" r="8" tabindex="0" aria-label="${side==='left'?'L2':'R2'} hardware zone ${i+1}, force ${Math.round(v*100)} percent"/>`).join('');
-      $(`[data-curve-card="${side}"]`).classList.toggle('is-selected',side===state.side);
+      const card=$(`[data-curve-card="${side}"]`);
+      card.classList.toggle('is-selected',side===state.side);
+      card.classList.toggle('is-mode-inactive',!active);
+      card.querySelector('.curve-card-heading span').textContent=active?'Drag the ten force points':setting.mode==='bow'?'Use Bow draw below':setting.mode==='weapon'?'Use Trigger break below':'Trigger effect off';
+      svg.querySelectorAll('[data-point]').forEach(point=>point.setAttribute('tabindex',active?'0':'-1'));
     }
+    $$('#curve-presets button').forEach(button=>button.disabled=!['resistance','vibration'].includes(trigger().mode));
     updatePlayhead();
   }
   function updatePlayhead(){
@@ -918,26 +1041,33 @@
       const x=45+(state.buttons[index]||0)*670,line=$(`.trigger-curve-svg[data-curve-side="${side}"] .curve-playhead`);
       line.setAttribute('x1',x);line.setAttribute('x2',x);
     }
+    updateBreakPull();
+  }
+  function updateBreakPull(){
+    const pull=clamp(state.buttons[state.side==='left'?6:7]||0)*100;
+    $('#break-preview-track').style.setProperty('--pull',`${pull}%`);
+    $('#break-pull-label').textContent=`Reported pull ${Math.round(pull)}%`;
+    if(zoneRun)renderZoneCalibration();
   }
   $$('.trigger-curve-svg').forEach(svg=>{
-    svg.addEventListener('pointerdown',e=>{const p=e.target.closest('[data-point]');if(!p)return;state.side=svg.dataset.curveSide;dragging={side:state.side,index:+p.dataset.point};renderTriggerControls();svg.setPointerCapture(e.pointerId);e.preventDefault();});
+    svg.addEventListener('pointerdown',e=>{const p=e.target.closest('[data-point]');if(!p||!['resistance','vibration'].includes(profile().triggers[svg.dataset.curveSide].mode))return;state.side=svg.dataset.curveSide;dragging={side:state.side,index:+p.dataset.point};renderTriggerControls();svg.setPointerCapture(e.pointerId);e.preventDefault();});
     svg.addEventListener('pointermove',e=>{if(!dragging||dragging.side!==svg.dataset.curveSide)return;const rect=svg.getBoundingClientRect(),svgY=(e.clientY-rect.top)*250/rect.height;profile().triggers[dragging.side].zoneForces[dragging.index]=Math.round(clamp((205-svgY)/175)*100)/100;renderCurve();});
     const finishCurve=()=>{if(dragging){dragging=null;saveProfiles();}};
     svg.addEventListener('pointerup',finishCurve);svg.addEventListener('pointercancel',finishCurve);
-    svg.addEventListener('keydown',e=>{const p=e.target.closest('[data-point]');if(!p||!['ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const side=svg.dataset.curveSide,i=+p.dataset.point,t=profile().triggers[side];state.side=side;t.zoneForces[i]=Math.round(clamp(t.zoneForces[i]+(e.key==='ArrowUp'?.02:-.02))*100)/100;renderTriggerControls();svg.querySelector(`[data-point="${i}"]`).focus();saveProfiles();});
+    svg.addEventListener('keydown',e=>{const p=e.target.closest('[data-point]');if(!p||!['ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const side=svg.dataset.curveSide,i=+p.dataset.point,t=profile().triggers[side];if(!['resistance','vibration'].includes(t.mode))return;state.side=side;t.zoneForces[i]=Math.round(clamp(t.zoneForces[i]+(e.key==='ArrowUp'?.02:-.02))*100)/100;renderTriggerControls();svg.querySelector(`[data-point="${i}"]`).focus();saveProfiles();});
   });
   $('#click-enabled').closest('.input-click-block').insertAdjacentHTML('afterbegin',`<div class="weapon-library"><h3>Weapon cues</h3><p>R2 creates a haptic recoil cue from your pull. Game events are needed for exact shot timing.</p><div class="weapon-preset-list"><button type="button" data-weapon-preset="pistol">Pistol</button><button type="button" data-weapon-preset="sniper">Sniper</button><button type="button" data-weapon-preset="burst">Burst</button><button type="button" data-weapon-preset="smg">SMG</button></div><label class="control-label" for="weapon-kind">Recoil pattern</label><select id="weapon-kind"><option value="click">Click</option><option value="pistol">Pistol</option><option value="sniper">Sniper</option><option value="burst">Three shot burst</option><option value="smg">Automatic</option></select><div id="weapon-rate-row" class="weapon-rate-row"><span>Rate</span><div class="weapon-rate-stepper"><button type="button" data-rate-step="-1" aria-label="Slower firing rate">−</button><b id="weapon-rate-value">10 shots/s</b><button type="button" data-rate-step="1" aria-label="Faster firing rate">+</button></div><small id="weapon-rate-gap">100 ms between shots</small></div></div>`);
   $('#click-enabled').closest('.input-click-block').querySelector(':scope > h3').textContent='R2 cue';
   $('#click-enabled').closest('.input-click-block').querySelector(':scope > p').textContent='The cue starts when R2 crosses the pull point. Release to rearm single shots.';
-  const weaponPresets={pistol:{kind:'pistol',threshold:.72,strength:62,rate:6,mode:'weapon',startZone:4,endZone:6},sniper:{kind:'sniper',threshold:.72,strength:100,rate:3,mode:'weapon',startZone:5,endZone:7},burst:{kind:'burst',threshold:.46,strength:82,rate:8,mode:'weapon',startZone:2,endZone:4},smg:{kind:'smg',threshold:.40,strength:82,triggerStrength:40,rate:12,mode:'resistance',curve:[0,0,.1,.2,.25,.28,.3,.3,.3,.3,.3]}};
-  $('.weapon-preset-list').addEventListener('click',e=>{const button=e.target.closest('[data-weapon-preset]');if(!button)return;const spec=weaponPresets[button.dataset.weaponPreset];if(!spec)return;profile().inputEffects={enabled:true,threshold:spec.threshold,strength:spec.strength,kind:spec.kind,rate:spec.rate};const t=profile().triggers.right;t.mode=spec.mode;t.strength=spec.triggerStrength??spec.strength;t.startZone=spec.startZone;t.endZone=spec.endZone;t.curve=clone(spec.curve??presets.Break);t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);state.side='right';renderTriggerControls();saveProfiles();toast(`${button.textContent} loaded · Apply to feel it`);});
+  const weaponPresets={pistol:{kind:'pistol',threshold:.72,strength:62,rate:6,mode:'weapon',startZone:4,endZone:6},sniper:{kind:'sniper',threshold:.90,strength:100,rate:3,mode:'bow',startZone:3,endZone:7,snapStrength:100,forceCap:8},burst:{kind:'burst',threshold:.46,strength:78,rate:5,mode:'off',triggerStrength:0},smg:{kind:'smg',threshold:.40,strength:82,triggerStrength:40,rate:12,mode:'resistance',curve:[0,0,.1,.2,.25,.28,.3,.3,.3,.3,.3]}};
+  $('.weapon-preset-list').addEventListener('click',async e=>{const button=e.target.closest('[data-weapon-preset]');if(!button)return;if(zoneRun)await stopZoneCalibration();const spec=weaponPresets[button.dataset.weaponPreset];if(!spec)return;profile().inputEffects={enabled:true,threshold:spec.threshold,strength:spec.strength,kind:spec.kind,rate:spec.rate};const t=profile().triggers.right;t.mode=spec.mode;t.strength=spec.triggerStrength??spec.strength;t.startZone=spec.startZone;t.endZone=spec.endZone;t.snapStrength=spec.snapStrength??t.snapStrength;t.forceCap=spec.forceCap??6;t.curve=clone(spec.curve??presets.Break);t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);state.side='right';renderTriggerControls();saveProfiles();toast(`${button.textContent} loaded · Apply to feel it`);});
   $('#weapon-kind').addEventListener('change',e=>{profile().inputEffects.kind=e.target.value;renderTriggerControls();saveProfiles();});
   $('#weapon-rate-row').addEventListener('click',e=>{const button=e.target.closest('[data-rate-step]');if(!button)return;profile().inputEffects.rate=clamp((profile().inputEffects.rate??10)+Number(button.dataset.rateStep),3,20);renderTriggerControls();saveProfiles();});
   $('#click-enabled').addEventListener('change',e=>{profile().inputEffects.enabled=e.target.checked;saveProfiles();});
   $('#click-threshold').addEventListener('input',e=>{profile().inputEffects.threshold=+e.target.value/100;$('#click-threshold-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
   $('#click-strength').addEventListener('input',e=>{profile().inputEffects.strength=+e.target.value;$('#click-strength-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
-  $('#apply-triggers').addEventListener('click',async()=>{const p=profile();if(await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right}))send({action:'setInputEffects',enabled:!!p.inputEffects.enabled,threshold:p.inputEffects.threshold,strength:p.inputEffects.strength,kind:p.inputEffects.kind||'click',rate:p.inputEffects.rate??10});});
-  $('#reset-effects').addEventListener('click',()=>send({action:'reset'}));
+  $('#apply-triggers').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration();const p=profile();if(await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right}))send({action:'setInputEffects',enabled:!!p.inputEffects.enabled,threshold:p.inputEffects.threshold,strength:p.inputEffects.strength,kind:p.inputEffects.kind||'click',rate:p.inputEffects.rate??10});});
+  $('#reset-effects').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration(false);send({action:'reset'});});
 
   function renderHapticControls(){
     const h=profile().haptics;
@@ -1003,7 +1133,7 @@
     $('#alert-timer-cancel').disabled=!state.connected||remaining<=0;
   }
   $('#alert-ping').addEventListener('click',()=>send({action:'playHaptic',shape:'sine',frequency:125,attack:5,release:160,strength:26,pan:0}));
-  $('#alert-ping').insertAdjacentHTML('afterend','<button id="speaker-chirp" class="quiet-action" type="button" disabled title="Play a short, quiet chirp through the controller speaker over USB">Speaker chirp · USB</button>');
+  $('#alert-ping').insertAdjacentHTML('afterend','<button id="speaker-chirp" class="quiet-action" type="button" disabled title="Play a test tone through the controller speaker over USB">Speaker test · USB</button>');
   $('.alert-body > div > p').textContent='Low battery and timer alerts tap the grips. Find my pad taps them now. Speaker chirp uses the controller speaker over USB. Reset, disconnect, or exit to stop alerts.';
   $('#speaker-chirp').addEventListener('click',()=>send({action:'playSpeakerChirp'}));
   let speakerSound=null,speakerDecoded=null,speakerTrackDuration=0,speakerClipDuration=0,speakerClipStart=0,speakerStartedAt=0,speakerPending=false;
@@ -1336,6 +1466,7 @@
   function setConnected(connected,name='',transport='',firmware='',path=''){
     const wasCalibrating=!!calibrationRun;
     state.connected=connected;state.name=name;state.transport=transport;state.path=connected?path:'';
+    if(!connected&&zoneRun)stopZoneCalibration(false);
     $('#side-dot').parentElement.classList.toggle('is-connected',connected);
     $('#side-state').textContent=connected?'Connected':'Searching';
     $('#top-transport').textContent=connected?transport:'No device';
@@ -1358,6 +1489,7 @@
     renderAlerts();renderBridge();
     renderStickButtons();
     renderCalibrationStatus();
+    renderZoneCalibration();
     if(!connected&&wasCalibrating){
       $('#calibration-step').textContent='Controller disconnected';
       $('#calibration-instruction').textContent='Reconnect and start the guide again. No incomplete ranges were saved.';
