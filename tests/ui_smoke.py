@@ -410,7 +410,7 @@ def main():
         page.locator("#apply-triggers").click()
         page.wait_for_function("window.sent.some(c=>c.action==='setInputEffects' && c.threshold===.78)")
         page.locator('[data-weapon-preset="sniper"]').click()
-        assert page.locator("#break-preload-number").input_value() == "25"
+        assert page.locator("#break-preload-number").input_value() == "15"
         assert page.locator("#trigger-force-step").input_value() == "8"
         page.locator("#break-preload-number").fill("30")
         page.locator("#break-preload-number").press("Tab")
@@ -422,11 +422,16 @@ def main():
         assert page.locator("#click-threshold-number").input_value() == "77"
         assert page.locator("#burst-spacing").input_value() == "251"
         assert page.locator("#burst-kick").input_value() == "95"
+        assert page.locator("#burst-kick-style").input_value() == "return"
         assert not page.locator("#weapon-rate-row").is_visible()
         page.locator("#burst-spacing").fill("252")
         page.locator("#burst-spacing").press("Tab")
         page.locator("#apply-triggers").click()
-        page.wait_for_function("window.sent.some(c=>c.action==='setInputEffects' && c.kind==='burst' && c.threshold===.77 && c.spacingMs===252 && c.kickMs===95)")
+        page.wait_for_function("window.sent.some(c=>c.action==='setInputEffects' && c.kind==='burst' && c.threshold===.77 && c.spacingMs===252 && c.kickMs===95 && c.kickStyle==='return')")
+        page.locator("#burst-kick-style").select_option("strike")
+        page.locator("#apply-triggers").click()
+        page.wait_for_function("window.sent.some(c=>c.action==='setInputEffects' && c.kind==='burst' && c.kickStyle==='strike')")
+        assert "motor cycle" in page.locator("#burst-style-help").inner_text().lower()
         page.locator("#burst-spacing").fill("50")
         page.locator("#burst-spacing").press("Tab")
         assert page.locator("#burst-kick").input_value() == "30"

@@ -161,6 +161,8 @@ struct InputEffectSettings {
     spacing_ms: u16,
     #[serde(default)]
     kick_ms: u16,
+    #[serde(default = "default_kick_style")]
+    kick_style: String,
 }
 fn default_click_threshold() -> f32 {
     0.82
@@ -174,6 +176,9 @@ fn default_weapon_kind() -> String {
 fn default_weapon_rate() -> u8 {
     10
 }
+fn default_kick_style() -> String {
+    "return".into()
+}
 impl Default for InputEffectSettings {
     fn default() -> Self {
         Self {
@@ -184,6 +189,7 @@ impl Default for InputEffectSettings {
             rate: default_weapon_rate(),
             spacing_ms: 0,
             kick_ms: 0,
+            kick_style: default_kick_style(),
         }
     }
 }
@@ -284,6 +290,10 @@ fn validate(data: Value) -> Result<Archive, String> {
         if !(0.2..=0.95).contains(&p.input_effects.threshold)
             || p.input_effects.strength > 100
             || !(3..=20).contains(&p.input_effects.rate)
+            || !matches!(
+                p.input_effects.kick_style.as_str(),
+                "return" | "strike" | "stop"
+            )
             || (p.input_effects.spacing_ms != 0
                 && !(50..=1000).contains(&p.input_effects.spacing_ms))
             || (p.input_effects.kick_ms != 0 && !(20..=250).contains(&p.input_effects.kick_ms))
@@ -460,18 +470,22 @@ mod tests {
         let mut value = sample_profile();
         value["profiles"][0]["inputEffects"] = serde_json::json!({
             "enabled":true,"kind":"burst","threshold":0.77,"strength":100,
-            "rate":4,"spacingMs":251,"kickMs":95
+            "rate":4,"spacingMs":251,"kickMs":95,"kickStyle":"return"
         });
         value["profiles"][0]["triggers"]["left"]["preloadStrength"] = 25.into();
         value["profiles"][0]["triggers"]["left"]["frequencyHz"] = 17.into();
         let saved = serde_json::to_value(validate(value.clone()).unwrap()).unwrap();
         assert_eq!(saved["profiles"][0]["inputEffects"]["spacingMs"], 251);
         assert_eq!(saved["profiles"][0]["inputEffects"]["kickMs"], 95);
+        assert_eq!(saved["profiles"][0]["inputEffects"]["kickStyle"], "return");
         assert_eq!(
             saved["profiles"][0]["triggers"]["left"]["preloadStrength"],
             25.0
         );
         assert_eq!(saved["profiles"][0]["triggers"]["left"]["frequencyHz"], 17);
+        value["profiles"][0]["inputEffects"]["kickStyle"] = "unknown".into();
+        assert!(validate(value.clone()).is_err());
+        value["profiles"][0]["inputEffects"]["kickStyle"] = "return".into();
         value["profiles"][0]["inputEffects"]["spacingMs"] = 100.into();
         assert!(validate(value).is_err());
     }
