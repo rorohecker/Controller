@@ -666,13 +666,13 @@
   $('#load-trigger-preset').addEventListener('click',()=>{const p=triggerPresets.find(p=>p.id===$('#trigger-library').value);if(!p)return;profile().triggers=clone(p.triggers);profile().inputEffects=clone(p.inputEffects);renderTriggerControls();saveProfiles();toast(`Loaded ${p.name}. Press Apply to use it.`);});
   $('#delete-trigger-preset').addEventListener('click',async()=>{const id=$('#trigger-library').value;if(!id)return;const used=state.profiles.some(p=>p.weaponBindings.some(b=>b.presetId===id));if(used){toast('Remove this preset’s weapon mappings before deleting it.');return;}const previous=triggerPresets.slice();triggerPresets=triggerPresets.filter(p=>p.id!==id);if(!await saveProfiles(true))triggerPresets=previous;renderGameProfiles();});
   async function applyGameRules(){
-    const p=profile(),active=!state.pcMode&&(!p.matchExe||matchesForeground(p));
+    const p=profile(),active=!state.pcMode&&!state.autoSuppressed&&(!p.matchExe||matchesForeground(p));
     const a=await send({action:'setGameActions',enabled:p.actionsEnabled&&active,rules:clone(p.actions)});
     const b=await send({action:'setGameLink',settings:{...p.gameLink,enabled:p.gameLink.enabled&&active}});
     return a&&b;
   }
   async function useWeapon(name,fromLink=false){
-    const p=profile();if(fromLink&&(!p.gameLink.enabled||p.matchExe&&!matchesForeground(p)))return;
+    const p=profile();if(fromLink&&(state.pcMode||state.autoSuppressed||!p.gameLink.enabled||p.matchExe&&!matchesForeground(p)))return;
     const match=p.weaponBindings.find(b=>b.weapon.toLowerCase()===name.toLowerCase()),preset=triggerPresets.find(t=>t.id===match?.presetId);
     if(!state.connected){toast('Connect a controller.');return;}
     const id=preset?.id||'';if(fromLink&&activeWeaponPreset===id)return;
@@ -709,7 +709,7 @@
   }
   $('#game-actions-enabled').addEventListener('change',e=>{profile().actionsEnabled=e.target.checked;saveProfiles();});
   $('#add-game-action').addEventListener('click',()=>{if(profile().actions.length>=24){toast('24 action limit.');return;}profile().actions.push({id:crypto.randomUUID(),name:'New action',source:'press',button:1,event:'dash',windowMs:280,cooldownMs:180,durationMs:120,haptic:{shape:'sine',frequency:85,strength:45,pan:0},leftTrigger:null,rightTrigger:null});saveProfiles();renderGameProfiles();});
-  $('#save-game-actions').addEventListener('click',async()=>{if(await saveProfiles(true)&&state.connected){await applyGameRules();toast('Game rules applied');}else if(!state.connected)toast('Saved. Connect a controller to apply.');});
+  $('#save-game-actions').addEventListener('click',async()=>{if(await saveProfiles(true)&&state.connected){state.autoSuppressed=false;await applyGameRules();toast('Game rules applied');}else if(!state.connected)toast('Saved. Connect a controller to apply.');});
   for(const id of ['game-link-enabled','game-link-format','game-link-port'])$('#'+id).addEventListener('change',()=>{profile().gameLink={enabled:$('#game-link-enabled').checked,format:$('#game-link-format').value,port:Number($('#game-link-port').value)};saveProfiles();});
   $('#add-weapon-binding').addEventListener('click',()=>{if(!triggerPresets.length){toast('Save a trigger preset on Triggers first.');return;}if(profile().weaponBindings.length>=100)return;let name='Weapon',i=1;while(profile().weaponBindings.some(b=>b.weapon===name))name=`Weapon ${++i}`;profile().weaponBindings.push({weapon:name,presetId:triggerPresets[0].id});saveProfiles();renderGameProfiles();});
   $('#apply-manual-weapon').addEventListener('click',()=>useWeapon($('#manual-weapon').value));
@@ -726,6 +726,7 @@
     if (!ok) return false;
     if (!await send(inputEffectCommand(p.inputEffects))) return false;
     activeWeaponPreset='';
+    if(announce)state.autoSuppressed=false;
     if(!await applyGameRules())return false;
     if (p.gyroAim) {
       if (!await send({

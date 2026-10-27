@@ -35,6 +35,13 @@ def main():
         assert page.evaluate("window.saved.profiles.find(p=>p.id===window.saved.activeId).weaponBindings[0].presetId") == preset_id
         page.evaluate("window.coreHandler({type:'gameEvent',weapon:'smg',events:['dash']})")
         page.wait_for_function("document.querySelector('#game-link-status').textContent.includes('My sniper')")
+        page.evaluate("window.coreHandler({type:'safetyReset'});window.coreHandler({type:'pcMode',enabled:false})")
+        page.wait_for_function("window.sent.filter(c=>c.action==='setGameActions').at(-1)?.enabled===false")
+        before=page.evaluate("window.sent.filter(c=>c.action==='applyTriggers').length")
+        page.evaluate("window.coreHandler({type:'gameEvent',weapon:'smg',events:[]})")
+        assert page.evaluate("window.sent.filter(c=>c.action==='applyTriggers').length") == before
+        page.locator('#save-game-actions').click()
+        page.wait_for_function("window.sent.filter(c=>c.action==='setGameActions').at(-1)?.enabled===true")
         page.locator('#export-profiles').click()
         page.wait_for_function("window.exported?.triggerPresets?.length===1")
         assert page.evaluate("window.exported.profiles.find(p=>p.id===window.exported.activeId).actions[0].name") == 'Roll'
