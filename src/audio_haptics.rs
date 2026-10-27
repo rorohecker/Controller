@@ -18,7 +18,7 @@ use cpal::{
 
 const RATE: u32 = 48_000;
 const QUEUE_FRAMES: usize = 960; // at most 20 ms buffered at 48 kHz
-const MAX_AMPLITUDE: f32 = 0.22;
+const MAX_AMPLITUDE: f32 = 0.32;
 const SPEAKER_CHIRP_SECONDS: f32 = 0.8;
 const MAX_SPEAKER_SAMPLES: usize = RATE as usize * 3;
 
@@ -29,6 +29,22 @@ struct SpeakerPcm {
     speaker: bool,
     grips: Option<Vec<f32>>,
     grip_filter: GripFilter,
+    paused_at: Option<u64>,
+}
+
+impl SpeakerPcm {
+    fn position(&self, frame: u64) -> usize {
+        self.paused_at
+            .unwrap_or(frame)
+            .saturating_sub(self.start_frame) as usize
+    }
+}
+
+pub struct SpeakerPlayback {
+    pub paused: bool,
+    pub position: f32,
+    pub remaining: f32,
+    pub speaker: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -411,6 +427,7 @@ impl AudioEngine {
             speaker: route != "grips",
             grips,
             grip_filter,
+            paused_at: None,
         });
         Ok(self.endpoint.as_deref().unwrap_or("DualSense"))
     }
@@ -419,6 +436,24 @@ impl AudioEngine {
         if let Ok(mut current) = self.shared.speaker_pcm.lock() {
             *current = None;
         }
+    }
+
+    pub fn pause_speaker_pcm(&mut self, paused: bool) -> Result<SpeakerPlayback, String> {
+        let mut current = self.shared.speaker_pcm.lock().map_err(|e| e.to_string())?;
+        let sound = current.as_mut().ok_or("No track is playing.")?;
+        let frame = self.shared.rendered_frames.load(Ordering::Relaxed);
+        if paused && sound.paused_at.is_none() {
+            sound.paused_at = Some(frame);
+        } else if !paused && let Some(at) = sound.paused_at.take() {
+            sound.start_frame += frame.saturating_sub(at);
+        }
+        let position = sound.position(frame).min(sound.samples.len());
+        Ok(SpeakerPlayback {
+            paused,
+            position: position as f32 / RATE as f32,
+            remaining: (sound.samples.len() - position) as f32 / RATE as f32,
+            speaker: sound.speaker,
+        })
     }
 
     pub fn set_bridge(&mut self, enabled: bool, gain: f32, preset: &str) -> Result<String, String> {
@@ -585,6 +620,7 @@ struct GripFilter {
     previous_low: f32,
     high: f32,
     energy: f32,
+    treble_energy: f32,
     phase: f32,
 }
 
@@ -600,9 +636,15 @@ impl GripFilter {
                 self.high = hp_alpha * (self.high + self.low - self.previous_low);
                 self.previous_low = self.low;
                 self.energy += 0.002 * (x * x - self.energy);
-                self.phase = (self.phase + std::f32::consts::TAU * 85.0 / RATE as f32)
+                let treble = x - self.low;
+                self.treble_energy += 0.002 * (treble * treble - self.treble_energy);
+                let high_ratio = (self.treble_energy / (self.energy + 0.0001)).clamp(0.0, 1.0);
+                self.phase = (self.phase
+                    + std::f32::consts::TAU * (85.0 + 85.0 * high_ratio) / RATE as f32)
                     % std::f32::consts::TAU;
-                (self.high * 3.0 + self.phase.sin() * self.energy.sqrt() * 0.45).clamp(-1.0, 1.0)
+                let carrier = self.phase.sin()
+                    * (self.energy.sqrt() * 0.75 + self.treble_energy.sqrt() * 1.2);
+                (self.high * 3.0 + carrier).clamp(-1.0, 1.0)
             })
             .collect()
     }
@@ -620,7 +662,7 @@ fn record_audio_error(shared: &Shared, error: cpal::Error, route: &str) {
 fn soft_limit(value: f32, duty: &mut f32) -> f32 {
     let bounded = (value * 1.5).tanh() * MAX_AMPLITUDE;
     *duty = *duty * 0.99998 + bounded.abs() * 0.00002;
-    let thermal = if *duty > 0.11 { 0.11 / *duty } else { 1.0 };
+    let thermal = if *duty > 0.16 { 0.16 / *duty } else { 1.0 };
     (bounded * thermal).clamp(-MAX_AMPLITUDE, MAX_AMPLITUDE)
 }
 
@@ -637,7 +679,10 @@ fn fill_frames(
     let mut ring_guard = shared.bridge.try_lock().ok();
     let clip = clip_guard.as_ref().and_then(|guard| **guard);
     let speaker = speaker_guard.as_ref().and_then(|guard| **guard);
-    let pcm = pcm_guard.as_ref().and_then(|guard| guard.as_ref());
+    let pcm = pcm_guard
+        .as_ref()
+        .and_then(|guard| guard.as_ref())
+        .filter(|sound| sound.paused_at.is_none());
     let bridge_on = shared.bridge_on.load(Ordering::Relaxed);
     let mut speaker_frames = 0u64;
     let mut grip_frames = 0u64;
@@ -970,6 +1015,7 @@ mod tests {
             speaker: true,
             grips: None,
             grip_filter: GripFilter::default(),
+            paused_at: None,
         });
         let mut frames = [0.0f32; 4096];
         render_output(&mut frames, &shared, &mut 0, &mut 0.0);
@@ -986,24 +1032,47 @@ mod tests {
         );
     }
     #[test]
-    fn grip_audio_filters_high_pitch_before_output() {
-        let bass: Vec<i16> = (0..4800)
-            .map(|i| {
-                ((i as f32 * std::f32::consts::TAU * 100.0 / RATE as f32).sin() * 20_000.0) as i16
-            })
-            .collect();
+    fn pause_is_silent_and_resume_continues_at_the_same_sample() {
+        let mut engine = AudioEngine::default();
+        *engine.shared.speaker_pcm.lock().unwrap() = Some(SpeakerPcm {
+            start_frame: 0,
+            samples: (0..6000).map(|n| n as i16).collect(),
+            speaker: true,
+            grips: None,
+            grip_filter: GripFilter::default(),
+            paused_at: None,
+        });
+        engine.shared.rendered_frames.store(100, Ordering::Relaxed);
+        let paused = engine.pause_speaker_pcm(true).unwrap();
+        let mut silent = [1.0f32; 64];
+        render_output(&mut silent, &engine.shared, &mut 100, &mut 0.0);
+        assert!(silent.iter().all(|sample| *sample == 0.0));
+        engine.shared.rendered_frames.store(2100, Ordering::Relaxed);
+        let resumed = engine.pause_speaker_pcm(false).unwrap();
+        assert_eq!(paused.position, resumed.position);
+        let mut output = [0.0f32; 64];
+        render_output(&mut output, &engine.shared, &mut 2100, &mut 0.0);
+        assert!((output[0] - 100.0 / i16::MAX as f32 * 0.35).abs() < 0.000001);
+    }
+    #[test]
+    fn grip_audio_maps_high_notes_into_the_tactile_band() {
         let treble: Vec<i16> = (0..4800)
             .map(|i| {
                 ((i as f32 * std::f32::consts::TAU * 3000.0 / RATE as f32).sin() * 20_000.0) as i16
             })
             .collect();
-        let rms = |samples: Vec<f32>| {
-            (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
+        let samples = GripFilter::default().process(&treble);
+        let energy = |hz: f32| {
+            let (mut real, mut imaginary) = (0.0f32, 0.0f32);
+            for (i, sample) in samples.iter().enumerate().skip(960) {
+                let phase = i as f32 * std::f32::consts::TAU * hz / RATE as f32;
+                real += sample * phase.cos();
+                imaginary += sample * phase.sin();
+            }
+            real.hypot(imaginary)
         };
-        assert!(
-            rms(GripFilter::default().process(&bass))
-                > rms(GripFilter::default().process(&treble)) * 3.0
-        );
+        assert!(energy(170.0) > energy(3000.0) * 3.0);
+        assert!(samples.iter().any(|sample| sample.abs() > 0.5));
     }
     #[test]
     fn grip_filter_keeps_its_phase_between_file_chunks() {

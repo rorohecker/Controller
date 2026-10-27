@@ -36,10 +36,18 @@ pub struct TriggerSetting {
     pub snap_strength: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub force_cap: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub release_point: Option<f32>,
 }
 
 impl TriggerSetting {
     pub fn validate(&self) -> Result<(), &'static str> {
+        if self
+            .release_point
+            .is_some_and(|point| !point.is_finite() || !(0.1..=1.0).contains(&point))
+        {
+            return Err("Bow release point must be between 10 and 100 percent");
+        }
         if !matches!(
             self.mode.as_str(),
             "off" | "resistance" | "weapon" | "vibration" | "bow"

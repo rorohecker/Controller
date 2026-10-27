@@ -120,6 +120,9 @@ pub enum DeviceCommand {
         append: bool,
     },
     StopSpeakerSound,
+    SetSpeakerPaused {
+        paused: bool,
+    },
     SetAudioBridge {
         enabled: bool,
         gain: f32,
@@ -270,8 +273,6 @@ struct Connected {
     last_rumble: Option<[u8; 2]>,
     input_effect: Option<InputEffect>,
     input_effect_until: Option<Instant>,
-    input_kick: Option<(Instant, [u8; 11])>,
-    sniper_spent: bool,
     bows: [Option<BowReturn>; 2],
     low_battery_alert: bool,
     low_battery_latched: bool,
@@ -284,14 +285,23 @@ struct InputEffect {
     kind: WeaponKind,
     rate: u8,
     armed: bool,
-    remaining: u8,
     next_pulse: Option<Instant>,
 }
 
-#[derive(Default)]
 struct BowReturn {
     peak: f32,
     unloaded: bool,
+    high_point: f32,
+}
+
+impl Default for BowReturn {
+    fn default() -> Self {
+        Self {
+            peak: 0.0,
+            unloaded: false,
+            high_point: 0.95,
+        }
+    }
 }
 
 impl BowReturn {
@@ -304,7 +314,7 @@ impl BowReturn {
             }
         } else {
             self.peak = self.peak.max(pull);
-            if self.peak > 0.12 && pull < self.peak - 0.035 {
+            if pull >= self.high_point || (self.peak > 0.12 && pull < self.peak - 0.035) {
                 self.unloaded = true;
                 return Some(true);
             }
@@ -330,7 +340,7 @@ fn encode_live_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static st
                 } else if zone <= end {
                     0.25 + 0.75 * (zone - start + 1) as f32 / (end - start + 1) as f32
                 } else {
-                    (setting.snap_strength.unwrap_or(55.0) / setting.strength.max(1.0)).min(1.0)
+                    0.0
                 }
             })
             .collect(),
@@ -355,15 +365,13 @@ impl InputEffect {
         let first = self.armed && right_pull >= self.threshold;
         if first {
             self.armed = false;
-            self.remaining = if self.kind == WeaponKind::Burst { 2 } else { 0 };
             self.next_pulse = Some(now + interval);
             return true;
         }
         let repeat = self.next_pulse.is_some_and(|at| now >= at)
-            && (self.remaining > 0
-                || (self.kind == WeaponKind::Smg && right_pull >= self.threshold));
+            && self.kind == WeaponKind::Smg
+            && right_pull >= self.threshold;
         if repeat {
-            self.remaining = self.remaining.saturating_sub(1);
             self.next_pulse = Some(now + interval);
         }
         repeat
@@ -520,8 +528,6 @@ impl Connected {
         }
         self.input_effect = None;
         self.input_effect_until = None;
-        self.input_kick = None;
-        self.sniper_spent = false;
         self.bows = [None, None];
         self.low_battery_alert = false;
         self.low_battery_latched = false;
@@ -608,11 +614,7 @@ impl Connected {
             ..TriggerSetting::default()
         })
         .unwrap();
-        let right = if self.sniper_spent {
-            off
-        } else {
-            self.last_trigger.map(|(_, right)| right).unwrap_or(off)
-        };
+        let right = self.last_trigger.map(|(_, right)| right).unwrap_or(off);
         self.write(protocol::usb_report(
             0x04,
             0,
@@ -624,7 +626,6 @@ impl Connected {
             false,
         ))?;
         self.input_effect_until = None;
-        self.input_kick = None;
         self.trigger_active = self
             .last_trigger
             .is_some_and(|(l, r)| l[0] != 0x05 || r[0] != 0x05);
@@ -632,21 +633,6 @@ impl Connected {
     }
 
     fn update_input_effect(&mut self, right_pull: f32) -> Result<(), String> {
-        if self.sniper_spent && right_pull < 0.15 && self.input_effect_until.is_none() {
-            self.sniper_spent = false;
-            if let Some((_, right)) = self.last_trigger {
-                self.write(protocol::usb_report(
-                    0x04,
-                    0,
-                    0,
-                    Some(right),
-                    None,
-                    None,
-                    None,
-                    false,
-                ))?;
-            }
-        }
         if self.input_effect_until.is_some_and(|t| Instant::now() >= t) {
             self.restore_input_effect()?;
         }
@@ -659,6 +645,7 @@ impl Connected {
         let kind = effect.kind;
         let threshold = effect.threshold;
         let strength = effect.strength;
+        let rate = effect.rate;
         if self.input_effect_until.is_some() {
             self.restore_input_effect()?;
         }
@@ -673,8 +660,8 @@ impl Connected {
             let zone = ((threshold * 10.0).round() as usize).clamp(2, 7);
             curve[zone + 1..].fill(1.0);
         }
-        let click = protocol::encode_trigger(&TriggerSetting {
-            mode: if kind == WeaponKind::Smg {
+        let mut click = protocol::encode_trigger(&TriggerSetting {
+            mode: if matches!(kind, WeaponKind::Smg | WeaponKind::Burst) {
                 "vibration"
             } else if full_travel {
                 "resistance"
@@ -690,40 +677,32 @@ impl Connected {
             ..TriggerSetting::default()
         })
         .map_err(str::to_string)?;
-        let mechanical_kick = matches!(kind, WeaponKind::Sniper | WeaponKind::Burst);
-        let immediate = if mechanical_kick {
-            [0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-        } else {
-            click
-        };
+        if kind == WeaponKind::Burst {
+            // 0x26 runs complete trigger strokes at this rate; keep one train alive for three periods.
+            click[9] = rate;
+        }
         self.write(protocol::usb_report(
             0x04,
             0,
             0,
-            Some(immediate),
+            Some(click),
             None,
             None,
             None,
             false,
         ))?;
         self.trigger_active = true;
-        if mechanical_kick {
-            self.input_kick = Some((Instant::now() + Duration::from_millis(16), click));
-        }
-        if kind == WeaponKind::Sniper {
-            self.sniper_spent = true;
-        }
         self.input_effect_until = Some(
             Instant::now()
                 + Duration::from_millis(match kind {
-                    WeaponKind::Sniper => 105,
-                    WeaponKind::Burst => 90,
+                    WeaponKind::Sniper => 120,
+                    WeaponKind::Burst => 3000 / u64::from(rate.max(1)),
                     WeaponKind::Smg => 65,
                     _ => 65,
                 }),
         );
         let (shape, frequency, attack, release, power, pan) = kind.cue(strength);
-        if !mechanical_kick {
+        if !matches!(kind, WeaponKind::Sniper | WeaponKind::Burst) {
             self.play_feedback(shape, frequency, attack, release, power, pan);
         }
         Ok(())
@@ -888,8 +867,6 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     last_rumble: None,
                     input_effect: None,
                     input_effect_until: None,
-                    input_kick: None,
-                    sniper_spent: false,
                     bows: [None, None],
                     low_battery_alert: false,
                     low_battery_latched: false,
@@ -1465,6 +1442,7 @@ fn handle_command(
     let result: Result<&str, String> = match command {
         DeviceCommand::ApplyTriggers { left, right } => {
             let bow_sides = [left.mode == "bow", right.mode == "bow"];
+            let high_points = [&left,&right].map(|t| t.release_point.unwrap_or((f32::from(t.end_zone.unwrap_or(9))/10.0).clamp(0.2,0.97)));
             match (encode_live_trigger(&left), encode_live_trigger(&right)) {
                 (Ok(left), Ok(right)) => {
                     let active = left[0] != 0x05 || right[0] != 0x05;
@@ -1487,9 +1465,7 @@ fn handle_command(
                     result.map(|_| {
                         device.last_trigger = Some((left, right));
                         device.input_effect_until = None;
-                        device.input_kick = None;
-                        device.sniper_spent = false;
-                        device.bows = bow_sides.map(|bow| bow.then(BowReturn::default));
+                        device.bows = std::array::from_fn(|i| bow_sides[i].then(|| BowReturn {high_point:high_points[i],..BowReturn::default()}));
                         if bow_sides[1] { device.input_effect = None; }
                         device.trigger_active = active;
                         device.trigger_until =
@@ -1789,6 +1765,13 @@ fn handle_command(
                 Ok("Controller audio stopped")
             }
         }
+        DeviceCommand::SetSpeakerPaused { paused } => {
+            device.audio.pause_speaker_pcm(paused).map(|playback| {
+                device.speaker_route_until = (!playback.paused && playback.speaker).then(|| Instant::now() + Duration::from_secs_f32(playback.remaining + 1.0));
+                emit(proxy,json!({"type":"speakerStatus","source":"transport","paused":playback.paused,"position":playback.position,"message":if paused {"Paused"} else {"Playing"}}));
+                if paused { "Controller audio paused" } else { "Controller audio resumed" }
+            })
+        }
         DeviceCommand::SetAudioBridge {
             enabled,
             gain,
@@ -1834,7 +1817,7 @@ fn handle_command(
             } else {
                 let enabled = enabled && device.bows[1].is_none();
                 device.restore_input_effect().map(|_| {
-                    device.input_effect = enabled.then_some(InputEffect {threshold,strength,kind:WeaponKind::parse(&kind).unwrap(),rate,armed:true,remaining:0,next_pulse:None});
+                    device.input_effect = enabled.then_some(InputEffect {threshold,strength,kind:WeaponKind::parse(&kind).unwrap(),rate,armed:true,next_pulse:None});
                     emit(proxy, json!({"type":"inputEffects","enabled":enabled,"threshold":threshold,"strength":strength,"kind":kind,"rate":rate}));
                     if enabled {"Weapon cue armed"} else {"Weapon cue off"}
                 })
@@ -2271,24 +2254,6 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 );
             }
             if connected
-                .input_kick
-                .as_ref()
-                .is_some_and(|(at, _)| Instant::now() >= *at)
-                && let Some((_, kick)) = connected.input_kick.take()
-                && let Err(error) = connected.write(protocol::usb_report(
-                    0x04,
-                    0,
-                    0,
-                    Some(kick),
-                    None,
-                    None,
-                    None,
-                    false,
-                ))
-            {
-                emit(&proxy, json!({"type":"error","message":error}));
-            }
-            if connected
                 .input_effect_until
                 .is_some_and(|t| Instant::now() >= t)
                 && let Err(error) = connected.restore_input_effect()
@@ -2313,7 +2278,6 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     connected.trigger_until = None;
                     connected.last_trigger = None;
                     connected.bows = [None, None];
-                    connected.input_kick = None;
                     emit(
                         &proxy,
                         json!({"type":"triggerLease","active":false,"durationMs":0}),
@@ -2586,10 +2550,11 @@ mod tests {
     #[test]
     fn bow_unloads_on_return_and_rearms_at_rest() {
         let mut bow = BowReturn::default();
-        for pull in [0.0, 0.2, 0.6, 0.98, 0.96] {
+        for pull in [0.0, 0.2, 0.6, 0.94] {
             assert_eq!(bow.update(pull), None);
         }
-        assert_eq!(bow.update(0.9), Some(true));
+        assert_eq!(bow.update(0.96), Some(true));
+        assert_eq!(bow.update(0.98), None);
         assert_eq!(bow.update(0.3), None);
         assert_eq!(bow.update(0.02), Some(false));
         assert_eq!(bow.update(0.5), None);
@@ -2618,7 +2583,6 @@ mod tests {
             kind: WeaponKind::Sniper,
             rate: 3,
             armed: true,
-            remaining: 0,
             next_pulse: None,
         };
         assert!(effect.advance(now, 0.9));
@@ -2636,7 +2600,7 @@ mod tests {
     }
 
     #[test]
-    fn burst_fires_three_separate_kicks_and_smg_stops_on_release() {
+    fn burst_does_not_restart_its_native_train_and_smg_stops_on_release() {
         let now = Instant::now();
         let mut burst = InputEffect {
             threshold: 0.6,
@@ -2644,7 +2608,6 @@ mod tests {
             kind: WeaponKind::Burst,
             rate: 6,
             armed: true,
-            remaining: 0,
             next_pulse: None,
         };
         assert!(burst.advance(now, 0.7));
@@ -2652,16 +2615,15 @@ mod tests {
         assert!(u64::from(attack + release) < 1000 / 6);
         assert!(!burst.advance(now + Duration::from_millis(90), 0.7));
         assert!(!burst.advance(now + Duration::from_millis(166), 0.7));
-        assert!(burst.advance(now + Duration::from_millis(167), 0.7));
+        assert!(!burst.advance(now + Duration::from_millis(167), 0.7));
         assert!(!burst.advance(now + Duration::from_millis(300), 0.7));
-        assert!(burst.advance(now + Duration::from_millis(334), 0.7));
+        assert!(!burst.advance(now + Duration::from_millis(334), 0.7));
         assert!(!burst.advance(now + Duration::from_millis(500), 0.7));
         let mut smg = InputEffect {
             kind: WeaponKind::Smg,
             ..burst
         };
         smg.armed = true;
-        smg.remaining = 0;
         smg.next_pulse = None;
         assert!(smg.advance(now, 0.7));
         assert!(smg.advance(now + Duration::from_millis(167), 0.7));

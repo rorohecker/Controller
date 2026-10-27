@@ -868,6 +868,8 @@
     $('#trigger-strength').value=t.strength;renderTriggerStrength(t);fillRange($('#trigger-strength'));renderCurve();
     renderBreakControls(t);
     const c=profile().inputEffects||defaultInputEffects();
+    $('.input-click-block > h3').textContent='Trigger response';
+    $('.input-click-block > p').textContent=profile().triggers.right.mode==='bow'?'Draw tension clears at the high point. Release R2 fully to reset.':c.kind==='burst'?'Hold R2 past the pull point for three kicks. Release fully to rearm.':c.kind==='sniper'?'Full-force firing stop. Push through the break, then release to reset.':'Pull R2 past the selected point for recoil feedback. Release to rearm.';
     $('#click-enabled').checked=!!c.enabled;
     $('#weapon-kind').value=c.kind||'click';
     $('#weapon-rate-value').textContent=`${c.rate??10} shots/s`;
@@ -908,7 +910,8 @@
     $('#break-snap-value').textContent=`${snapLevel} / ${cap}`;
     $$('#break-start,#break-end').forEach(input=>input.disabled=!positioned);
     $('#break-snap').disabled=t.mode!=='bow';
-    $('#break-snap-control').hidden=t.mode!=='bow';
+    $('#break-snap-control').hidden=true;
+    $('label[for="break-end"]').firstChild.textContent=t.mode==='bow'?'Tension clears at ':'Break point ';
     $('#break-title').textContent=t.mode==='bow'?'Bow draw':'Trigger break';
     $('#break-guide').textContent=positioned
       ?measured?`Measured pull: start near ${Math.round(map[t.startZone]*100)}%, break near ${Math.round(map[t.endZone]*100)}%.`:'Motor zones are not equal parts of trigger travel. Measure them below to align the marker.'
@@ -1059,14 +1062,14 @@
   $('#click-enabled').closest('.input-click-block').insertAdjacentHTML('afterbegin',`<div class="weapon-library"><h3>Weapon cues</h3><p>R2 creates a haptic recoil cue from your pull. Game events are needed for exact shot timing.</p><div class="weapon-preset-list"><button type="button" data-weapon-preset="pistol">Pistol</button><button type="button" data-weapon-preset="sniper">Sniper</button><button type="button" data-weapon-preset="burst">Burst</button><button type="button" data-weapon-preset="smg">SMG</button></div><label class="control-label" for="weapon-kind">Recoil pattern</label><select id="weapon-kind"><option value="click">Click</option><option value="pistol">Pistol</option><option value="sniper">Sniper</option><option value="burst">Three shot burst</option><option value="smg">Automatic</option></select><div id="weapon-rate-row" class="weapon-rate-row"><span>Rate</span><div class="weapon-rate-stepper"><button type="button" data-rate-step="-1" aria-label="Slower firing rate">−</button><b id="weapon-rate-value">10 shots/s</b><button type="button" data-rate-step="1" aria-label="Faster firing rate">+</button></div><small id="weapon-rate-gap">100 ms between shots</small></div></div>`);
   $('#click-enabled').closest('.input-click-block').querySelector(':scope > h3').textContent='R2 cue';
   $('#click-enabled').closest('.input-click-block').querySelector(':scope > p').textContent='The cue starts when R2 crosses the pull point. Release to rearm single shots.';
-  const weaponPresets={pistol:{kind:'pistol',threshold:.72,strength:62,rate:6,mode:'weapon',startZone:4,endZone:6},sniper:{kind:'sniper',threshold:.84,strength:100,triggerStrength:34,rate:3,mode:'weapon',forceCap:8,startZone:5,endZone:6},burst:{kind:'burst',threshold:.46,strength:100,rate:4,mode:'off',triggerStrength:0,forceCap:8},smg:{kind:'smg',threshold:.40,strength:82,triggerStrength:40,rate:12,mode:'resistance',curve:[0,0,.1,.2,.25,.28,.3,.3,.3,.3,.3]}};
-  $('.weapon-preset-list').addEventListener('click',async e=>{const button=e.target.closest('[data-weapon-preset]');if(!button)return;if(zoneRun)await stopZoneCalibration();const spec=weaponPresets[button.dataset.weaponPreset];if(!spec)return;profile().inputEffects={enabled:true,threshold:spec.threshold,strength:spec.strength,kind:spec.kind,rate:spec.rate};const t=profile().triggers.right;t.mode=spec.mode;t.strength=spec.triggerStrength??spec.strength;t.startZone=spec.startZone;t.endZone=spec.endZone;t.snapStrength=spec.snapStrength??t.snapStrength;t.forceCap=spec.forceCap??6;t.curve=clone(spec.curve??presets.Break);t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);state.side='right';renderTriggerControls();saveProfiles();toast(`${button.textContent} loaded · Apply to feel it`);});
+  const weaponPresets={pistol:{kind:'pistol',threshold:.72,strength:62,rate:6,mode:'weapon',startZone:4,endZone:6},sniper:{kind:'sniper',threshold:.84,strength:100,triggerStrength:100,inputEnabled:false,rate:3,mode:'weapon',forceCap:8,startZone:5,endZone:6},burst:{kind:'burst',threshold:.46,strength:100,rate:4,mode:'off',triggerStrength:0,forceCap:8},smg:{kind:'smg',threshold:.40,strength:82,triggerStrength:40,rate:12,mode:'resistance',curve:[0,0,.1,.2,.25,.28,.3,.3,.3,.3,.3]}};
+  $('.weapon-preset-list').addEventListener('click',async e=>{const button=e.target.closest('[data-weapon-preset]');if(!button)return;if(zoneRun)await stopZoneCalibration();const spec=weaponPresets[button.dataset.weaponPreset];if(!spec)return;profile().inputEffects={enabled:spec.inputEnabled??true,threshold:spec.threshold,strength:spec.strength,kind:spec.kind,rate:spec.rate};const t=profile().triggers.right;t.mode=spec.mode;t.strength=spec.triggerStrength??spec.strength;t.startZone=spec.startZone;t.endZone=spec.endZone;t.snapStrength=spec.snapStrength??t.snapStrength;t.forceCap=spec.forceCap??6;t.curve=clone(spec.curve??presets.Break);t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);state.side='right';renderTriggerControls();saveProfiles();toast(`${button.textContent} loaded · Apply to feel it`);});
   $('#weapon-kind').addEventListener('change',e=>{profile().inputEffects.kind=e.target.value;renderTriggerControls();saveProfiles();});
   $('#weapon-rate-row').addEventListener('click',e=>{const button=e.target.closest('[data-rate-step]');if(!button)return;profile().inputEffects.rate=clamp((profile().inputEffects.rate??10)+Number(button.dataset.rateStep),3,20);renderTriggerControls();saveProfiles();});
   $('#click-enabled').addEventListener('change',e=>{profile().inputEffects.enabled=e.target.checked;saveProfiles();});
   $('#click-threshold').addEventListener('input',e=>{profile().inputEffects.threshold=+e.target.value/100;$('#click-threshold-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
   $('#click-strength').addEventListener('input',e=>{profile().inputEffects.strength=+e.target.value;$('#click-strength-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
-  $('#apply-triggers').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration();const p=profile();if(await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right}))send({action:'setInputEffects',enabled:!!p.inputEffects.enabled,threshold:p.inputEffects.threshold,strength:p.inputEffects.strength,kind:p.inputEffects.kind||'click',rate:p.inputEffects.rate??10});});
+  $('#apply-triggers').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration();const p=profile();for(const side of ['left','right']){const t=p.triggers[side],map=motorZones[side];if(t.mode==='bow')t.releasePoint=validMotorZones(map)?map[t.endZone??9]:clamp((t.endZone??9)/10,.2,.97);}if(await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right}))send({action:'setInputEffects',enabled:!!p.inputEffects.enabled,threshold:p.inputEffects.threshold,strength:p.inputEffects.strength,kind:p.inputEffects.kind||'click',rate:p.inputEffects.rate??10});});
   $('#reset-effects').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration(false);send({action:'reset'});});
 
   function renderHapticControls(){
@@ -1135,8 +1138,9 @@
   $('#alert-ping').addEventListener('click',()=>send({action:'playHaptic',shape:'sine',frequency:125,attack:5,release:160,strength:26,pan:0}));
   $('#alert-ping').insertAdjacentHTML('afterend','<button id="speaker-chirp" class="quiet-action" type="button" disabled title="Play a test tone through the controller speaker over USB">Speaker test · USB</button>');
   $('.alert-body > div > p').textContent='Low battery and timer alerts tap the grips. Find my pad taps them now. Speaker chirp uses the controller speaker over USB. Reset, disconnect, or exit to stop alerts.';
-  let speakerSound=null,speakerDecoded=null,speakerTrackDuration=0,speakerClipDuration=0,speakerClipStart=0,speakerStartedAt=0,speakerPending=false,speakerNextChunkStart=0,speakerChunkPending=false,speakerRoute='speaker',speakerScale=1,speakerGeneration=0;
-  function stopSpeakerPlayback(){speakerGeneration++;speakerStartedAt=0;speakerPending=false;speakerChunkPending=false;$('#speaker-start').disabled=!speakerDecoded;$('#speaker-file-stop').disabled=true;send({action:'stopSpeakerSound'});}
+  let speakerSound=null,speakerDecoded=null,speakerTrackDuration=0,speakerClipDuration=0,speakerClipStart=0,speakerStartedAt=0,speakerPending=false,speakerNextChunkStart=0,speakerChunkPending=false,speakerRoute='speaker',speakerScale=1,speakerGeneration=0,speakerPaused=false,speakerElapsed=0;
+  function renderSpeakerTransport(){const button=$('#speaker-file-play');button.textContent=speakerPending?'Starting…':speakerStartedAt?'Pause':speakerPaused?'Resume':'Play';button.disabled=speakerPending||!speakerDecoded||!state.connected||state.transport!=='USB';}
+  function stopSpeakerPlayback(){speakerGeneration++;speakerStartedAt=0;speakerPending=false;speakerChunkPending=false;speakerPaused=false;speakerElapsed=0;$('#speaker-start').disabled=!speakerDecoded;$('#speaker-file-stop').disabled=true;renderSpeakerTransport();send({action:'stopSpeakerSound'});}
   async function testSpeaker(){stopSpeakerPlayback();$('#speaker-file-status').textContent='Playing speaker test';await send({action:'playSpeakerChirp'});}
   $('#speaker-chirp').addEventListener('click',testSpeaker);
   $('#speaker-panel-test').addEventListener('click',testSpeaker);
@@ -1145,13 +1149,15 @@
   $('#controller-mic').addEventListener('click',()=>send({action:'setMicrophoneMute',enabled:!controllerMicMuted}));
   const soundTime=seconds=>`${Math.floor(seconds/60)}:${String(Math.floor(seconds%60)).padStart(2,'0')}`;
   function renderSpeakerProgress(now=performance.now()){
-    const elapsed=speakerStartedAt?Math.min(speakerClipDuration,(now-speakerStartedAt)/1000):0;
+    const elapsed=Math.min(speakerClipDuration,speakerElapsed+(speakerStartedAt?(now-speakerStartedAt)/1000:0));
     const position=speakerClipStart+elapsed;
     $('#speaker-time').textContent=`${soundTime(position)} / ${soundTime(speakerTrackDuration)}`;
     $('#speaker-progress').max=Math.max(speakerTrackDuration,1);
     $('#speaker-progress').value=position;
+    if(document.activeElement!==$('#speaker-start')){$('#speaker-start').value=String(position);$('#speaker-start-value').textContent=soundTime(position);}
     if(speakerStartedAt&&elapsed>=speakerClipDuration){speakerStartedAt=0;$('#speaker-start').disabled=+$('#speaker-start').max<=0;$('#speaker-file-stop').disabled=true;$('#speaker-file-status').textContent='Finished';}
     else if(speakerStartedAt&&speakerNextChunkStart<speakerTrackDuration&&position>=speakerNextChunkStart-6)queueSpeakerChunk();
+    renderSpeakerTransport();
   }
   function prepareSpeakerSound(){
     if(!speakerDecoded)return;
@@ -1216,10 +1222,10 @@
     }catch(error){$('#speaker-file-status').textContent=`Could not read sound: ${error.message}`;}
   });
   $('#speaker-start').addEventListener('input',e=>{$('#speaker-start-value').textContent=soundTime(+e.target.value);});
-  $('#speaker-start').addEventListener('change',e=>{if(speakerStartedAt)send({action:'stopSpeakerSound'});speakerStartedAt=0;speakerClipStart=+e.target.value;prepareSpeakerSound();});
-  $('#speaker-file-play').addEventListener('click',async()=>{if(!speakerDecoded)return;stopSpeakerPlayback();prepareSpeakerSound();speakerPending=true;speakerRoute=$('#speaker-route').value;$('#speaker-file-stop').disabled=false;if(!await send({action:'playSpeakerSound',pcmBase64:speakerSound,route:speakerRoute}))speakerPending=false;});
+  $('#speaker-start').addEventListener('change',e=>{const playing=!!speakerStartedAt,position=+e.target.value;stopSpeakerPlayback();speakerClipStart=position;prepareSpeakerSound();if(playing)$('#speaker-file-play').click();});
+  $('#speaker-file-play').addEventListener('click',async()=>{if(!speakerDecoded)return;if(speakerStartedAt||speakerPaused){await send({action:'setSpeakerPaused',paused:!speakerPaused});return;}stopSpeakerPlayback();prepareSpeakerSound();speakerPending=true;speakerRoute=$('#speaker-route').value;$('#speaker-file-stop').disabled=false;renderSpeakerTransport();if(!await send({action:'playSpeakerSound',pcmBase64:speakerSound,route:speakerRoute}))speakerPending=false;renderSpeakerTransport();});
   $('#speaker-file-stop').addEventListener('click',()=>{stopSpeakerPlayback();$('#speaker-file-status').textContent='Stopped';renderSpeakerProgress();});
-  $('#speaker-route').addEventListener('change',()=>{if(speakerStartedAt||speakerPending){stopSpeakerPlayback();$('#speaker-file-status').textContent='Output changed. Press Play.';}});
+  $('#speaker-route').addEventListener('change',()=>{if(speakerStartedAt||speakerPaused||speakerPending){stopSpeakerPlayback();$('#speaker-file-status').textContent='Output changed. Press Play.';}});
   setInterval(()=>{if(speakerStartedAt)renderSpeakerProgress();},400);
   $('#alert-low-battery').addEventListener('click',()=>send({action:'setLowBatteryAlert',enabled:!state.lowBatteryAlert}));
   $('#alert-timer-start').addEventListener('click',()=>send({action:'setHapticTimer',seconds:Number($('#alert-timer-minutes').value)*60}));
@@ -1735,7 +1741,8 @@
     }else if(event.type==='speakerStatus'){
       log(event.message||'Controller speaker chirp playing');
       if(event.source==='chirp'){$('#speaker-file-status').textContent='Speaker test playing';setTimeout(()=>{if(!speakerStartedAt)$('#speaker-file-status').textContent='Speaker test finished';},1000);}
-      if(speakerPending&&event.source==='file'){speakerPending=false;speakerStartedAt=performance.now();$('#speaker-start').disabled=true;$('#speaker-file-status').textContent=event.message||'Playing';renderSpeakerProgress();}
+      if(event.source==='transport'){speakerPaused=!!event.paused;speakerElapsed=event.position||0;speakerStartedAt=speakerPaused?0:performance.now();$('#speaker-file-status').textContent=speakerPaused?'Paused':'Playing';renderSpeakerProgress();}
+      if(speakerPending&&event.source==='file'){speakerPending=false;speakerElapsed=0;speakerPaused=false;speakerStartedAt=performance.now();$('#speaker-start').disabled=false;$('#speaker-file-status').textContent='Playing';renderSpeakerProgress();}
     }else if(event.type==='inputEffects'){
       state.inputEffectsActive=!!event.enabled;
       $('#click-status').textContent=event.enabled?'Armed · release R2 to rearm':'Not armed';

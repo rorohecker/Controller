@@ -145,6 +145,17 @@ def main():
         assert page.evaluate("window.sent.findLast(c=>c.action==='playSpeakerSound').route==='grips'&&!window.sent.findLast(c=>c.action==='playSpeakerSound').append")
         page.evaluate("window.coreHandler({type:'speakerStatus',source:'file',message:'Playing grips'})")
         page.wait_for_function("window.sent.some(c=>c.action==='playSpeakerSound'&&c.append&&c.route==='grips')")
+        page.locator('#speaker-file-play').click()
+        assert page.evaluate("window.sent.at(-1).action==='setSpeakerPaused'&&window.sent.at(-1).paused===true")
+        page.evaluate("window.coreHandler({type:'speakerStatus',source:'transport',paused:true,position:1,message:'Paused'})")
+        assert page.locator('#speaker-file-play').inner_text().lower()=='resume'
+        paused_progress=page.locator('#speaker-progress').evaluate('el=>el.value')
+        page.wait_for_timeout(500)
+        assert page.locator('#speaker-progress').evaluate('el=>el.value')==paused_progress
+        page.locator('#speaker-file-play').click()
+        assert page.evaluate("window.sent.at(-1).action==='setSpeakerPaused'&&window.sent.at(-1).paused===false")
+        page.evaluate("window.coreHandler({type:'speakerStatus',source:'transport',paused:false,position:1,message:'Playing'})")
+        page.wait_for_function("document.querySelector('#speaker-progress').value>2")
         page.locator('#speaker-file-stop').click()
         page.evaluate("window.coreHandler({type:'microphoneStatus',muted:true})")
         assert page.locator('#controller-mic').inner_text().lower()=='controller mic: muted'
@@ -380,15 +391,12 @@ def main():
         page.locator('#trigger-modes [data-mode="bow"]').click()
         page.locator("#break-start").fill("3")
         page.locator("#break-end").fill("8")
-        page.locator("#break-snap").fill("5")
-        assert page.locator("#break-snap-value").inner_text() == "5 / 8"
+        assert not page.locator("#break-snap-control").is_visible()
         assert page.locator("#break-start-value").inner_text() == "Zone 4"
         assert page.locator("#break-preview-track .is-draw").count() == 5
         page.locator("#apply-triggers").click()
-        assert page.evaluate("window.sent.some(c=>c.action==='applyTriggers' && [c.left,c.right].some(t=>t?.mode==='bow'&&t.startZone===3&&t.endZone===8&&t.snapStrength===63))")
+        assert page.evaluate("window.sent.some(c=>c.action==='applyTriggers' && [c.left,c.right].some(t=>t?.mode==='bow'&&t.startZone===3&&t.endZone===8&&t.releasePoint===0.8))")
         page.locator("#break-force-cap").select_option("8")
-        page.locator("#break-snap").fill("7")
-        assert page.locator("#break-snap-value").inner_text() == "7 / 8"
         page.locator("#zone-cal-start").click()
         page.wait_for_function("window.sent.some(c=>c.action==='applyTriggers' && c.right?.mode==='resistance' && c.right.zoneForces?.[1]===1)")
         for zone in range(1, 10):
