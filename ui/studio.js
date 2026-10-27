@@ -1409,7 +1409,6 @@
   $("#settings").append(prefs.box);
   for (const [key, name, cls] of [
     ["reducedMotion", "Reduce decorative motion", "studio-reduced-motion"],
-    ["highContrast", "Stronger panel contrast", "studio-high-contrast"],
   ]) {
     let enabled = false;
     try {

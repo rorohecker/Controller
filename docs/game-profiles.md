@@ -72,4 +72,4 @@ Diagnostics shows the selected profile, last applied output, foreground match, r
 
 Record local JSON/DSX game packets, export the recording, and replay it through the current receiver. Recording is opt-in and bounded to 2,000 packets, ten minutes, and about 4 MB of raw packet data. Playback follows recorded timestamps; configured game rules can produce output. Stop replay, Reset, disconnect, or a core restart cancels playback. Racing telemetry uses its separate existing test adapter.
 
-Ctrl/Cmd+K opens page/profile search and Stop/Reset actions. Display settings include reduced decorative motion and stronger panel contrast. Scroll positions are remembered per page during the session.
+Ctrl/Cmd+K opens page/profile search and Stop/Reset actions. Display settings include reduced decorative motion. Scroll positions are remembered per page during the session.
