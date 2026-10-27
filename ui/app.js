@@ -581,6 +581,9 @@
     if(!Array.isArray(rules)||rules.length>24||!Array.isArray(weapons)||weapons.length>100)return false;
     const text=(v,max)=>typeof v==='string'&&v.trim().length>0&&[...v].length<=max;
     const integer=(v,min,max)=>Number.isInteger(v)&&v>=min&&v<=max;
+    const shortcuts=p.gameShortcuts??[];
+    if(p.favorite!=null&&typeof p.favorite!=='boolean')return false;
+    if(!Array.isArray(shortcuts)||shortcuts.length>12||shortcuts.some(s=>!s||!integer(s.button,0,22)||[6,7,16,18].includes(s.button)||s.modifier!=null&&(!integer(s.modifier,0,22)||s.modifier===s.button||[6,7,16,18].includes(s.modifier))||!['nextProfile','previousProfile','nextWeapon','previousWeapon'].includes(s.action))||new Set(shortcuts.map(s=>`${s.button}:${s.modifier??'none'}`)).size!==shortcuts.length)return false;
     if(rules.some(r=>!r||!text(r.id,80)||!text(r.name,40)||!['press','double','hold','event'].includes(r.source)||!integer(r.button??0,0,22)||!integer(r.windowMs??280,80,1000)||!integer(r.durationMs,20,2000)||!integer(r.cooldownMs??180,0,10000)||r.source==='event'&&!text(r.event,80)||!r.haptic&&!r.leftTrigger&&!r.rightTrigger||r.haptic&&(!['sine','square','saw','noise'].includes(r.haptic.shape)||!integer(r.haptic.frequency,20,300)||!integer(r.haptic.strength,0,100)||!integer(r.haptic.pan??0,-100,100))))return false;
     if(new Set(rules.map(r=>r.id)).size!==rules.length||weapons.some(b=>!b||!text(b.weapon,80)||!text(b.presetId,80))||new Set(weapons.map(b=>b.weapon.toLowerCase())).size!==weapons.length)return false;
     const link=p.gameLink;if(link&&(!['json','dsx'].includes(link.format??'json')||!integer(link.port??6969,1024,65535)||typeof(link.enabled??false)!=='boolean'))return false;

@@ -48,6 +48,12 @@ def main():
         # Cancel imports before they can mutate the archive; then explicitly accept copies.
         archive=page.evaluate('window.exported')
         count=page.locator('.profile-row').count()
+        malformed=json.loads(json.dumps(archive))
+        malformed['profiles'][0]['gameShortcuts']=[None]
+        page.locator('#import-file').set_input_files({'name':'invalid.json','mimeType':'application/json','buffer':json.dumps(malformed).encode()})
+        page.wait_for_function('document.querySelector("#toast").textContent.includes("Import failed")')
+        assert page.locator('dialog[open]').count()==0
+        assert page.locator('.profile-row').count()==count
         upload={'name':'profile.json','mimeType':'application/json','buffer':json.dumps(archive).encode()}
         page.locator('#import-file').set_input_files(upload)
         page.get_by_role('dialog').get_by_role('button',name='Cancel',exact=True).click()
