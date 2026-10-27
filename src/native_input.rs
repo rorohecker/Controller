@@ -95,9 +95,13 @@ fn key_code(vk: u16) -> Option<Key> {
         129 => Key::F18,
         130 => Key::F19,
         131 => Key::F20,
+        #[cfg(target_os = "linux")]
         132 => Key::F21,
+        #[cfg(target_os = "linux")]
         133 => Key::F22,
+        #[cfg(target_os = "linux")]
         134 => Key::F23,
+        #[cfg(target_os = "linux")]
         135 => Key::F24,
         96 => Key::Numpad0,
         97 => Key::Numpad1,
