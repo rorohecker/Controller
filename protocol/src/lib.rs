@@ -11,6 +11,56 @@ pub const BT_OUTPUT_LEN: usize = 78;
 pub const BT_HAPTIC_LEN: usize = 141;
 pub const MAX_TRIGGER_LEVEL: u8 = 6; // conservative ceiling; firmware supports 0..8
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct BurstTuning {
+    pub start_zone: u8,
+    pub end_zone: u8,
+    pub return_strength: u8,
+    pub haptic_strength: u8,
+    pub haptic_frequency: u16,
+    pub haptic_duration_ms: u16,
+}
+
+impl Default for BurstTuning {
+    fn default() -> Self {
+        Self {
+            start_zone: 2,
+            end_zone: 6,
+            return_strength: 100,
+            haptic_strength: 0,
+            haptic_frequency: 90,
+            haptic_duration_ms: 95,
+        }
+    }
+}
+
+impl BurstTuning {
+    pub fn validate(&self, return_kick: bool) -> Result<(), &'static str> {
+        if self.start_zone > 9
+            || self.end_zone > 9
+            || self.return_strength > 100
+            || self.haptic_strength > 100
+            || !(20..=250).contains(&self.haptic_frequency)
+            || !(20..=250).contains(&self.haptic_duration_ms)
+            || (return_kick
+                && (self.return_strength == 0
+                    || self.end_zone > 8
+                    || self.end_zone <= self.start_zone))
+        {
+            return Err("Burst travel or grip settings are out of range");
+        }
+        Ok(())
+    }
+}
+
+/// Clear the separate motor power reduction, in addition to setting an effect's force.
+/// SetState MotorPowerLevel: valid1 bit 6, USB byte 37 (12.5% reduction per nibble step).
+pub fn use_full_motor_power(report: &mut [u8; USB_OUTPUT_LEN]) {
+    report[2] |= 0x40;
+    report[37] = 0;
+}
+
 /// The 2.21 firmware feature version introduced compatible vibration v2.
 pub fn rumble_flags(feature_version: Option<u16>, is_edge: bool) -> (u8, u8) {
     if is_edge || feature_version.is_some_and(|version| version >= 0x0215) {
@@ -567,6 +617,30 @@ pub fn crc32_seeded(seed: u8, data: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_motor_power_clears_reduction_and_survives_bluetooth_framing() {
+        let mut report = usb_report(
+            0x04,
+            0x03,
+            0,
+            Some([0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+            None,
+            None,
+            None,
+            false,
+        );
+        report[10] = 0x10;
+        report[37] = 0x77;
+        use_full_motor_power(&mut report);
+        assert_eq!(report[1], 0x04);
+        assert_eq!(report[2], 0x43);
+        assert_eq!(report[37], 0);
+        assert_eq!(report[10], 0x10);
+        let bluetooth = bt_report(&report, 1);
+        assert_eq!(bluetooth[4] & 0x40, 0x40);
+        assert_eq!(bluetooth[39], 0);
+    }
 
     #[test]
     fn microphone_mute_controls_the_hardware_and_its_light() {

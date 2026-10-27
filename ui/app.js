@@ -25,7 +25,8 @@
   };
   const defaultGyro = () => ({enabled:false,sensitivity:1,yawScale:1,pitchScale:1,invertY:false,activation:'always',bias:[0,0,0],deadzone:90,smoothing:.18});
   const defaultRemap = () => ({enabled:false,bindings:[]});
-  const defaultInputEffects = () => ({enabled:false,threshold:.82,strength:55,kind:'click',rate:10,spacingMs:0,kickMs:0,kickStyle:'return'});
+  const defaultInputEffects = () => ({enabled:false,threshold:.82,strength:55,kind:'click',rate:10,spacingMs:0,kickMs:0,kickStyle:'return',startZone:2,endZone:6,returnStrength:100,hapticStrength:0,hapticFrequency:90,hapticDurationMs:95});
+  const inputEffectCommand = (c={}) => ({action:'setInputEffects',...Object.fromEntries(Object.entries(defaultInputEffects()).map(([key,value])=>[key,c[key]??value]))});
   const defaultProfiles = [
     {id:'standard',name:'Standard',description:'L2 stays even. R2 gets firmer as you pull.',tag:'GENERAL',matchExe:'',autoApply:true,triggers:{left:{mode:'resistance',strength:40,curve:clone(presets.Linear)},right:{mode:'resistance',strength:55,curve:clone(presets.Swell)}},haptics:{shape:'sine',frequency:90,attack:12,release:220,strength:44,pan:0},gyroAim:defaultGyro(),remap:defaultRemap(),inputEffects:defaultInputEffects()},
     {id:'rally',name:'Rally',description:'L2 brakes hard. R2 pulses for throttle.',tag:'RACING',matchExe:'',autoApply:true,triggers:{left:{mode:'resistance',strength:73,curve:clone(presets.Wall)},right:{mode:'vibration',strength:54,curve:clone(presets.Pulse)}},haptics:{shape:'saw',frequency:65,attack:8,release:240,strength:55,pan:-10},gyroAim:defaultGyro(),remap:defaultRemap(),inputEffects:defaultInputEffects()},
@@ -130,7 +131,7 @@
       t.startZone=Number.isInteger(t.startZone)?t.startZone:(t.mode==='weapon'?5:2);
       t.endZone=Number.isInteger(t.endZone)?t.endZone:(t.mode==='weapon'?6:8);
       t.snapStrength=Number.isFinite(t.snapStrength)?t.snapStrength:50;
-      t.forceCap=t.forceCap===8?8:6;
+      t.forceCap=clamp(Math.round(t.forceCap??6),1,8);
       if(!Array.isArray(t.zoneForces)||t.zoneForces.length!==10)t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);
     }
     n.remap.bindings = Array.isArray(n.remap.bindings) ? n.remap.bindings.map(b=>({button:b.button,vk:b.vk,modifier:b.modifier??null,behavior:b.behavior||'hold',sequence:Array.isArray(b.sequence)?b.sequence:[]})) : [];
@@ -593,8 +594,15 @@
       && Number.isInteger(c.rate??10) && (c.rate??10)>=3 && (c.rate??10)<=20
       && Number.isInteger(c.spacingMs??0) && ((c.spacingMs??0)===0 || c.spacingMs>=50&&c.spacingMs<=1000)
       && ['return','strike','stop'].includes(c.kickStyle||'return')
+      && Number.isInteger(c.startZone??2) && (c.startZone??2)>=0 && (c.startZone??2)<=9
+      && Number.isInteger(c.endZone??6) && (c.endZone??6)>=0 && (c.endZone??6)<=9
+      && ((c.kickStyle||'return')!=='return' || (c.endZone??6)>(c.startZone??2) && (c.endZone??6)<=8)
+      && Number.isInteger(c.returnStrength??100) && (c.returnStrength??100)>=1 && (c.returnStrength??100)<=100
+      && Number.isInteger(c.hapticStrength??0) && (c.hapticStrength??0)>=0 && (c.hapticStrength??0)<=100
+      && Number.isInteger(c.hapticFrequency??90) && (c.hapticFrequency??90)>=20 && (c.hapticFrequency??90)<=250
+      && Number.isInteger(c.hapticDurationMs??95) && (c.hapticDurationMs??95)>=20 && (c.hapticDurationMs??95)<=250
       && Number.isInteger(c.kickMs??0) && ((c.kickMs??0)===0 || c.kickMs>=20&&c.kickMs<=250)
-      && (c.kind!=='burst'||!c.kickMs||c.kickMs+20<=(c.spacingMs||Math.floor(1000/(c.rate??10))))
+      && (c.kind!=='burst'||c.kickStyle==='strike'||!c.kickMs||c.kickMs+20<=(c.spacingMs||Math.floor(1000/(c.rate??10))))
       && bindings.length<=46 && bindings.every(b=>Number.isInteger(b.button)&&b.button>=0&&b.button<23&&Number.isInteger(b.vk)&&b.vk>=1&&b.vk<=255
         && (b.modifier==null||(Number.isInteger(b.modifier)&&b.modifier>=0&&b.modifier<23&&b.modifier!==b.button))
         && ['hold','tap','macro'].includes(b.behavior||'hold') && Array.isArray(b.sequence||[])
@@ -637,7 +645,7 @@
     }
     const ok = await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right});
     if (!ok) return false;
-    if (!await send({action:'setInputEffects',enabled:!!p.inputEffects?.enabled,threshold:p.inputEffects?.threshold??.82,strength:p.inputEffects?.strength??55,kind:p.inputEffects?.kind||'click',rate:p.inputEffects?.rate??10,spacingMs:p.inputEffects?.spacingMs??0,kickMs:p.inputEffects?.kickMs??0,kickStyle:p.inputEffects?.kickStyle||'return'})) return false;
+    if (!await send(inputEffectCommand(p.inputEffects))) return false;
     if (p.gyroAim) {
       if (!await send({
         action:'setGyroAim',
@@ -883,16 +891,23 @@
     $('#weapon-rate-row').hidden=c.kind!=='smg';
     $('#burst-timing').hidden=c.kind!=='burst';
     $('#burst-kick-style').value=c.kickStyle||'return';
-    $('#burst-style-help').textContent=({return:'Adds a return stroke after the stop. Experimental firmware effect.',strike:'Uses a short motor cycle. Duration changes the cycle speed.',stop:'Briefly applies a firm wall, then clears it.'})[c.kickStyle||'return'];
+    $('#burst-style-help').textContent=({return:'Adds a return stroke after the stop. Experimental firmware effect.',strike:`Three uninterrupted motor cycles. ${Math.round(1000/(c.spacingMs||1000/(c.rate??10)))} Hz, ${(1000/Math.round(1000/(c.spacingMs||1000/(c.rate??10)))).toFixed(1)} ms per cycle. The controller uses whole Hz.`,stop:'Briefly applies a firm wall, then clears it.'})[c.kickStyle||'return'];
+    $('#burst-kick-control').hidden=c.kickStyle==='strike';
+    $('#burst-return-control').hidden=(c.kickStyle||'return')!=='return';
+    $('#burst-end-control').hidden=(c.kickStyle||'return')!=='return';
+    $('#burst-zone-start').max=(c.kickStyle||'return')==='return'?8:10;
+    $('#burst-zone-start').value=(c.startZone??2)+1;$('#burst-zone-end').value=(c.endZone??6)+1;
+    $('#burst-zone-end').min=(c.startZone??2)+2;$('#burst-return-strength').value=c.returnStrength??100;
+    $('#burst-grip-strength').value=c.hapticStrength??0;$('#burst-grip-frequency').value=c.hapticFrequency??90;$('#burst-grip-duration').value=c.hapticDurationMs??95;
     const spacing=c.spacingMs||Math.round(1000/(c.rate??10));
     $('#burst-spacing').value=spacing;$('#burst-kick').value=c.kickMs||Math.min(95,spacing-20);
-    $('#click-threshold-number').value=Math.round(c.threshold*100);$('#click-strength-number').value=c.strength;
-    $('#click-threshold').value=Math.round(c.threshold*100);$('#click-threshold-value').textContent=`${Math.round(c.threshold*100)}%`;
+    $('#click-threshold-number').value=Math.round(c.threshold*1000)/10;$('#click-strength-number').value=c.strength;
+    $('#click-threshold').value=Math.round(c.threshold*1000)/10;$('#click-threshold-value').textContent=`${Math.round(c.threshold*1000)/10}%`;
     $('#click-strength').value=c.strength;$('#click-strength-value').textContent=`${c.strength}%`;
     fillRange($('#click-threshold'));fillRange($('#click-strength'));
   }
   function renderTriggerStrength(t){
-    const cap=t.forceCap===8?8:6;
+    const cap=clamp(t.forceCap??6,1,8);
     $('#trigger-strength-input').value=t.strength;
     $('#trigger-force-step').max=cap;$('#trigger-force-step').value=t.strength?Math.max(1,Math.round(t.strength*cap/100)):0;
     $('#trigger-frequency-control').hidden=t.mode!=='vibration';$('#trigger-frequency').value=t.frequencyHz??45;
@@ -906,7 +921,7 @@
   }
   function renderBreakControls(t) {
     const positioned=t.mode==='weapon'||t.mode==='bow';
-    const cap=t.forceCap===8?8:6,map=motorZones[state.side];
+    const cap=clamp(t.forceCap??6,1,8),map=motorZones[state.side];
     const measured=validMotorZones(map);
     $('.trigger-break-controls').dataset.mode=t.mode;
     $('#break-side-label').textContent=state.side==='left'?'L2':'R2';
@@ -976,7 +991,7 @@
     if(restore&&state.connected){
       const p=profile(),c=p.inputEffects||defaultInputEffects();
       await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right});
-      await send({action:'setInputEffects',enabled:!!c.enabled,threshold:c.threshold,strength:c.strength,kind:c.kind||'click',rate:c.rate||10});
+      await send(inputEffectCommand(c));
     }
     renderBreakControls(trigger());
   }
@@ -984,7 +999,7 @@
     if(!state.connected||zoneRun)return;
     const run={side:state.side,zone:1,positions:[0],message:''};
     zoneRun=run;renderZoneCalibration();
-    await send({action:'setInputEffects',enabled:false,threshold:.82,strength:0,kind:'click',rate:10});
+    await send(inputEffectCommand({enabled:false,strength:0}));
     if(!await applyZoneWall(run)){await stopZoneCalibration();return;}
     zoneRenewal=setInterval(()=>{if(zoneRun===run)applyZoneWall(run);},10000);
     renderZoneCalibration();
@@ -1040,12 +1055,12 @@
   $('#trigger-strength').addEventListener('input',e=>{trigger().strength=+e.target.value;renderTriggerStrength(trigger());fillRange(e.target);saveProfiles();});
   function bindRangeNumber(rangeId,numberId,offset=0){
     const range=$(rangeId),number=$(numberId);
-    number.addEventListener('change',()=>{if(!number.value||!Number.isFinite(number.valueAsNumber)){number.value=+range.value+offset;return;}range.value=clamp(Math.round(number.valueAsNumber)-offset,+range.min,+range.max);range.dispatchEvent(new Event('input',{bubbles:true}));number.value=+range.value+offset;});
+    number.addEventListener('change',()=>{if(!number.value||!Number.isFinite(number.valueAsNumber)){number.value=+range.value+offset;return;}range.value=clamp((Math.round((number.valueAsNumber-offset)/(+range.step||1))*(+range.step||1)),+range.min,+range.max);range.dispatchEvent(new Event('input',{bubbles:true}));number.value=+range.value+offset;});
     range.addEventListener('input',()=>number.value=+range.value+offset);
   }
   bindRangeNumber('#trigger-strength','#trigger-strength-input');
   bindRangeNumber('#break-start','#break-start-number',1);bindRangeNumber('#break-end','#break-end-number',1);
-  $('#trigger-force-step').addEventListener('change',e=>{if(!e.target.value)return;const step=clamp(Math.round(+e.target.value),0,trigger().forceCap===8?8:6);$('#trigger-strength').value=Math.round(step*100/(trigger().forceCap===8?8:6));$('#trigger-strength').dispatchEvent(new Event('input',{bubbles:true}));});
+  $('#trigger-force-step').addEventListener('change',e=>{if(!e.target.value)return;const step=clamp(Math.round(+e.target.value),0,clamp(trigger().forceCap??6,1,8));$('#trigger-strength').value=Math.round(step*100/(clamp(trigger().forceCap??6,1,8)));$('#trigger-strength').dispatchEvent(new Event('input',{bubbles:true}));});
   $('#break-preload').addEventListener('input',e=>{trigger().preloadStrength=+e.target.value;renderBreakControls(trigger());saveProfiles();});
   bindRangeNumber('#break-preload','#break-preload-number');
   $('#trigger-frequency').addEventListener('change',e=>{trigger().frequencyHz=clamp(Math.round(+e.target.value||45),1,255);e.target.value=trigger().frequencyHz;saveProfiles();});
@@ -1077,6 +1092,7 @@
     updateBreakPull();
   }
   function updateBreakPull(){
+    if($('#burst-live-meter')){const pull=clamp(state.buttons[7]||0);$('#burst-live-meter').value=pull;$('#burst-live-pull').textContent=`R2: ${(pull*100).toFixed(1)}%`;}
     const pull=clamp(state.buttons[state.side==='left'?6:7]||0)*100;
     $('#break-preview-track').style.setProperty('--pull',`${pull}%`);
     $('#break-pull-label').textContent=`Reported pull ${Math.round(pull)}%`;
@@ -1089,21 +1105,24 @@
     svg.addEventListener('pointerup',finishCurve);svg.addEventListener('pointercancel',finishCurve);
     svg.addEventListener('keydown',e=>{const p=e.target.closest('[data-point]');if(!p||!['ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const side=svg.dataset.curveSide,i=+p.dataset.point,t=profile().triggers[side];if(!['resistance','vibration'].includes(t.mode))return;state.side=side;t.zoneForces[i]=Math.round(clamp(t.zoneForces[i]+(e.key==='ArrowUp'?.02:-.02))*100)/100;renderTriggerControls();svg.querySelector(`[data-point="${i}"]`).focus();saveProfiles();});
   });
-  $('#click-enabled').closest('.input-click-block').insertAdjacentHTML('afterbegin',`<div class="weapon-library"><h3>Weapon cues</h3><p>R2 creates a haptic recoil cue from your pull. Game events are needed for exact shot timing.</p><div class="weapon-preset-list"><button type="button" data-weapon-preset="pistol">Pistol</button><button type="button" data-weapon-preset="sniper">Sniper</button><button type="button" data-weapon-preset="burst">Burst</button><button type="button" data-weapon-preset="smg">SMG</button></div><label class="control-label" for="weapon-kind">Recoil pattern</label><select id="weapon-kind"><option value="click">Click</option><option value="pistol">Pistol</option><option value="sniper">Sniper</option><option value="burst">Three shot burst</option><option value="smg">Automatic</option></select><div id="weapon-rate-row" class="weapon-rate-row"><span>Rate</span><div class="weapon-rate-stepper"><button type="button" data-rate-step="-1" aria-label="Slower firing rate">−</button><b id="weapon-rate-value">10 shots/s</b><button type="button" data-rate-step="1" aria-label="Faster firing rate">+</button></div><small id="weapon-rate-gap">100 ms between shots</small></div><div id="burst-timing" class="burst-timing" hidden><label class="control-label" for="burst-kick-style">Kick style</label><select id="burst-kick-style"><option value="return">Return kick ? experimental</option><option value="strike">Motor strike</option><option value="stop">Firm stop</option></select><small id="burst-style-help"></small><label class="number-control">Spacing <span><input id="burst-spacing" type="number" min="50" max="1000" step="1" value="251"> ms</span></label><label class="number-control">Kick duration <span><input id="burst-kick" type="number" min="20" max="250" step="1" value="95"> ms</span></label><small>Three matching kicks. Leave a gap so the motor can reset.</small></div></div>`);
+  $('#click-enabled').closest('.input-click-block').insertAdjacentHTML('afterbegin',`<div class="weapon-library"><h3>Weapon cues</h3><p>R2 creates a haptic recoil cue from your pull. Game events are needed for exact shot timing.</p><div class="weapon-preset-list"><button type="button" data-weapon-preset="pistol">Pistol</button><button type="button" data-weapon-preset="sniper">Sniper</button><button type="button" data-weapon-preset="burst">Burst</button><button type="button" data-weapon-preset="smg">SMG</button></div><label class="control-label" for="weapon-kind">Recoil pattern</label><select id="weapon-kind"><option value="click">Click</option><option value="pistol">Pistol</option><option value="sniper">Sniper</option><option value="burst">Three shot burst</option><option value="smg">Automatic</option></select><div id="weapon-rate-row" class="weapon-rate-row"><span>Rate</span><div class="weapon-rate-stepper"><button type="button" data-rate-step="-1" aria-label="Slower firing rate">−</button><b id="weapon-rate-value">10 shots/s</b><button type="button" data-rate-step="1" aria-label="Faster firing rate">+</button></div><small id="weapon-rate-gap">100 ms between shots</small></div><div id="burst-timing" class="burst-timing" hidden><div class="burst-live"><output id="burst-live-pull">R2: 0%</output><progress id="burst-live-meter" max="1" value="0"></progress></div><label class="control-label" for="burst-kick-style">Kick style</label><select id="burst-kick-style"><option value="strike">Motor recoil</option><option value="return">Return kick (experimental)</option><option value="stop">Firm stop</option></select><small id="burst-style-help"></small><label class="number-control">Spacing <span><input id="burst-spacing" type="number" min="50" max="1000" step="1" value="250"> ms</span></label><label id="burst-kick-control" class="number-control">Kick duration <span><input id="burst-kick" type="number" min="20" max="250" step="1" value="95"> ms</span></label><label class="number-control">Start zone <input id="burst-zone-start" type="number" min="1" max="10" step="1" value="3"></label><label id="burst-end-control" class="number-control">End zone <input id="burst-zone-end" type="number" min="2" max="9" step="1" value="7"></label><label id="burst-return-control" class="number-control">Return force <span><input id="burst-return-strength" type="number" min="1" max="100" step="1" value="100"> %</span></label><h4>Grip feedback per shot</h4><label class="number-control">Strength <span><input id="burst-grip-strength" type="number" min="0" max="100" step="1" value="85"> %</span></label><label class="number-control">Frequency <span><input id="burst-grip-frequency" type="number" min="20" max="250" step="1" value="90"> Hz</span></label><label class="number-control">Duration <span><input id="burst-grip-duration" type="number" min="20" max="250" step="1" value="95"> ms</span></label><small>Set grip strength to 0 for trigger feedback only. Shorter grip pulses keep the three shots separate.</small></div></div>`);
   $('#click-enabled').closest('.input-click-block').querySelector(':scope > h3').textContent='R2 cue';
   $('#click-enabled').closest('.input-click-block').querySelector(':scope > p').textContent='The cue starts when R2 crosses the pull point. Release to rearm single shots.';
-  const weaponPresets={pistol:{kind:'pistol',threshold:.72,strength:62,rate:6,mode:'weapon',startZone:4,endZone:6},sniper:{kind:'sniper',threshold:.84,strength:100,triggerStrength:100,preloadStrength:15,inputEnabled:false,rate:3,mode:'weapon',forceCap:8,startZone:5,endZone:6},burst:{kind:'burst',threshold:.77,strength:100,rate:4,spacingMs:251,kickMs:95,mode:'off',triggerStrength:0,forceCap:8},smg:{kind:'smg',threshold:.40,strength:82,triggerStrength:40,rate:12,mode:'resistance',curve:[0,0,.1,.2,.25,.28,.3,.3,.3,.3,.3]}};
-  $('.weapon-preset-list').addEventListener('click',async e=>{const button=e.target.closest('[data-weapon-preset]');if(!button)return;if(zoneRun)await stopZoneCalibration();const spec=weaponPresets[button.dataset.weaponPreset];if(!spec)return;profile().inputEffects={enabled:spec.inputEnabled??true,threshold:spec.threshold,strength:spec.strength,kind:spec.kind,rate:spec.rate,spacingMs:spec.spacingMs??0,kickMs:spec.kickMs??0,kickStyle:spec.kickStyle||'return'};const t=profile().triggers.right;t.mode=spec.mode;t.preloadStrength=spec.preloadStrength??0;t.strength=spec.triggerStrength??spec.strength;t.startZone=spec.startZone;t.endZone=spec.endZone;t.snapStrength=spec.snapStrength??t.snapStrength;t.forceCap=spec.forceCap??6;t.curve=clone(spec.curve??presets.Break);t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);state.side='right';renderTriggerControls();saveProfiles();toast(`${button.textContent} loaded · Apply to feel it`);});
+  const weaponPresets={pistol:{kind:'pistol',threshold:.72,strength:62,rate:6,mode:'weapon',startZone:4,endZone:6},sniper:{kind:'sniper',threshold:.84,strength:100,triggerStrength:100,preloadStrength:15,inputEnabled:false,rate:3,mode:'weapon',forceCap:8,startZone:5,endZone:6},burst:{kind:'burst',threshold:.90,strength:100,rate:4,spacingMs:250,kickMs:95,kickStyle:'strike',hapticStrength:85,hapticFrequency:90,hapticDurationMs:95,mode:'off',triggerStrength:0,forceCap:8},smg:{kind:'smg',threshold:.40,strength:82,triggerStrength:40,rate:12,mode:'resistance',curve:[0,0,.1,.2,.25,.28,.3,.3,.3,.3,.3]}};
+  $('.weapon-preset-list').addEventListener('click',async e=>{const button=e.target.closest('[data-weapon-preset]');if(!button)return;if(zoneRun)await stopZoneCalibration();const spec=weaponPresets[button.dataset.weaponPreset];if(!spec)return;const cue=inputEffectCommand(spec);delete cue.action;cue.enabled=spec.inputEnabled??true;profile().inputEffects=cue;const t=profile().triggers.right;t.mode=spec.mode;t.preloadStrength=spec.preloadStrength??0;t.strength=spec.triggerStrength??spec.strength;t.startZone=spec.startZone;t.endZone=spec.endZone;t.snapStrength=spec.snapStrength??t.snapStrength;t.forceCap=spec.forceCap??6;t.curve=clone(spec.curve??presets.Break);t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);state.side='right';renderTriggerControls();saveProfiles();toast(`${button.textContent} loaded · Apply to feel it`);});
   $('#weapon-kind').addEventListener('change',e=>{profile().inputEffects.kind=e.target.value;renderTriggerControls();saveProfiles();});
   $('#weapon-rate-row').addEventListener('click',e=>{const button=e.target.closest('[data-rate-step]');if(!button)return;profile().inputEffects.rate=clamp((profile().inputEffects.rate??10)+Number(button.dataset.rateStep),3,20);renderTriggerControls();saveProfiles();});
-  $('#burst-kick-style').addEventListener('change',e=>{profile().inputEffects.kickStyle=e.target.value;renderTriggerControls();saveProfiles();});
+  $('#burst-kick-style').addEventListener('change',e=>{const c=profile().inputEffects;c.kickStyle=e.target.value;if(c.kickStyle==='return'){c.startZone=clamp(c.startZone??2,0,7);c.endZone=clamp(c.endZone??6,c.startZone+1,8);}renderTriggerControls();saveProfiles();});
+  for(const [id,key,min,max,fallback] of [['burst-zone-start','startZone',0,9,2],['burst-zone-end','endZone',1,8,6],['burst-return-strength','returnStrength',1,100,100],['burst-grip-strength','hapticStrength',0,100,85],['burst-grip-frequency','hapticFrequency',20,250,90],['burst-grip-duration','hapticDurationMs',20,250,95]]){
+    $(`#${id}`).addEventListener('change',e=>{const c=profile().inputEffects,zone=key==='startZone'||key==='endZone';c[key]=clamp(Math.round(e.target.valueAsNumber-(zone?1:0)),min,max);if(!Number.isFinite(c[key]))c[key]=fallback;if(c.kickStyle==='return'){c.startZone=clamp(c.startZone??2,0,7);c.endZone=clamp(c.endZone??6,c.startZone+1,8);}renderTriggerControls();saveProfiles();});
+  }
   $('#burst-spacing').addEventListener('change',e=>{const c=profile().inputEffects;c.spacingMs=clamp(Math.round(+e.target.value||251),50,1000);c.kickMs=Math.min(c.kickMs||95,c.spacingMs-20);renderTriggerControls();saveProfiles();});
   $('#burst-kick').addEventListener('change',e=>{const c=profile().inputEffects;c.kickMs=clamp(Math.round(+e.target.value||95),20,250);c.spacingMs=Math.max(c.spacingMs||Math.round(1000/(c.rate??10)),c.kickMs+20);renderTriggerControls();saveProfiles();});
   bindRangeNumber('#click-threshold','#click-threshold-number');bindRangeNumber('#click-strength','#click-strength-number');
   $('#click-enabled').addEventListener('change',e=>{profile().inputEffects.enabled=e.target.checked;saveProfiles();});
   $('#click-threshold').addEventListener('input',e=>{profile().inputEffects.threshold=+e.target.value/100;$('#click-threshold-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
   $('#click-strength').addEventListener('input',e=>{profile().inputEffects.strength=+e.target.value;$('#click-strength-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
-  $('#apply-triggers').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration();const p=profile();for(const side of ['left','right']){const t=p.triggers[side],map=motorZones[side];if(t.mode==='bow')t.releasePoint=validMotorZones(map)?map[t.endZone??9]:clamp((t.endZone??9)/10,.2,.97);}if(await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right}))send({action:'setInputEffects',enabled:!!p.inputEffects.enabled,threshold:p.inputEffects.threshold,strength:p.inputEffects.strength,kind:p.inputEffects.kind||'click',rate:p.inputEffects.rate??10,spacingMs:p.inputEffects.spacingMs??0,kickMs:p.inputEffects.kickMs??0,kickStyle:p.inputEffects.kickStyle||'return'});});
+  $('#apply-triggers').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration();const p=profile();for(const side of ['left','right']){const t=p.triggers[side],map=motorZones[side];if(t.mode==='bow')t.releasePoint=validMotorZones(map)?map[t.endZone??9]:clamp((t.endZone??9)/10,.2,.97);}if(await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right}))send(inputEffectCommand(p.inputEffects));});
   $('#reset-effects').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration(false);send({action:'reset'});});
 
   function renderHapticControls(){

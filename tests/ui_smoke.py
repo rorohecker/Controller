@@ -419,19 +419,33 @@ def main():
         page.locator("#apply-triggers").click()
         page.wait_for_function("window.sent.some(c=>c.action==='applyTriggers' && c.right.preloadStrength===30 && c.right.startZone===4)")
         page.locator('[data-weapon-preset="burst"]').click()
-        assert page.locator("#click-threshold-number").input_value() == "77"
-        assert page.locator("#burst-spacing").input_value() == "251"
-        assert page.locator("#burst-kick").input_value() == "95"
-        assert page.locator("#burst-kick-style").input_value() == "return"
+        assert page.locator("#click-threshold-number").input_value() == "90"
+        assert page.locator("#burst-spacing").input_value() == "250"
+        assert page.locator("#burst-kick-style").input_value() == "strike"
+        assert page.locator("#burst-grip-strength").input_value() == "85"
+        assert not page.locator("#burst-kick-control").is_visible()
         assert not page.locator("#weapon-rate-row").is_visible()
+        assert "4 hz" in page.locator("#burst-style-help").inner_text().lower()
+        page.locator("#click-threshold-number").fill("90.1")
+        page.locator("#click-threshold-number").press("Tab")
+        page.locator("#burst-grip-strength").fill("92")
+        page.locator("#burst-grip-strength").press("Tab")
+        page.locator("#burst-grip-frequency").fill("125")
+        page.locator("#burst-grip-frequency").press("Tab")
+        page.locator("#burst-grip-duration").fill("70")
+        page.locator("#burst-grip-duration").press("Tab")
+        page.locator("#burst-zone-start").fill("4")
+        page.locator("#burst-zone-start").press("Tab")
+        page.locator("#apply-triggers").click()
+        page.wait_for_function("window.sent.some(c=>c.action==='setInputEffects' && c.kind==='burst' && Math.abs(c.threshold-.901)<.000001 && c.kickStyle==='strike' && c.startZone===3 && c.hapticStrength===92 && c.hapticFrequency===125 && c.hapticDurationMs===70)")
+        page.locator("#burst-kick-style").select_option("return")
+        assert page.locator("#burst-kick-control").is_visible()
+        page.locator("#burst-return-strength").fill("73")
+        page.locator("#burst-return-strength").press("Tab")
         page.locator("#burst-spacing").fill("252")
         page.locator("#burst-spacing").press("Tab")
         page.locator("#apply-triggers").click()
-        page.wait_for_function("window.sent.some(c=>c.action==='setInputEffects' && c.kind==='burst' && c.threshold===.77 && c.spacingMs===252 && c.kickMs===95 && c.kickStyle==='return')")
-        page.locator("#burst-kick-style").select_option("strike")
-        page.locator("#apply-triggers").click()
-        page.wait_for_function("window.sent.some(c=>c.action==='setInputEffects' && c.kind==='burst' && c.kickStyle==='strike')")
-        assert "motor cycle" in page.locator("#burst-style-help").inner_text().lower()
+        page.wait_for_function("window.sent.some(c=>c.action==='setInputEffects' && c.kind==='burst' && c.spacingMs===252 && c.returnStrength===73 && c.kickStyle==='return')")
         page.locator("#burst-spacing").fill("50")
         page.locator("#burst-spacing").press("Tab")
         assert page.locator("#burst-kick").input_value() == "30"
@@ -441,10 +455,11 @@ def main():
         page.locator('#trigger-modes [data-mode="vibration"]').click()
         page.locator("#trigger-frequency").fill("17")
         page.locator("#trigger-frequency").press("Tab")
+        page.locator("#break-force-cap").select_option("5")
         page.locator("#trigger-strength-input").fill("75")
         page.locator("#trigger-strength-input").press("Tab")
         page.locator("#apply-triggers").click()
-        page.wait_for_function("window.sent.some(c=>c.action==='applyTriggers' && c.right.frequencyHz===17 && c.right.strength===75)")
+        page.wait_for_function("window.sent.some(c=>c.action==='applyTriggers' && c.right.frequencyHz===17 && c.right.strength===75 && c.right.forceCap===5)")
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-trigger-new.png"), full_page=True)
         page.locator('[data-view="touch"]').click()
         assert "circle" in page.locator("#touch-gesture-toggle").locator("xpath=..//p").inner_text().lower()

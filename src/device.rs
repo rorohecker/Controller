@@ -155,6 +155,8 @@ pub enum DeviceCommand {
         kick_ms: u16,
         #[serde(rename = "kickStyle", default = "default_kick_style")]
         kick_style: String,
+        #[serde(flatten)]
+        tuning: protocol::BurstTuning,
     },
     SetLowBatteryAlert {
         enabled: bool,
@@ -297,6 +299,7 @@ struct InputEffect {
     kick_ms: u16,
     remaining: u8,
     kick_style: KickStyle,
+    tuning: protocol::BurstTuning,
     armed: bool,
     next_pulse: Option<Instant>,
     last_pulse: Option<Instant>,
@@ -392,7 +395,12 @@ impl InputEffect {
             WeaponKind::Sniper | WeaponKind::Burst | WeaponKind::Smg
         );
         if full_travel {
-            curve[2..].fill(1.0);
+            let start = if self.kind == WeaponKind::Burst {
+                usize::from(self.tuning.start_zone)
+            } else {
+                2
+            };
+            curve[start..].fill(1.0);
         } else {
             let zone = ((self.threshold * 10.0).round() as usize).clamp(2, 7);
             curve[zone + 1..].fill(1.0);
@@ -412,22 +420,29 @@ impl InputEffect {
             ..TriggerSetting::default()
         };
         if self.kind == WeaponKind::Burst {
+            setting.zone_forces = Some(
+                (0..10)
+                    .map(|zone| {
+                        if zone >= self.tuning.start_zone {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    })
+                    .collect(),
+            );
             match self.kick_style {
                 KickStyle::Return => {
                     // Native 0x22 has separate stop and return forces for each pulse.
                     // Reference: Nielk1 TriggerEffectGenerator.Bow; this firmware mode is unofficial.
                     setting.mode = "bow".into();
-                    setting.start_zone = Some(2);
-                    setting.end_zone = Some(6);
-                    setting.snap_strength = Some(f32::from(self.strength));
+                    setting.start_zone = Some(self.tuning.start_zone);
+                    setting.end_zone = Some(self.tuning.end_zone);
+                    setting.snap_strength = Some(f32::from(self.tuning.return_strength));
                 }
                 KickStyle::Strike => {
                     setting.mode = "vibration".into();
-                    setting.frequency_hz = Some(
-                        (1000.0 / f32::from(self.burst_kick_ms()))
-                            .round()
-                            .clamp(1.0, 255.0) as u8,
-                    );
+                    setting.frequency_hz = Some(self.native_frequency());
                 }
                 KickStyle::Stop => {}
             }
@@ -443,17 +458,46 @@ impl InputEffect {
         }
     }
 
+    fn native_frequency(&self) -> u8 {
+        (1000.0 / f32::from(self.burst_spacing_ms()))
+            .round()
+            .clamp(1.0, 255.0) as u8
+    }
+
+    fn native_train(&self) -> bool {
+        self.kind == WeaponKind::Burst && self.kick_style == KickStyle::Strike
+    }
+
+    fn trigger_duration(&self) -> Option<Duration> {
+        if self.native_train() {
+            // Send the native train once. Later shots only schedule their grip pulse.
+            (self.remaining == 2).then(|| self.pulse_interval() * 3)
+        } else {
+            Some(Duration::from_millis(match self.kind {
+                WeaponKind::Sniper => 120,
+                WeaponKind::Burst => u64::from(self.burst_kick_ms()),
+                _ => 65,
+            }))
+        }
+    }
+
+    fn pulse_interval(&self) -> Duration {
+        if self.native_train() {
+            Duration::from_secs_f64(1.0 / f64::from(self.native_frequency()))
+        } else if self.kind == WeaponKind::Burst && self.spacing_ms > 0 {
+            Duration::from_millis(u64::from(self.spacing_ms))
+        } else {
+            Duration::from_secs_f64(1.0 / f64::from(self.rate.max(1)))
+        }
+    }
+
     fn burst_kick_ms(&self) -> u16 {
         let requested = if self.kick_ms == 0 { 95 } else { self.kick_ms };
         requested.min(self.burst_spacing_ms().saturating_sub(20).max(20))
     }
 
     fn advance(&mut self, now: Instant, right_pull: f32) -> bool {
-        let interval = if self.kind == WeaponKind::Burst && self.spacing_ms > 0 {
-            Duration::from_millis(u64::from(self.spacing_ms))
-        } else {
-            Duration::from_secs_f64(1.0 / f64::from(self.rate.max(1)))
-        };
+        let interval = self.pulse_interval();
         let release_point = if matches!(self.kind, WeaponKind::Sniper | WeaponKind::Burst) {
             0.15
         } else {
@@ -607,6 +651,9 @@ impl Connected {
     }
 
     fn write(&mut self, mut report: [u8; protocol::USB_OUTPUT_LEN]) -> Result<(), String> {
+        if report[1] & 0x0c != 0 {
+            protocol::use_full_motor_power(&mut report);
+        }
         if report[2] & 0x02 != 0 && self.microphone_muted.unwrap_or(false) {
             report[10] |= 0x10;
         }
@@ -782,38 +829,45 @@ impl Connected {
             return Ok(());
         };
         if !effect.advance(Instant::now(), right_pull) {
+            if effect.native_train() && effect.armed {
+                self.restore_input_effect()?;
+            }
             return Ok(());
         }
         let kind = effect.kind;
         let strength = effect.strength;
-        let kick_ms = effect.burst_kick_ms();
-        let click = effect.trigger_effect().map_err(str::to_string)?;
-        if self.input_effect_until.is_some() {
-            self.restore_input_effect()?;
+        let duration = effect.trigger_duration();
+        let tuning = effect.tuning;
+        if let Some(duration) = duration {
+            let click = effect.trigger_effect().map_err(str::to_string)?;
+            if self.input_effect_until.is_some() {
+                self.restore_input_effect()?;
+            }
+            self.write(protocol::usb_report(
+                0x04,
+                0,
+                0,
+                Some(click),
+                None,
+                None,
+                None,
+                false,
+            ))?;
+            self.trigger_active = true;
+            self.input_effect_until = Some(Instant::now() + duration);
         }
-        self.write(protocol::usb_report(
-            0x04,
-            0,
-            0,
-            Some(click),
-            None,
-            None,
-            None,
-            false,
-        ))?;
-        self.trigger_active = true;
-        self.input_effect_until = Some(
-            Instant::now()
-                + Duration::from_millis(match kind {
-                    WeaponKind::Sniper => 120,
-                    WeaponKind::Burst => u64::from(kick_ms),
-                    WeaponKind::Smg => 65,
-                    _ => 65,
-                }),
-        );
         let (shape, frequency, attack, release, power, pan) = kind.cue(strength);
         if !matches!(kind, WeaponKind::Sniper | WeaponKind::Burst) {
             self.play_feedback(shape, frequency, attack, release, power, pan);
+        } else if kind == WeaponKind::Burst && tuning.haptic_strength > 0 {
+            self.play_feedback(
+                "square",
+                tuning.haptic_frequency,
+                2,
+                tuning.haptic_duration_ms,
+                tuning.haptic_strength,
+                0,
+            );
         }
         Ok(())
     }
@@ -1918,6 +1972,7 @@ fn handle_command(
             spacing_ms,
             kick_ms,
             kick_style,
+            tuning,
         } => {
             if !threshold.is_finite()
                 || !(0.2..=0.95).contains(&threshold)
@@ -1926,18 +1981,19 @@ fn handle_command(
                 || !(3..=20).contains(&rate)
                 || (spacing_ms != 0 && !(50..=1000).contains(&spacing_ms))
                 || (kick_ms != 0 && !(20..=250).contains(&kick_ms))
-                || (kind == "burst" && kick_ms != 0
+                || (kind == "burst" && kick_style != "strike" && kick_ms != 0
                     && u32::from(kick_ms) + 20
                         > if spacing_ms == 0 { 1000 / u32::from(rate.max(1)) } else { u32::from(spacing_ms) })
                 || WeaponKind::parse(&kind).is_none()
                 || KickStyle::parse(&kick_style).is_none()
+                || tuning.validate(kick_style == "return").is_err()
             {
                 Err("Weapon cue settings are out of range.".into())
             } else {
                 let enabled = enabled && device.bows[1].is_none();
                 device.restore_input_effect().map(|_| {
-                    device.input_effect = enabled.then_some(InputEffect {threshold,strength,kind:WeaponKind::parse(&kind).unwrap(),rate,spacing_ms,kick_ms,remaining:0,kick_style:KickStyle::parse(&kick_style).unwrap(),armed:true,next_pulse:None,last_pulse:None,release_since:None});
-                    emit(proxy, json!({"type":"inputEffects","enabled":enabled,"threshold":threshold,"strength":strength,"kind":kind,"rate":rate,"spacingMs":spacing_ms,"kickMs":kick_ms,"kickStyle":kick_style}));
+                    device.input_effect = enabled.then_some(InputEffect {threshold,strength,kind:WeaponKind::parse(&kind).unwrap(),rate,spacing_ms,kick_ms,remaining:0,kick_style:KickStyle::parse(&kick_style).unwrap(),tuning,armed:true,next_pulse:None,last_pulse:None,release_since:None});
+                    emit(proxy, json!({"type":"inputEffects","enabled":enabled,"threshold":threshold,"strength":strength,"kind":kind,"rate":rate,"spacingMs":spacing_ms,"kickMs":kick_ms,"kickStyle":kick_style,"hapticStrength":tuning.haptic_strength,"hapticFrequency":tuning.haptic_frequency,"hapticDurationMs":tuning.haptic_duration_ms}));
                     if enabled {"Weapon cue armed"} else {"Weapon cue off"}
                 })
             }
@@ -2665,6 +2721,7 @@ mod tests {
         BowReturn, DeviceCommand, InputEffect, KickStyle, TriggerSetting, WeaponKind,
         encode_live_trigger, sensor_color,
     };
+    use aftertouch_protocol as protocol;
     use std::time::{Duration, Instant};
 
     #[test]
@@ -2706,6 +2763,7 @@ mod tests {
             kick_ms: 0,
             remaining: 0,
             kick_style: KickStyle::Return,
+            tuning: protocol::BurstTuning::default(),
             armed: true,
             next_pulse: None,
             last_pulse: None,
@@ -2737,6 +2795,7 @@ mod tests {
             kick_ms: 95,
             remaining: 0,
             kick_style: KickStyle::Return,
+            tuning: protocol::BurstTuning::default(),
             armed: true,
             next_pulse: None,
             last_pulse: None,
@@ -2800,6 +2859,7 @@ mod tests {
             kick_ms: 95,
             remaining: 0,
             kick_style: KickStyle::Strike,
+            tuning: protocol::BurstTuning::default(),
             armed: true,
             next_pulse: None,
             last_pulse: None,
@@ -2807,7 +2867,9 @@ mod tests {
         };
         let strike = effect.trigger_effect().unwrap();
         assert_eq!(strike[0], 0x26);
-        assert_eq!(strike[9], 11);
+        assert_eq!(strike[9], 4);
+        assert_eq!(u16::from_le_bytes([strike[1], strike[2]]), 0x3fc);
+        assert_eq!(effect.pulse_interval(), Duration::from_millis(250));
         effect.kick_style = KickStyle::Stop;
         let stop = effect.trigger_effect().unwrap();
         assert_eq!(stop[0], 0x21);
@@ -2815,6 +2877,51 @@ mod tests {
             u32::from_le_bytes(stop[3..7].try_into().unwrap()) >> 27 & 7,
             7
         );
+    }
+
+    #[test]
+    fn native_burst_at_ninety_percent_runs_once_with_three_grip_pulses() {
+        let now = Instant::now();
+        let mut effect = InputEffect {
+            kind: WeaponKind::Burst,
+            threshold: 0.9,
+            strength: 100,
+            rate: 4,
+            spacing_ms: 250,
+            kick_ms: 95,
+            remaining: 0,
+            kick_style: KickStyle::Strike,
+            tuning: protocol::BurstTuning {
+                haptic_strength: 85,
+                ..protocol::BurstTuning::default()
+            },
+            armed: true,
+            next_pulse: None,
+            last_pulse: None,
+            release_since: None,
+        };
+        assert!(!effect.advance(now, 0.899));
+        assert!(effect.advance(now, 0.9));
+        assert_eq!(effect.trigger_duration(), Some(Duration::from_millis(750)));
+        let encoded = effect.trigger_effect().unwrap();
+        assert_eq!(&encoded[..7], &[0x26, 0xfc, 0x03, 0xc0, 0xff, 0xff, 0x3f]);
+        assert_eq!(encoded[9], 4);
+        assert_eq!(effect.tuning.haptic_strength, 85);
+        assert!(!effect.advance(now + Duration::from_millis(249), 0.92));
+        assert!(effect.advance(now + Duration::from_millis(250), 0.92));
+        assert_eq!(effect.trigger_duration(), None);
+        assert!(effect.advance(now + Duration::from_millis(500), 0.92));
+        assert_eq!(effect.trigger_duration(), None);
+        assert!(!effect.advance(now + Duration::from_millis(750), 0.92));
+        // Releasing during another train cancels its remaining scheduled pulses.
+        assert!(!effect.advance(now + Duration::from_millis(800), 0.0));
+        assert!(!effect.advance(now + Duration::from_millis(860), 0.0));
+        assert!(effect.advance(now + Duration::from_millis(900), 0.91));
+        assert!(!effect.advance(now + Duration::from_millis(1030), 0.0));
+        assert!(!effect.advance(now + Duration::from_millis(1090), 0.0));
+        assert_eq!(effect.remaining, 0);
+        assert!(effect.armed);
+        assert!(!effect.advance(now + Duration::from_millis(1150), 0.0));
     }
 
     #[test]

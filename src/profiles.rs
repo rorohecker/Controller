@@ -163,6 +163,8 @@ struct InputEffectSettings {
     kick_ms: u16,
     #[serde(default = "default_kick_style")]
     kick_style: String,
+    #[serde(flatten)]
+    tuning: aftertouch_protocol::BurstTuning,
 }
 fn default_click_threshold() -> f32 {
     0.82
@@ -190,6 +192,7 @@ impl Default for InputEffectSettings {
             spacing_ms: 0,
             kick_ms: 0,
             kick_style: default_kick_style(),
+            tuning: aftertouch_protocol::BurstTuning::default(),
         }
     }
 }
@@ -290,6 +293,10 @@ fn validate(data: Value) -> Result<Archive, String> {
         if !(0.2..=0.95).contains(&p.input_effects.threshold)
             || p.input_effects.strength > 100
             || !(3..=20).contains(&p.input_effects.rate)
+            || p.input_effects
+                .tuning
+                .validate(p.input_effects.kick_style == "return")
+                .is_err()
             || !matches!(
                 p.input_effects.kick_style.as_str(),
                 "return" | "strike" | "stop"
@@ -298,6 +305,7 @@ fn validate(data: Value) -> Result<Archive, String> {
                 && !(50..=1000).contains(&p.input_effects.spacing_ms))
             || (p.input_effects.kick_ms != 0 && !(20..=250).contains(&p.input_effects.kick_ms))
             || (p.input_effects.kind == "burst"
+                && p.input_effects.kick_style != "strike"
                 && p.input_effects.kick_ms != 0
                 && u32::from(p.input_effects.kick_ms) + 20
                     > if p.input_effects.spacing_ms == 0 {
@@ -470,7 +478,8 @@ mod tests {
         let mut value = sample_profile();
         value["profiles"][0]["inputEffects"] = serde_json::json!({
             "enabled":true,"kind":"burst","threshold":0.77,"strength":100,
-            "rate":4,"spacingMs":251,"kickMs":95,"kickStyle":"return"
+            "rate":4,"spacingMs":251,"kickMs":95,"kickStyle":"return",
+            "startZone":3,"endZone":7,"returnStrength":73,"hapticStrength":85,"hapticFrequency":125,"hapticDurationMs":70
         });
         value["profiles"][0]["triggers"]["left"]["preloadStrength"] = 25.into();
         value["profiles"][0]["triggers"]["left"]["frequencyHz"] = 17.into();
@@ -478,11 +487,19 @@ mod tests {
         assert_eq!(saved["profiles"][0]["inputEffects"]["spacingMs"], 251);
         assert_eq!(saved["profiles"][0]["inputEffects"]["kickMs"], 95);
         assert_eq!(saved["profiles"][0]["inputEffects"]["kickStyle"], "return");
+        assert_eq!(saved["profiles"][0]["inputEffects"]["hapticStrength"], 85);
+        assert_eq!(saved["profiles"][0]["inputEffects"]["hapticFrequency"], 125);
+        assert_eq!(saved["profiles"][0]["inputEffects"]["hapticDurationMs"], 70);
+        assert_eq!(saved["profiles"][0]["inputEffects"]["returnStrength"], 73);
+        assert_eq!(saved["profiles"][0]["inputEffects"]["startZone"], 3);
         assert_eq!(
             saved["profiles"][0]["triggers"]["left"]["preloadStrength"],
             25.0
         );
         assert_eq!(saved["profiles"][0]["triggers"]["left"]["frequencyHz"], 17);
+        value["profiles"][0]["inputEffects"]["hapticStrength"] = 101.into();
+        assert!(validate(value.clone()).is_err());
+        value["profiles"][0]["inputEffects"]["hapticStrength"] = 85.into();
         value["profiles"][0]["inputEffects"]["kickStyle"] = "unknown".into();
         assert!(validate(value.clone()).is_err());
         value["profiles"][0]["inputEffects"]["kickStyle"] = "return".into();
