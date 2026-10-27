@@ -31,6 +31,9 @@ def main() -> None:
             raise AssertionError("mismatched installer version was accepted")
         (bundle / f"CONTROLLER_{wrong_version}_x64-setup.exe").write_bytes(b"stale")
         assert create_manifest(version, bundle, "rorohecker/Controller") == manifest
+        # A package for another architecture must never become the x64 update.
+        (bundle / f"CONTROLLER_{version}_arm64-setup.exe").write_bytes(b"other architecture")
+        assert create_manifest(version, bundle, "rorohecker/Controller") == manifest
         (bundle / (installer.name + ".sig")).unlink()
         try:
             create_manifest(version, bundle, "rorohecker/Controller")

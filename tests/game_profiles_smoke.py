@@ -52,8 +52,8 @@ def main():
         page.wait_for_function("window.sent.some(c=>c.action==='setPcBindings'&&c.bindings.some(b=>b.button===0&&b.chord?.join(',')==='17,16,75'))")
         unbound = page.locator('.pc-binding').filter(has=page.locator('[aria-label="CREATE action"]'))
         unbound.locator('select').first.select_option('launch')
-        unbound.locator('input').fill(r'C:\Windows\notepad.exe')
-        unbound.locator('input').press('Tab')
+        unbound.locator('[aria-label="CREATE app path"]').fill(r'C:\Windows\notepad.exe')
+        unbound.locator('[aria-label="CREATE app path"]').press('Tab')
         page.wait_for_function("window.sent.some(c=>c.action==='setPcBindings'&&c.bindings.some(b=>b.button===8&&b.behavior==='launch'&&b.vk===0))")
         # Reload from the persisted archive rather than just checking an in-memory editor.
         saved = page.evaluate('window.saved')

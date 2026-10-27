@@ -82,7 +82,8 @@
     {button:15,vk:39,behavior:'hold',sequence:[]}
   ];
   const validAppPath=path=>typeof path==='string'&&path.length<=1024&&!path.includes('\0')&&(/^[a-zA-Z]:\\.*\.exe$/i.test(path)||path.startsWith('/'));
-  const validPcKey=vk=>Number.isInteger(vk)&&vk>=1&&vk<=255;
+  let supportedKeys=null;
+  const validPcKey=vk=>Number.isInteger(vk)&&vk>=1&&vk<=254&&(!supportedKeys||supportedKeys.has(vk));
   let pcBindings=defaultPcBindings();
   let pcClickThreshold=.55;
   let pcPointerSensitivity=.7,pcReverseScroll=true;
@@ -100,7 +101,7 @@
   }catch{}
   try{
     const saved=JSON.parse(localStorage.getItem('aftertouch.pcBindings')||'null');
-    if(Array.isArray(saved)&&saved.length<=pcButtons.length&&saved.every(b=>pcButtons.includes(b.button)&&(Number.isInteger(b.vk)&&b.vk>=1&&b.vk<=255||b.behavior==='launch'&&b.vk===0)&&['hold','tap','macro','launch'].includes(b.behavior)&&Array.isArray(b.sequence)&&b.sequence.length<=5&&b.sequence.every(vk=>Number.isInteger(vk)&&vk>=1&&vk<=255)&&(!b.chord||Array.isArray(b.chord)&&b.chord.length<=8&&b.chord.every(vk=>Number.isInteger(vk)&&vk>=1&&vk<=255))&&(!b.launchPath||typeof b.launchPath==='string'&&b.launchPath.length<=1024)))pcBindings=saved;
+    if(Array.isArray(saved)&&saved.length<=pcButtons.length&&saved.every(b=>pcButtons.includes(b.button)&&(Number.isInteger(b.vk)&&b.vk>=1&&b.vk<=255||['launch','program'].includes(b.behavior)&&b.vk===0)&&['hold','tap','macro','launch','program'].includes(b.behavior)&&Array.isArray(b.sequence)&&b.sequence.length<=5&&b.sequence.every(vk=>Number.isInteger(vk)&&vk>=1&&vk<=255)&&(!b.chord||Array.isArray(b.chord)&&b.chord.length<=8&&b.chord.every(vk=>Number.isInteger(vk)&&vk>=1&&vk<=255))&&(!b.launchPath||typeof b.launchPath==='string'&&b.launchPath.length<=1024)))pcBindings=saved;
     const click=Number(localStorage.getItem('aftertouch.pcClickThreshold'));
     if(Number.isFinite(click)&&click>=.05&&click<=.95)pcClickThreshold=click;
     const pointer=Number(localStorage.getItem('aftertouch.pcPointerSensitivity'));
@@ -116,7 +117,7 @@
     try{localStorage.setItem('aftertouch.pcAudioSketch',String(pcAudioSketch));}catch{}
   });
   let updateChecking=false, updateInstalling=false, availableVersion='';
-  let triggerPresets=[],activeWeaponPreset="";
+  let triggerPresets=[],activeWeaponPreset="",appliedTriggerState=null;
   const profile = () => state.profiles.find(p => p.id === state.profileId) || state.profiles[0];
   const trigger = () => profile().triggers[state.side];
   const timeLabel = () => new Date().toLocaleTimeString('en-US',{hour12:false});
@@ -124,6 +125,7 @@
 
   function normalizeProfile(p) {
     const n = clone(p);
+    n.favorite=!!n.favorite; n.gameShortcuts=Array.isArray(n.gameShortcuts)?n.gameShortcuts:[];
     n.matchExe = n.matchExe || n.match_exe || '';
     delete n.match_exe;
     n.matchTitle = n.matchTitle || '';
@@ -219,7 +221,11 @@
   }
   async function send(command) {
     if (!native) { toast('Open the desktop app for hardware.'); return false; }
-    try { await invoke('send_command',{command}); return true; }
+    try { await invoke('send_command',{command});
+      if(command.action==='applyTriggers')appliedTriggerState={profileId:state.profileId,triggers:clone({left:command.left,right:command.right}),inputEffects:clone(appliedTriggerState?.inputEffects||profile().inputEffects)};
+      if(command.action==='setInputEffects'&&appliedTriggerState)appliedTriggerState.inputEffects=clone(command);
+      if(command.action==='reset')appliedTriggerState=null;
+      window.studioHooks?.command(command); return true; }
     catch (error) { toast(String(error)); log(`CORE ERROR / ${error}`); return false; }
   }
   function sendPcBindings(){
@@ -381,23 +387,25 @@
     const host=$('#pc-bindings');host.replaceChildren();
     for(const button of pcButtons){
       const binding=pcBindings.find(item=>item.button===button),row=gameNode('div',{class:'pc-binding'}),label=gameNode('span',{text:names[button]});
-      const behavior=gameSelect([['','Unassigned'],['hold','Hold key / shortcut'],['tap','Tap key / shortcut'],['macro','Key sequence'],['launch','Open app']],binding?.behavior||'',value=>{
+      const behavior=gameSelect([['','Unassigned'],['hold','Hold key / shortcut'],['tap','Tap key / shortcut'],['macro','Key sequence'],['launch','Open app'],['program','Macro steps']],binding?.behavior||'',value=>{
         pcBindings=pcBindings.filter(item=>item.button!==button);
-        if(value)pcBindings.push({button,vk:value==='launch'?0:(binding?.vk||13),behavior:value,sequence:value==='macro'?[32]:[],chord:value==='launch'||value==='macro'?[]:(binding?.chord||[]),launchPath:value==='launch'?(binding?.launchPath||''):undefined});
+        if(value)pcBindings.push({button,vk:['launch','program'].includes(value)?0:(binding?.vk||13),behavior:value,sequence:value==='macro'?[32]:[],chord:['launch','macro','program'].includes(value)?[]:(binding?.chord||[]),launchPath:value==='launch'?(binding?.launchPath||''):undefined,launchArgs:value==='launch'?(binding?.launchArgs||[]):[],program:value==='program'?(binding?.program||{steps:[{type:'wait',ms:100}],repeat:1}):undefined});
         savePcBindings();renderPcBindings();
       });behavior.setAttribute('aria-label',`${names[button]} action`);row.append(label,behavior);
       if(binding?.behavior==='launch'){
         const launch=gameNode('input',{type:'text',maxLength:1024,value:binding.launchPath||'',placeholder:'Full application path'});launch.setAttribute('aria-label',`${names[button]} app path`);launch.addEventListener('change',()=>{binding.launchPath=launch.value.trim();savePcBindings();});row.append(launch);
+      }else if(binding?.behavior==='program'){
+        const edit=gameNode('button',{type:'button',class:'quiet-action',text:`Edit ${binding.program?.steps?.length||0} steps`});edit.addEventListener('click',()=>window.studioHooks?.editMacro(binding));row.append(edit);
       }else if(binding){
-        const keys=gameNode('div',{class:'pc-key-editor'}),key=gameSelect([['','Choose key'],...vkChoices.map(k=>[k.vk,k.label])],binding.vk,value=>{if(!value)return;binding.vk=+value;binding.chord=[];savePcBindings();renderPcBindings();});key.setAttribute('aria-label',`${names[button]} key`);
+        const keys=gameNode('div',{class:'pc-key-editor'}),key=gameSelect([['','Choose key'],...vkChoices.filter(k=>validPcKey(k.vk)).map(k=>[k.vk,k.label])],binding.vk,value=>{if(!value)return;binding.vk=+value;binding.chord=[];savePcBindings();renderPcBindings();});key.setAttribute('aria-label',`${names[button]} key`);
         if(!vkChoices.some(k=>k.vk===binding.vk))key.add(new Option(`Key ${binding.vk}`,binding.vk));key.value=String(binding.vk);
         keys.append(key);
         if(binding.behavior!=='macro'){
           const record=gameNode('button',{class:'quiet-action pc-record',type:'button',text:binding.chord?.length?binding.chord.map(vk=>vkChoices.find(k=>k.vk===vk)?.label||`Key ${vk}`).join(' + '):'Record shortcut'});
           record.setAttribute('aria-label',`${names[button]} record shortcut`);
           record.addEventListener('click',()=>{
-            record.textContent='Press shortcut…';let timer;
-            const finish=()=>{window.removeEventListener('keydown',capture,true);clearTimeout(timer);renderPcBindings();};
+            record.textContent='Press shortcut…';state.shortcutRecording=true;let timer;
+            const finish=()=>{state.shortcutRecording=false;window.removeEventListener('keydown',capture,true);clearTimeout(timer);renderPcBindings();};
             const capture=event=>{event.preventDefault();event.stopImmediatePropagation();if(['Control','Shift','Alt','Meta'].includes(event.key))return;
               const vk=event.code.startsWith('Key')?event.code.charCodeAt(3):event.code.startsWith('Digit')?event.code.charCodeAt(5):event.keyCode;
               if(!validPcKey(vk))return;
@@ -414,6 +422,7 @@
       }
       host.append(row);
     }
+    window.studioHooks?.renderPc();
     $('#pc-click-threshold').value=String(Math.round(pcClickThreshold*100));$('#pc-click-value').textContent=`${Math.round(pcClickThreshold*100)}%`;
     $('#pc-pointer-sensitivity').value=String(Math.round(pcPointerSensitivity*100));$('#pc-pointer-value').textContent=`${Math.round(pcPointerSensitivity*100)}%`;$('#pc-reverse-scroll').checked=pcReverseScroll;
   }
@@ -443,11 +452,13 @@
     if (!$('#' + view)?.classList.contains('screen')) return;
     if(zoneRun&&view!=='triggers')stopZoneCalibration();
     clearPadFocus();
+    window.studioHooks?.beforeNavigate(view);
     state.currentView = view;
     $$('.screen').forEach(s => { const active = s.id === view; s.hidden = !active; s.classList.toggle('is-current',active); });
     $$('.nav-link').forEach(b => { const active = b.dataset.view === view; b.classList.toggle('is-current',active); active ? b.setAttribute('aria-current','page') : b.removeAttribute('aria-current'); });
     if (location.hash !== '#' + view) history.replaceState(null,'','#' + view);
-    window.scrollTo({top:0,behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
+    window.scrollTo({top:window.studioHooks?.scrollTop(view)||0,behavior:'instant'});
+    window.studioHooks?.navigate(view);
     if (view === 'triggers') renderCurve();
   }
   $('#nav').addEventListener('click',e => { const b = e.target.closest('[data-view]'); if (b) navigate(b.dataset.view); });
@@ -495,8 +506,8 @@
   }
   function padControls(){
     const selector='button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href],[tabindex]:not([tabindex="-1"])';
-    return [$('#'+state.currentView),$('.masthead'),$('.session-rail')].flatMap(root=>$$(selector,root))
-      .filter(el=>el.getClientRects().length && el.getAttribute('type')!=='hidden').sort((a,b)=>Number(!!a.closest('.preset-library'))-Number(!!b.closest('.preset-library')));
+    return (document.querySelector('dialog[open]')?[document.querySelector('dialog[open]')]:[$('#'+state.currentView),$('.masthead'),$('.session-rail')]).flatMap(root=>$$(selector,root))
+      .filter(el=>el.getClientRects().length && el.getAttribute('type')!=='hidden').sort((a,b)=>Number(!!a.closest('.preset-library,.trigger-tools'))-Number(!!b.closest('.preset-library,.trigger-tools')));
   }
   function focusPadControl(el){
     if(!el)return;
@@ -535,6 +546,9 @@
     const previous=padNavPrev;
     const pressed=index=>down[index]&&!previous[index];
     padNavPrev=down;
+    const modal=document.querySelector('dialog[open]');
+    if(modal&&pressed(1)){modal.close();clearPadFocus();return;}
+    if(modal&&(pressed(4)||pressed(5)))return;
     if(pressed(4)||pressed(5)){
       const index=padPages.indexOf(state.currentView);
       navigate(padPages[(index+(pressed(5)?1:-1)+padPages.length)%padPages.length]);
@@ -565,7 +579,7 @@
     if(p.actionsEnabled!=null&&typeof p.actionsEnabled!=='boolean')return false;
     const rules=p.actions??[],weapons=p.weaponBindings??[];
     if(!Array.isArray(rules)||rules.length>24||!Array.isArray(weapons)||weapons.length>100)return false;
-    const text=(v,max)=>typeof v==='string'&&v.trim().length>0&&v.length<=max;
+    const text=(v,max)=>typeof v==='string'&&v.trim().length>0&&[...v].length<=max;
     const integer=(v,min,max)=>Number.isInteger(v)&&v>=min&&v<=max;
     if(rules.some(r=>!r||!text(r.id,80)||!text(r.name,40)||!['press','double','hold','event'].includes(r.source)||!integer(r.button??0,0,22)||!integer(r.windowMs??280,80,1000)||!integer(r.durationMs,20,2000)||!integer(r.cooldownMs??180,0,10000)||r.source==='event'&&!text(r.event,80)||!r.haptic&&!r.leftTrigger&&!r.rightTrigger||r.haptic&&(!['sine','square','saw','noise'].includes(r.haptic.shape)||!integer(r.haptic.frequency,20,300)||!integer(r.haptic.strength,0,100)||!integer(r.haptic.pan??0,-100,100))))return false;
     if(new Set(rules.map(r=>r.id)).size!==rules.length||weapons.some(b=>!b||!text(b.weapon,80)||!text(b.presetId,80))||new Set(weapons.map(b=>b.weapon.toLowerCase())).size!==weapons.length)return false;
@@ -636,6 +650,7 @@
     } catch (error) { log(`PROFILE LOAD / ${error}`); }
     renderAutoApply();
     renderAllProfileControls();
+    window.studioHooks?.loaded();
   }
   function persistProfiles() {
     const data={schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles),triggerPresets:clone(triggerPresets)};
@@ -646,6 +661,7 @@
     return saveChain.then(()=>true).catch(error=>{toast(`Profile save failed: ${error}`);log(`PROFILE SAVE / ${error}`);return false;});
   }
   function saveProfiles(immediate=false) {
+    window.studioHooks?.capture();
     clearTimeout(saveTimeout);
     if(immediate)return persistProfiles();
     saveTimeout=setTimeout(persistProfiles,180);
@@ -714,10 +730,11 @@
   $('#add-weapon-binding').addEventListener('click',()=>{if(!triggerPresets.length){toast('Save a trigger preset on Triggers first.');return;}if(profile().weaponBindings.length>=100)return;let name='Weapon',i=1;while(profile().weaponBindings.some(b=>b.weapon===name))name=`Weapon ${++i}`;profile().weaponBindings.push({weapon:name,presetId:triggerPresets[0].id});saveProfiles();renderGameProfiles();});
   $('#apply-manual-weapon').addEventListener('click',()=>useWeapon($('#manual-weapon').value));
 
-  function renderAllProfileControls() { renderProfiles(); renderTriggerControls(); renderHapticControls(); renderRemapEditor(); renderGyroControls(); renderGameProfiles(); }
+  function renderAllProfileControls() { renderProfiles(); renderTriggerControls(); renderHapticControls(); renderRemapEditor(); renderGyroControls(); renderGameProfiles(); window.studioHooks?.renderProfile(); }
 
   async function applyProfileHardware(announce=true) {
     const p = profile();
+    if(!announce&&state.autoSuppressed)return false;
     if (!state.connected) {
       if (announce) toast('Connect a controller.');
       return false;
@@ -763,10 +780,11 @@
     if (!state.connected || !state.autoApply || state.autoSuppressed || !state.autoMatchId ||
         state.profileId !== state.autoMatchId || !profile().autoApply ||
         !matchesForeground(profile())) return;
-    const currentTriggers=triggerPresets.find(p=>p.id===activeWeaponPreset)?.triggers||profile().triggers;
-    if (currentTriggers.left.mode==='off' && currentTriggers.right.mode==='off') return;
-    if (state.leaseUntil>performance.now()) await send({action:'renewTriggers'});
-    else if(activeWeaponPreset){const preset=triggerPresets.find(p=>p.id===activeWeaponPreset);if(preset){await send({action:'applyTriggers',...preset.triggers});await send(inputEffectCommand(preset.inputEffects));}}else await applyProfileHardware(false);
+    if(!appliedTriggerState||appliedTriggerState.profileId!==state.profileId)return;
+    const {triggers,inputEffects}=appliedTriggerState;
+    if(triggers.left.mode==='off'&&triggers.right.mode==='off'&&!inputEffects.enabled)return;
+    if(state.leaseUntil>performance.now())await send({action:'renewTriggers'});
+    else {await send({action:'applyTriggers',...triggers});await send(inputEffectCommand(inputEffects));}
   }, 5000);
 
   function renderAutoApply() {
@@ -790,7 +808,8 @@
     state.profiles.forEach((p,i) => {
       const b=document.createElement('button'); b.className='profile-row'+(p.id===state.profileId?' is-active':''); b.type='button'; b.dataset.profile=p.id;
       b.innerHTML=`<span class="number">${String(i+1).padStart(2,'0')}</span><span><strong></strong><small></small></span><span class="arrow">↗</span>`;
-      $('strong',b).textContent=p.name; $('small',b).textContent=p.tag||'Custom'; list.append(b);
+      if(window.studioHooks?.filterProfile(p)===false)return;
+      $('strong',b).textContent=(p.favorite?'★ ':'')+p.name; $('small',b).textContent=p.tag||'Custom'; list.append(b);
     });
     $('#profile-name').value=profile().name; $('#profile-description').value=profile().description||''; $('#profile-match').value=profile().matchExe||'';
     $('#profile-match-title').value=profile().matchTitle||'';$('#profile-match-path').value=profile().matchPath||'';
@@ -833,7 +852,7 @@
   async function commitProfileDraft(announce=false) {
     const name=$('#profile-name').value.trim(); if(!name){toast('Enter a name.');return false;}
     const matchExe=$('#profile-match').value.trim().toLowerCase();
-    if(matchExe && (!/^[\w. -]+\.exe$/.test(matchExe)||matchExe.length>80)){toast('Use a name like game.exe.');return false;}
+    if(matchExe && (/[\/\\\x00-\x1f]/.test(matchExe)||matchExe.length>80)){toast('Enter an executable name without its folder path.');return false;}
     const matchTitle=$('#profile-match-title').value.trim();
     const matchPath=$('#profile-match-path').value.trim();
     if((matchTitle||matchPath)&&!matchExe){toast('Set an executable name before refining the match.');return false;}
@@ -868,6 +887,7 @@
     const file=e.target.files[0]; if(!file)return;
     try { if(file.size>1_000_000)throw Error('File is too large'); const data=JSON.parse(await file.text());
       if(![1,2,3].includes(data.schemaVersion)||!Array.isArray(data.profiles)||!data.profiles.length||data.profiles.length>50||!data.profiles.every(validProfile)||!validLibrary(data.triggerPresets??[]))throw Error('Unsupported or invalid profile file');
+      if(window.studioHooks&&!await window.studioHooks.previewImport(data))return;
       if(state.profiles.length+data.profiles.length>50)throw Error('50 profile limit');
       const incoming=Array.isArray(data.triggerPresets)?data.triggerPresets:[];
       if(triggerPresets.length+incoming.length>100)throw Error('100 trigger preset limit');
@@ -879,7 +899,7 @@
       state.profiles.unshift(...imported);state.profileId=imported[0].id;renderAllProfileControls();
       if(await saveProfiles(true))toast(`Imported ${imported.length}`);
       else{state.profiles=previousProfiles;state.profileId=previousId;triggerPresets=previousPresets;renderAllProfileControls();}
-    } catch(error){toast(`Import failed: ${error.message}`);} e.target.value='';
+    } catch(error){toast(`Import failed: ${error.message}`);} finally {e.target.value='';}
   });
 
   function renderRemapEditor() {
@@ -1210,7 +1230,7 @@
   $('#click-enabled').addEventListener('change',e=>{profile().inputEffects.enabled=e.target.checked;saveProfiles();});
   $('#click-threshold').addEventListener('input',e=>{profile().inputEffects.threshold=+e.target.value/100;$('#click-threshold-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
   $('#click-strength').addEventListener('input',e=>{profile().inputEffects.strength=+e.target.value;$('#click-strength-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
-  $('#apply-triggers').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration();const p=profile();for(const side of ['left','right']){const t=p.triggers[side],map=motorZones[side];if(t.mode==='bow')t.releasePoint=validMotorZones(map)?map[t.endZone??9]:clamp((t.endZone??9)/10,.2,.97);}if(await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right}))send(inputEffectCommand(p.inputEffects));});
+  $('#apply-triggers').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration();const p=profile();for(const side of ['left','right']){const t=p.triggers[side],map=motorZones[side];if(t.mode==='bow')t.releasePoint=validMotorZones(map)?map[t.endZone??9]:clamp((t.endZone??9)/10,.2,.97);}if(await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right})){if(await send(inputEffectCommand(p.inputEffects))){state.autoSuppressed=false;await applyGameRules();}}});
   $('#reset-effects').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration(false);send({action:'reset'});});
 
   function renderHapticControls(){
@@ -1835,6 +1855,7 @@
   $('#battery-segments').innerHTML=Array.from({length:10},()=>'<i></i>').join('');
   function drawActivity(){const canvas=$('#activity-scope'),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);ctx.beginPath();state.activity.forEach((v,i)=>{const x=i/(state.activity.length-1)*w,y=h-8-v*(h-16);if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.lineWidth=3;ctx.strokeStyle='#d4a84b';ctx.stroke();ctx.fillStyle='#7ec9bc';const last=state.activity.at(-1);ctx.fillRect(w-5,h-8-last*(h-16)-4,8,8);}
   function handleEvent(event){
+    window.studioHooks?.event(event);
     if(event.type==='device'){
       const changed=state.connected!==!!event.connected || (event.connected&&(state.name!==event.name||state.transport!==event.transport||state.path!==(event.path||'')));
       if(changed)padNavPrev=null;
@@ -1863,7 +1884,8 @@
       state.fullReport=!!event.input.fullReport;
       if(reportChanged)renderGyroControls();
       $('#photo-status').textContent=event.input.fullReport?`${state.transport} live`:'Bluetooth basic';
-      state.packet++;state.lastInputAt=performance.now();renderInput();renderSession();
+      state.packet++;state.lastInputAt=performance.now();
+      if(!document.hidden&&(performance.now()-(state.lastDrawAt||0)>32||event.input.buttons.some((v,i)=>(v>0.5)!==(state.lastDrawButtons?.[i]>0.5)))){renderInput();renderSession();state.lastDrawAt=performance.now();state.lastDrawButtons=event.input.buttons.slice();}
     }else if(event.type==='xinput'){
       state.xinput=!!event.enabled && event.status==='active';
       state.xinputStatus=event.status||'disabled';
@@ -1943,7 +1965,6 @@
       $('#conflict-message').style.color=event.detected?'#d4a84b':'';
       if(event.detected) log(`OUTPUT CONFLICT / ${event.message}`);
     }else if(event.type==='foreground'){
-      const previous=state.foregroundExe;
       const previousMatch=state.autoMatchId;
       state.foregroundExe=event.exe||'';
       state.foregroundTitle=event.title||'';
@@ -1952,7 +1973,7 @@
       $('#detected-app').textContent=`Last app: ${state.lastExternalExe||'none'}`;
       const match=state.profiles.filter(matchesForeground).sort((a,b)=>(!!b.matchPath+!!b.matchTitle)-(!!a.matchPath+!!a.matchTitle))[0];
       state.autoMatchId=match?.id||'';
-      if(previous!==state.foregroundExe||previousMatch!==state.autoMatchId)state.autoSuppressed=false;
+      // Reset stays stopped across foreground changes until an explicit Apply.
       if(match && match.id!==state.profileId){
         state.profileId=match.id;renderAllProfileControls();saveProfiles();
         log(`AUTO LOAD / ${match.name} FOR ${state.foregroundExe}`);
@@ -2004,6 +2025,7 @@
     }else if(event.type==='core'){
       state.coreStatus = event.status || 'ready';
       if(event.status==='restarting'||event.status==='stopped'){
+        state.autoSuppressed=true;appliedTriggerState=null;
         state.pcMode=false;renderPcMode();
         state.scriptEnabled=false;renderScript();$('#script-status').textContent='Core restarting · arm the rule again when ready';$('#script-output').textContent='Waiting for a signal';
         state.temperatureLight=false;state.screenLight=false;renderTemperatureLight();renderScreenLight();
@@ -2014,11 +2036,11 @@
       $('#core-status').classList.toggle('is-warn', event.status === 'restarting' || event.status === 'stopped');
       if (event.message) log(event.message);
       if(event.status==='ready')reportUiFocus();
-    }else if(event.type==='notice'||event.type==='error'){
+    }else if(event.type==='notice'||event.type==='error'||event.type==='desktopInputError'){
       toast(event.message);log(event.message);
     }
   }
-  let lastCanvas=0;function frame(now){if(now-lastCanvas>35){drawActivity();if(state.currentView==='haptics'||now<state.playUntil)drawWave(now);renderSession();if(state.currentView==='haptics'&&state.timerUntil)renderAlerts();if(state.currentView==='haptics'&&speakerStartedAt)renderSpeakerProgress(now);updateStickTest(now);if(state.telemetryOn&&state.telemetryLast&&now-state.telemetryLast>1500)$('#telemetry-status').textContent='Listening · waiting for telemetry';lastCanvas=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
+  let lastCanvas=0;function frame(now){if(!document.hidden&&now-lastCanvas>50){if(state.packet!==state.lastFramePacket){renderInput();if(state.currentView==='live')drawActivity();state.lastFramePacket=state.packet;}if(state.currentView==='haptics'||now<state.playUntil)drawWave(now);if(state.leaseUntil>now||state.lastLeaseDraw){renderSession();state.lastLeaseDraw=state.leaseUntil>now;}if(state.currentView==='haptics'&&state.timerUntil)renderAlerts();if(state.currentView==='haptics'&&speakerStartedAt)renderSpeakerProgress(now);updateStickTest(now);if(state.telemetryOn&&state.telemetryLast&&now-state.telemetryLast>1500)$('#telemetry-status').textContent='Listening · waiting for telemetry';lastCanvas=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
   const keyMap={j:2,k:0,l:1,i:3,q:4,e:5,z:6,c:7,ArrowUp:12,ArrowDown:13,ArrowLeft:14,ArrowRight:15};
   const held=new Set();window.addEventListener('keydown',e=>{if(state.connected||e.target.matches('input,textarea,button,select'))return;if(!(e.key in keyMap))return;held.add(e.key);state.buttons[keyMap[e.key]]=1;renderInput();});
   window.addEventListener('keyup',e=>{if(!(e.key in keyMap)||state.connected)return;held.delete(e.key);state.buttons[keyMap[e.key]]=0;renderInput();});
@@ -2034,5 +2056,12 @@
       setInterval(()=>checkForUpdates(),12*60*60*1000);
     }else{$('#core-status').textContent='Core: browser preview';$('#update-status').textContent='Updates are available in the installed desktop app.';$('#check-update').disabled=true;log('Browser preview');}
   }
+  window.controllerStudio={state,profile,trigger,clone,native,invoke,send,toast,names,vkChoices,validPcKey,gameNode,gameSelect,gameField,saveProfiles,commitProfileDraft,normalizeProfile,validProfile,validLibrary,renderProfiles,renderAllProfileControls,renderTriggerControls,renderPcBindings,savePcBindings,navigate,useWeapon,applyProfileHardware,
+    getPresets:()=>triggerPresets,getPcBindings:()=>pcBindings,
+    async selectProfile(id,apply=false){if(!state.profiles.some(p=>p.id===id))return;state.profileId=id;renderAllProfileControls();await saveProfiles(true);if(apply&&state.connected)await applyProfileHardware(true);},
+    setSupportedKeys(keys){if(Array.isArray(keys)){supportedKeys=new Set(keys);renderPcBindings();}},
+    archive:()=>({schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles),triggerPresets:clone(triggerPresets)}),
+    async replaceArchive(data){if(!data?.profiles?.length||!data.profiles.every(validProfile)||!validLibrary(data.triggerPresets||[]))throw Error('Invalid archive');await send({action:'reset'});state.autoSuppressed=true;state.profiles=data.profiles.map(normalizeProfile);state.profileId=state.profiles.some(p=>p.id===data.activeId)?data.activeId:state.profiles[0].id;triggerPresets=data.triggerPresets||[];state.autoApply=data.autoApply!==false;renderAllProfileControls();return saveProfiles(true);}
+  };
   start();
 })();

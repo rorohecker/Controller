@@ -2,10 +2,12 @@
 
 mod audio_haptics;
 mod device;
+mod diagnostics;
 mod game_actions;
 mod game_link;
 mod haptics;
 mod input_map;
+mod macros;
 #[cfg(not(windows))]
 mod native_input;
 #[cfg(windows)]
@@ -20,6 +22,7 @@ mod screen_color;
 #[path = "screen_color_portable.rs"]
 mod screen_color;
 mod script;
+mod steam;
 mod telemetry;
 mod updates;
 mod xinput_bridge;
@@ -89,9 +92,9 @@ fn set_close_to_tray(
     let path = settings_path(&app)?;
     std::fs::create_dir_all(path.parent().ok_or("Settings folder missing")?)
         .map_err(|e| e.to_string())?;
-    std::fs::write(
+    profiles::write_archive(
         &path,
-        serde_json::to_vec(&json!({"closeToTray": enabled})).map_err(|e| e.to_string())?,
+        &serde_json::to_vec(&json!({"closeToTray": enabled})).map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
     tray.close_to_tray.store(enabled, Ordering::SeqCst);
@@ -110,7 +113,7 @@ fn set_start_on_login(enabled: bool, app: tauri::AppHandle) -> Result<(), String
 
 #[tauri::command]
 fn platform_capabilities() -> Value {
-    json!({"os": std::env::consts::OS, "desktopInput":true, "xinput": cfg!(windows), "screenColor": cfg!(windows), "systemAudioBridge": cfg!(windows)})
+    json!({"os": std::env::consts::OS, "desktopInput":true, "supportedKeys":(1..=254u16).filter(|k|input_map::supported_key(*k)).collect::<Vec<_>>(), "xinput": cfg!(windows), "screenColor": cfg!(windows), "systemAudioBridge": cfg!(windows)})
 }
 
 #[cfg(windows)]
@@ -375,6 +378,40 @@ fn export_profiles(data: Value) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn profile_backups(create: bool) -> Result<Vec<profiles::Backup>, String> {
+    profiles::backups(create)
+}
+#[tauri::command]
+fn restore_profile_backup(id: String) -> Result<Value, String> {
+    profiles::restore(&id)
+}
+#[tauri::command]
+async fn installed_steam_games() -> Result<Vec<steam::Game>, String> {
+    tauri::async_runtime::spawn_blocking(steam::installed)
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+fn platform_diagnostics() -> Value {
+    diagnostics::inspect()
+}
+#[tauri::command]
+fn send_game_packet(port: u16, format: String, packet: String) -> Result<(), String> {
+    game_link::LinkSettings {
+        enabled: true,
+        port,
+        format: format.clone(),
+    }
+    .validate()
+    .map_err(str::to_string)?;
+    game_link::decode(packet.as_bytes(), &format).map_err(str::to_string)?;
+    std::net::UdpSocket::bind(("127.0.0.1", 0))
+        .and_then(|s| s.send_to(packet.as_bytes(), ("127.0.0.1", port)))
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
 fn send_demo_telemetry(port: u16) -> Result<(), String> {
     if port < 1024 {
         return Err("Choose a telemetry port from 1024 to 65535".into());
@@ -502,6 +539,11 @@ fn main() {
             load_profiles,
             save_profiles,
             export_profiles,
+            profile_backups,
+            restore_profile_backup,
+            installed_steam_games,
+            platform_diagnostics,
+            send_game_packet,
             send_demo_telemetry,
             get_app_settings,
             set_close_to_tray,

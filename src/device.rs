@@ -182,6 +182,10 @@ pub enum DeviceCommand {
         #[serde(rename = "durationMs")]
         duration_ms: u64,
     },
+    SetGameRecording {
+        enabled: bool,
+    },
+    StopMacros,
     Reset,
     Shutdown,
 }
@@ -200,6 +204,10 @@ pub struct RemapBindingDto {
     pub chord: Vec<u16>,
     #[serde(default, rename = "launchPath")]
     pub launch_path: Option<String>,
+    #[serde(default, rename = "launchArgs")]
+    pub launch_args: Vec<String>,
+    #[serde(default)]
+    pub program: Option<crate::macros::Program>,
 }
 
 fn default_remap_behavior() -> String {
@@ -309,6 +317,7 @@ struct Connected {
     action_until: Option<Instant>,
     low_battery_alert: bool,
     low_battery_latched: bool,
+    last_battery: Option<u8>,
     haptic_timer: Option<Instant>,
 }
 
@@ -1149,6 +1158,7 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     bows: [None, None],
                     low_battery_alert: false,
                     low_battery_latched: false,
+                    last_battery: None,
                     haptic_timer: None,
                 }));
             }
@@ -1242,6 +1252,10 @@ fn handle_command(
     preferred_path: &mut Option<String>,
 ) -> bool {
     match command {
+        DeviceCommand::SetGameRecording { enabled } => {
+            game_link.record(enabled);
+            return true;
+        }
         DeviceCommand::SetGameLink { settings } => {
             match game_link.set(settings.clone()) {
                 Ok(()) => emit(
@@ -1411,6 +1425,17 @@ fn handle_command(
             );
             return true;
         }
+        DeviceCommand::StopMacros => {
+            if let Some(d) = device.as_mut() {
+                d.desktop.stop_macros();
+            }
+            remap.set_suspended(true);
+            emit(
+                proxy,
+                json!({"type":"notice","message":"Macros stopped. Release the controls before starting again."}),
+            );
+            return true;
+        }
         DeviceCommand::SetPcBindings {
             bindings,
             click_threshold,
@@ -1430,11 +1455,31 @@ fn handle_command(
                     b.button >= 23
                         || matches!(b.button, 6 | 7)
                         || b.modifier.is_some()
-                        || (b.behavior != "launch"
+                        || (!matches!(b.behavior.as_str(), "launch" | "program")
                             && (b.vk == 0
-                                || b.vk > 255
+                                || !crate::input_map::supported_key(b.vk)
                                 || RemapBehavior::from_label(&b.behavior).is_none()
-                                || b.launch_path.is_some()))
+                                || b.launch_path.is_some()
+                                || b.program.is_some()
+                                || !b.launch_args.is_empty()))
+                        || !crate::macros::valid_args(&b.launch_args)
+                        || (b.behavior != "launch" && !b.launch_args.is_empty())
+                        || (b.behavior == "program"
+                            && (b.vk != 0
+                                || b.launch_path.is_some()
+                                || b.program.as_ref().is_none_or(|p| p.validate().is_err())
+                                || b.program.as_ref().is_some_and(|p| {
+                                    p.steps.iter().any(|s| match s {
+                                        crate::macros::Step::Chord { keys, .. } => keys
+                                            .iter()
+                                            .any(|k| !crate::input_map::supported_key(*k)),
+                                        crate::macros::Step::Launch { path, .. } => {
+                                            !valid_launch_path(path)
+                                        }
+                                        _ => false,
+                                    })
+                                })))
+                        || (b.behavior != "program" && b.program.is_some())
                         || (b.behavior == "launch"
                             && (b.vk != 0
                                 || b.launch_path
@@ -1444,9 +1489,13 @@ fn handle_command(
                             && (b.sequence.is_empty() || b.sequence.len() > 5))
                         || (b.behavior != "macro" && !b.sequence.is_empty())
                         || b.chord.len() > 8
-                        || b.chord.iter().any(|&vk| vk == 0 || vk > 255)
+                        || b.chord
+                            .iter()
+                            .any(|&vk| !crate::input_map::supported_key(vk))
                         || (b.behavior == "macro" && !b.chord.is_empty())
-                        || b.sequence.iter().any(|&vk| vk == 0 || vk > 255)
+                        || b.sequence
+                            .iter()
+                            .any(|&vk| !crate::input_map::supported_key(vk))
                         || !seen.insert(b.button)
                 })
             {
@@ -1462,11 +1511,17 @@ fn handle_command(
                 .map(|b| PcLaunchBinding {
                     button: b.button,
                     path: std::path::PathBuf::from(b.launch_path.as_deref().unwrap()),
+                    args: b.launch_args.clone(),
                 })
                 .collect();
+            let programs = bindings
+                .iter()
+                .filter_map(|b| b.program.clone().map(|p| (b.button, p)))
+                .collect();
+            device.desktop.set_programs(programs);
             let mapped = bindings
                 .into_iter()
-                .filter(|b| b.behavior != "launch")
+                .filter(|b| !matches!(b.behavior.as_str(), "launch" | "program"))
                 .map(|b| RemapBinding {
                     button: b.button,
                     vk: b.vk,
@@ -1600,7 +1655,7 @@ fn handle_command(
                 || bindings.iter().any(|b| {
                     b.button >= 23
                         || b.vk == 0
-                        || b.vk > 255
+                        || !crate::input_map::supported_key(b.vk)
                         || b.modifier
                             .is_some_and(|modifier| modifier >= 23 || modifier == b.button)
                         || RemapBehavior::from_label(&b.behavior).is_none()
@@ -1609,9 +1664,13 @@ fn handle_command(
                             && (b.sequence.is_empty() || b.sequence.len() > 5))
                         || (b.behavior != "macro" && !b.sequence.is_empty())
                         || b.chord.len() > 8
-                        || b.chord.iter().any(|&vk| vk == 0 || vk > 255)
+                        || b.chord
+                            .iter()
+                            .any(|&vk| !crate::input_map::supported_key(vk))
                         || (b.behavior == "macro" && !b.chord.is_empty())
-                        || b.sequence.iter().any(|&vk| vk == 0 || vk > 255)
+                        || b.sequence
+                            .iter()
+                            .any(|&vk| !crate::input_map::supported_key(vk))
                         || !seen.insert((b.button, b.modifier))
                 })
             {
@@ -2216,7 +2275,9 @@ fn handle_command(
         | DeviceCommand::SetPcBindings { .. }
         | DeviceCommand::SetCalibration { .. }
         | DeviceCommand::SetGameActions { .. }
-        | DeviceCommand::SetGameLink { .. } => unreachable!(),
+        | DeviceCommand::SetGameLink { .. }
+        | DeviceCommand::StopMacros
+        | DeviceCommand::SetGameRecording { .. } => unreachable!(),
     };
     match result {
         Ok(message) => emit(proxy, json!({ "type": "notice", "message": message })),
@@ -2279,6 +2340,12 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
             next_focus_check = Instant::now() + Duration::from_millis(60);
         }
         if Instant::now() >= next_rate {
+            if let Some(message) = crate::input_map::take_input_error() {
+                emit(
+                    &proxy,
+                    json!({"type":"desktopInputError","message":message}),
+                );
+            }
             if telemetry.stale() && !telemetry_stale_latched {
                 telemetry_stale_latched = true;
                 if let Some(connected) = device.as_mut() {
@@ -2374,7 +2441,10 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 Err(TryRecvError::Empty) => break,
             }
         }
-        for update in game_link.poll(device.is_some()) {
+        for update in game_link.poll(
+            device.is_some(),
+            device.as_ref().and_then(|d| d.last_battery),
+        ) {
             match update {
                 Ok(update) => {
                     if let Some(d) = device.as_mut() {
@@ -2394,6 +2464,16 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                             } else {
                                 let _ = d.release_lightbar();
                             }
+                        }
+                        if let Some(mask) = update.player_leds {
+                            let _ = d.write(protocol::player_leds_report(mask));
+                            d.player_leds_active = true;
+                        }
+                        if let Some(mode) = update.microphone_led {
+                            let mut report =
+                                protocol::usb_report(0, 1, 0, None, None, None, None, false);
+                            report[9] = mode;
+                            let _ = d.write(report);
                         }
                         if update.triggers.iter().any(Option::is_some) {
                             let rule = ActionRule {
@@ -2432,7 +2512,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     }
                     emit(
                         &proxy,
-                        json!({"type":"gameEvent","weapon":update.weapon,"events":update.events}),
+                        json!({"type":"gameEvent","weapon":update.weapon,"events":update.events,"packet":update.packet,"format":update.format}),
                     );
                 }
                 Err(message) => {
@@ -2706,6 +2786,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
             match connected.hid.read_timeout(&mut input_report, 20) {
                 Ok(length) if length > 0 => {
                     if let Some(mut input) = protocol::parse_input(&input_report[..length]) {
+                        connected.last_battery = input.battery;
                         if connected.microphone_muted.is_none() {
                             connected.microphone_muted = Some(input.battery_info.microphone_muted);
                             emit(

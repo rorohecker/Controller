@@ -127,3 +127,8 @@ The system audio bridge uses the [Windows WASAPI loopback API](https://learn.mic
 CONTROLLER is independent and is not affiliated with Sony Interactive Entertainment.
 
 Geist Sans, Mono, and Pixel are bundled for offline typography under the SIL Open Font License. The license is in `ui/assets/fonts/Geist-OFL.txt`. The workbench's observatory backdrop was generated for this app; it is separate from the DualSense control artwork.
+
+
+### 0.15 studio tools
+
+Profiles now include search, favorites, local backup history, restore, import previews, individual export, Steam game assignment, and controller shortcuts. The trigger editor adds undo/redo, side copying and swapping, preset comparison, and a force/timing guide. PC macros support editable steps, waits, repeats, mouse actions, and app arguments with explicit cancellation. Diagnostics adds local packet recording/replay, a receiver test, measured DSX battery status, player/mic LED compatibility, and platform/input error checks. Ctrl/Cmd+K opens quick search. The macOS download is universal for Intel and Apple Silicon. See [Game profiles](docs/game-profiles.md) for details and limits.

@@ -1,6 +1,6 @@
 [package]
 name = "controller"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2024"
 build = "build.rs"
 description = "CONTROLLER, a native DualSense tuning studio"

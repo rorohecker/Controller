@@ -28,6 +28,8 @@ struct Profile {
     name: String,
     description: String,
     tag: String,
+    #[serde(default)]
+    favorite: bool,
     #[serde(default, alias = "match_exe")]
     match_exe: String,
     #[serde(default)]
@@ -52,6 +54,16 @@ struct Profile {
     game_link: crate::game_link::LinkSettings,
     #[serde(default)]
     weapon_bindings: Vec<WeaponBinding>,
+    #[serde(default)]
+    game_shortcuts: Vec<GameShortcut>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GameShortcut {
+    button: u8,
+    modifier: Option<u8>,
+    action: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -319,6 +331,22 @@ fn validate(data: Value) -> Result<Archive, String> {
     }
     let mut ids = std::collections::HashSet::new();
     for p in &archive.profiles {
+        let mut shortcuts = std::collections::HashSet::new();
+        if p.game_shortcuts.len() > 12
+            || p.game_shortcuts.iter().any(|s| {
+                s.button >= 23
+                    || matches!(s.button, 6 | 7 | 16 | 18)
+                    || s.modifier
+                        .is_some_and(|m| m >= 23 || m == s.button || matches!(m, 6 | 7 | 16 | 18))
+                    || !shortcuts.insert((s.button, s.modifier))
+                    || !matches!(
+                        s.action.as_str(),
+                        "nextProfile" | "previousProfile" | "nextWeapon" | "previousWeapon"
+                    )
+            })
+        {
+            return Err("Invalid game shortcut".into());
+        }
         if !ids.insert(&p.id)
             || p.id.is_empty()
             || p.id.len() > 80
@@ -450,10 +478,149 @@ pub fn save(data: Value) -> Result<(), String> {
     let (file, _) = paths()?;
     fs::create_dir_all(file.parent().ok_or("Profile folder is unavailable")?)
         .map_err(|e| e.to_string())?;
-    write_archive(&file, &json)
+    save_at(&file, &json)
 }
 
-fn write_archive(file: &std::path::Path, json: &[u8]) -> Result<(), String> {
+fn save_at(file: &std::path::Path, json: &[u8]) -> Result<(), String> {
+    if fs::read(file).ok().as_deref() == Some(json) {
+        return Ok(());
+    }
+    snapshot(file, false)?;
+    write_archive(file, json)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Backup {
+    id: String,
+    created_ms: u64,
+    profiles: usize,
+}
+
+fn backup_stamp(id: &str) -> Option<u128> {
+    let digits = id.strip_prefix("profiles-")?.strip_suffix(".json")?;
+    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+fn history(file: &std::path::Path) -> Result<Vec<Backup>, String> {
+    let folder = file.with_file_name("profile-backups");
+    if !folder.exists() {
+        return Ok(Vec::new());
+    }
+    let mut backups = Vec::new();
+    for entry in fs::read_dir(folder).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let id = entry.file_name().to_string_lossy().into_owned();
+        let Some(stamp) = backup_stamp(&id) else {
+            continue;
+        };
+        if !entry.file_type().is_ok_and(|t| t.is_file()) {
+            continue;
+        }
+        if let Ok(bytes) = fs::read(entry.path())
+            && bytes.len() <= 1_000_000
+            && let Ok(data) = serde_json::from_slice(&bytes)
+            && let Ok(archive) = validate(data)
+        {
+            backups.push(Backup {
+                id,
+                created_ms: (stamp / 1_000_000).min(u128::from(u64::MAX)) as u64,
+                profiles: archive.profiles.len(),
+            });
+        }
+    }
+    backups.sort_by(|a, b| b.created_ms.cmp(&a.created_ms).then(b.id.cmp(&a.id)));
+    Ok(backups)
+}
+
+fn snapshot(file: &std::path::Path, force: bool) -> Result<(), String> {
+    let bytes = match fs::read(file) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.to_string()),
+    };
+    // Keep an unreadable archive intact rather than replacing it with defaults.
+    if bytes.len() > 1_000_000 {
+        return Err(
+            "Existing profile archive is too large. Export or repair it before saving.".into(),
+        );
+    }
+    validate(
+        serde_json::from_slice(&bytes)
+            .map_err(|e| format!("Existing profiles need repair: {e}"))?,
+    )?;
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let backups = history(file)?;
+    if !force
+        && backups
+            .first()
+            .is_some_and(|b| stamp / 1_000_000 < u128::from(b.created_ms) + 60_000)
+    {
+        return Ok(());
+    }
+    let folder = file.with_file_name("profile-backups");
+    fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
+    write_archive(&folder.join(format!("profiles-{stamp}.json")), &bytes)?;
+    for old in backups.iter().skip(19) {
+        fs::remove_file(folder.join(&old.id)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+pub fn backups(create: bool) -> Result<Vec<Backup>, String> {
+    let (file, _) = paths()?;
+    if create {
+        snapshot(&file, true)?;
+    }
+    history(&file)
+}
+
+fn restore_at(file: &std::path::Path, id: &str) -> Result<Value, String> {
+    backup_stamp(id).ok_or("Invalid backup name")?;
+    let bytes =
+        fs::read(file.with_file_name("profile-backups").join(id)).map_err(|e| e.to_string())?;
+    if bytes.len() > 1_000_000 {
+        return Err("Backup is too large".into());
+    }
+    let data = serde_json::to_value(validate(
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?,
+    )?)
+    .map_err(|e| e.to_string())?;
+    // A corrupt current file remains available for manual recovery.
+    if fs::read(file)
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .is_some_and(|v| validate(v).is_ok())
+    {
+        snapshot(file, true)?;
+    } else if let Ok(current) = fs::read(file) {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        write_archive(
+            &file.with_file_name(format!("profiles-corrupt-{stamp}.json")),
+            &current,
+        )?;
+    }
+    write_archive(
+        file,
+        &serde_json::to_vec_pretty(&data).map_err(|e| e.to_string())?,
+    )?;
+    Ok(data)
+}
+
+pub fn restore(id: &str) -> Result<Value, String> {
+    restore_at(&paths()?.0, id)
+}
+
+pub(crate) fn write_archive(file: &std::path::Path, json: &[u8]) -> Result<(), String> {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -482,6 +649,7 @@ pub fn export(data: Value) -> Result<String, String> {
     let user = env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
         .ok_or("Home folder is unavailable")?;
     let folder = PathBuf::from(user).join("Downloads");
+    fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
@@ -512,6 +680,66 @@ pub fn export(data: Value) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backup_restore_keeps_current_archive_and_rejects_traversal() {
+        let folder = env::temp_dir().join(format!(
+            "controller-recovery-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("profiles.json");
+        let first = serde_json::to_vec_pretty(&validate(sample_profile()).unwrap()).unwrap();
+        write_archive(&file, &first).unwrap();
+        let mut second = sample_profile();
+        second["profiles"][0]["name"] = "Second".into();
+        let second = serde_json::to_vec_pretty(&validate(second).unwrap()).unwrap();
+        save_at(&file, &second).unwrap();
+        let backups = history(&file).unwrap();
+        assert_eq!(backups.len(), 1);
+        let restored = restore_at(&file, &backups[0].id).unwrap();
+        assert_eq!(restored["profiles"][0]["name"], "Test");
+        assert_eq!(history(&file).unwrap().len(), 2);
+        assert!(restore_at(&file, "../profiles.json").is_err());
+        assert!(restore_at(&file, "profiles-../1.json").is_err());
+        // A corrupt current archive cannot be replaced by an ordinary save.
+        fs::write(&file, b"corrupt").unwrap();
+        assert!(save_at(&file, &first).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"corrupt");
+        assert!(restore_at(&file, &backups[0].id).is_ok());
+        for backup in history(&file).unwrap() {
+            fs::remove_file(file.with_file_name("profile-backups").join(backup.id)).unwrap();
+        }
+        fs::remove_file(file).unwrap();
+    }
+
+    #[test]
+    fn history_retention_is_bounded_and_automatic_snapshots_are_throttled() {
+        let folder = env::temp_dir().join(format!(
+            "controller-retention-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("profiles.json");
+        write_archive(&file, &serde_json::to_vec(&sample_profile()).unwrap()).unwrap();
+        for _ in 0..23 {
+            snapshot(&file, true).unwrap();
+        }
+        assert_eq!(history(&file).unwrap().len(), 20);
+        snapshot(&file, false).unwrap();
+        assert_eq!(history(&file).unwrap().len(), 20);
+        for backup in history(&file).unwrap() {
+            fs::remove_file(file.with_file_name("profile-backups").join(backup.id)).unwrap();
+        }
+        fs::remove_file(file).unwrap();
+    }
 
     fn sample_profile() -> Value {
         serde_json::json!({

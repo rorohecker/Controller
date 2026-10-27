@@ -35,7 +35,14 @@ jobs:
           if ((Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash -ne $expected) { throw 'Bundled ViGEmBus hash changed' }
           $signature = Get-AuthenticodeSignature -LiteralPath $asset
           if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*Nefarius Software Solutions*') { throw 'Bundled ViGEmBus signature is invalid' }
+      - name: Cache Tauri CLI
+        uses: actions/cache@v4
+        id: tauri-cli
+        with:
+          path: ~/.cargo/bin/cargo-tauri*
+          key: tauri-cli-2.11.1-${{ runner.os }}-${{ runner.arch }}
       - name: Install Tauri CLI
+        if: steps.tauri-cli.outputs.cache-hit != 'true'
         run: cargo install tauri-cli --version 2.11.1 --locked
       - name: Rust tests
         run: cargo test --workspace
@@ -49,6 +56,7 @@ jobs:
           python -m playwright install chromium
           python tests/ui_smoke.py
           python tests/game_profiles_smoke.py
+          python tests/studio_smoke.py
       - name: Build core smoke executable
         run: cargo build --bin controller
       - name: Controller-free core smoke
@@ -92,6 +100,7 @@ jobs:
         run: |
           mapfile -d '' assets < <(find release-assets -type f \( -name '*-setup.exe' -o -name '*.sig' -o -name latest.json -o -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' \) -print0)
           test "${#assets[@]}" -ge 6
+          assets+=(resources/70-controller-dualsense.rules)
           if gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null | grep -qx true; then
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
             gh release edit "$GITHUB_REF_NAME" --draft=false --latest

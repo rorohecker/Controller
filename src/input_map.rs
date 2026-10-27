@@ -2,6 +2,27 @@
 
 use aftertouch_protocol::{InputState, TouchPoint};
 use serde::Deserialize;
+thread_local! { static INPUT_ERROR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) }; }
+pub fn record_input_error(message: String) {
+    INPUT_ERROR.with(|e| {
+        if e.borrow().is_none() {
+            *e.borrow_mut() = Some(message);
+        }
+    });
+}
+pub fn take_input_error() -> Option<String> {
+    INPUT_ERROR.with(|e| e.borrow_mut().take())
+}
+pub fn supported_key(vk: u16) -> bool {
+    #[cfg(windows)]
+    {
+        (1..=254).contains(&vk)
+    }
+    #[cfg(not(windows))]
+    {
+        crate::native_input::supported_key(vk)
+    }
+}
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::process::Command;
@@ -136,12 +157,16 @@ pub struct DesktopMapper {
     launch_held: HashSet<u8>,
     last_launch: HashMap<u8, Instant>,
     launch_error: Option<String>,
+    programs: Vec<(u8, crate::macros::Program)>,
+    program_held: HashSet<u8>,
+    player: crate::macros::Player,
 }
 
 #[derive(Clone, Debug)]
 pub struct PcLaunchBinding {
     pub button: u8,
     pub path: PathBuf,
+    pub args: Vec<String>,
 }
 
 impl Default for DesktopMapper {
@@ -163,11 +188,52 @@ impl Default for DesktopMapper {
             launch_held: HashSet::new(),
             last_launch: HashMap::new(),
             launch_error: None,
+            programs: Vec::new(),
+            program_held: HashSet::new(),
+            player: crate::macros::Player::default(),
         }
     }
 }
 
 impl DesktopMapper {
+    pub fn set_programs(&mut self, programs: Vec<(u8, crate::macros::Program)>) {
+        self.stop_macros();
+        self.programs = programs;
+        self.program_held.clear();
+    }
+    pub fn stop_macros(&mut self) {
+        let output = self.player.stop();
+        self.perform(output);
+        self.keyboard.set_suspended(true);
+        self.wait_release = true;
+    }
+    fn perform(&mut self, output: Vec<crate::macros::Output>) {
+        use crate::macros::Output;
+        for op in output {
+            match op {
+                Output::Key(vk, up) => send_key(vk, up),
+                Output::Mouse(button, up) => send_mouse(
+                    0,
+                    0,
+                    0,
+                    match (button.as_str(), up) {
+                        ("left", false) => MOUSEEVENTF_LEFTDOWN,
+                        ("left", true) => MOUSEEVENTF_LEFTUP,
+                        (_, false) => MOUSEEVENTF_RIGHTDOWN,
+                        (_, true) => MOUSEEVENTF_RIGHTUP,
+                    },
+                ),
+                Output::Scroll(amount) => {
+                    send_mouse(0, 0, i32::from(amount) * 120, MOUSEEVENTF_WHEEL)
+                }
+                Output::Launch(path, args) => {
+                    if let Err(e) = launch_app(&PathBuf::from(&path), &args) {
+                        self.launch_error = Some(format!("Could not open {path}: {e}"));
+                    }
+                }
+            }
+        }
+    }
     pub fn take_launch_error(&mut self) -> Option<String> {
         self.launch_error.take()
     }
@@ -236,10 +302,19 @@ impl DesktopMapper {
     }
 
     pub fn tick(&mut self) {
-        self.keyboard.tick();
+        if self.enabled && !self.ui_focused && self.player.active() {
+            let output = self.player.tick(Instant::now());
+            self.perform(output);
+            if !self.player.active() {
+                self.wait_release = true;
+            }
+        } else {
+            self.keyboard.tick();
+        }
     }
 
     fn release_all(&mut self) {
+        self.stop_macros();
         if self.left_down {
             send_mouse(0, 0, 0, MOUSEEVENTF_LEFTUP);
         }
@@ -270,8 +345,30 @@ impl DesktopMapper {
             }
             self.keyboard.set_suspended(false);
         }
-        self.keyboard.update(input);
         let now = Instant::now();
+        let triggered = self
+            .programs
+            .iter()
+            .find(|(button, _)| down[*button as usize] && !self.program_held.contains(button))
+            .map(|(_, program)| program.clone());
+        self.program_held = self
+            .programs
+            .iter()
+            .filter(|(button, _)| down[*button as usize])
+            .map(|(button, _)| *button)
+            .collect();
+        if let Some(program) = triggered {
+            self.release_all();
+            match self.player.start(program, now) {
+                Ok(output) => self.perform(output),
+                Err(e) => self.launch_error = Some(e.into()),
+            }
+        }
+        if self.player.active() {
+            self.tick();
+            return;
+        }
+        self.keyboard.update(input);
         for launch in &self.launches {
             if down[launch.button as usize] {
                 if !self.launch_held.contains(&launch.button)
@@ -280,17 +377,7 @@ impl DesktopMapper {
                         .get(&launch.button)
                         .is_none_or(|last| now.duration_since(*last) >= Duration::from_secs(1))
                 {
-                    #[cfg(target_os = "macos")]
-                    let mut app_command = if launch.path.extension().is_some_and(|e| e == "app") {
-                        let mut c = Command::new("open");
-                        c.arg("-a").arg(&launch.path);
-                        c
-                    } else {
-                        Command::new(&launch.path)
-                    };
-                    #[cfg(not(target_os = "macos"))]
-                    let mut app_command = Command::new(&launch.path);
-                    if let Err(error) = app_command.spawn() {
+                    if let Err(error) = launch_app(&launch.path, &launch.args) {
                         self.launch_error =
                             Some(format!("Could not open {}: {error}", launch.path.display()));
                     }
@@ -921,6 +1008,26 @@ impl MouseMapper {
     }
 }
 
+fn launch_app(path: &std::path::Path, args: &[String]) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let mut command = if path.extension().is_some_and(|e| e == "app") {
+        let mut c = Command::new("open");
+        c.arg("-a").arg(path).arg("--args");
+        c
+    } else {
+        Command::new(path)
+    };
+    #[cfg(not(target_os = "macos"))]
+    let mut command = Command::new(path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    command.args(args).spawn()?;
+    Ok(())
+}
+
 #[cfg(windows)]
 fn send_mouse(dx: i32, dy: i32, wheel: i32, flags: u32) {
     let input = INPUT {
@@ -937,7 +1044,9 @@ fn send_mouse(dx: i32, dy: i32, wheel: i32, flags: u32) {
         },
     };
     unsafe {
-        SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+        if SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) != 1 {
+            record_input_error("Windows blocked desktop input. Focus a normal window; an elevated app requires matching permissions.".into());
+        }
     }
 }
 
@@ -956,7 +1065,9 @@ fn send_key(vk: u16, up: bool) {
         },
     };
     unsafe {
-        SendInput(1, &input, std::mem::size_of::<INPUT>() as i32);
+        if SendInput(1, &input, std::mem::size_of::<INPUT>() as i32) != 1 {
+            record_input_error("Windows blocked desktop input. Focus a normal window; an elevated app requires matching permissions.".into());
+        }
     }
 }
 

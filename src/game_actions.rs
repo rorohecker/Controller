@@ -48,7 +48,7 @@ impl ActionRule {
         if self.id.is_empty()
             || self.id.len() > 80
             || self.name.trim().is_empty()
-            || self.name.len() > 40
+            || self.name.chars().count() > 40
             || !matches!(self.source.as_str(), "press" | "double" | "hold" | "event")
             || self.button >= 23
             || !(80..=1000).contains(&self.window_ms)
@@ -239,6 +239,14 @@ mod tests {
             left_trigger: None,
             right_trigger: None,
         }
+    }
+    #[test]
+    fn action_names_count_characters_instead_of_utf8_bytes() {
+        let mut r = rule("unicode", "press");
+        r.name = "弓".repeat(40);
+        assert!(r.validate().is_ok());
+        r.name.push('弓');
+        assert!(r.validate().is_err());
     }
     #[test]
     fn double_tap_suppresses_the_single_action_and_hold_fires_once() {

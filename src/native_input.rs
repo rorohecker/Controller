@@ -10,7 +10,7 @@ pub fn mouse(dx: i32, dy: i32, wheel: i32, flags: u32) {
     INPUT.with(|input| {
         if let Some(e) = input.borrow_mut().as_mut() {
             if flags & 1 != 0 {
-                let _ = e.move_mouse(dx, dy, Coordinate::Rel);
+                report(e.move_mouse(dx, dy, Coordinate::Rel));
             }
             for (flag, button, direction) in [
                 (2, Button::Left, Direction::Press),
@@ -19,7 +19,7 @@ pub fn mouse(dx: i32, dy: i32, wheel: i32, flags: u32) {
                 (16, Button::Right, Direction::Release),
             ] {
                 if flags & flag != 0 {
-                    let _ = e.button(button, direction);
+                    report(e.button(button, direction));
                 }
             }
             if flags & 0x800 != 0 {
@@ -29,7 +29,7 @@ pub fn mouse(dx: i32, dy: i32, wheel: i32, flags: u32) {
                     let steps = *r / 120;
                     *r -= steps * 120;
                     if steps != 0 {
-                        let _ = e.scroll(-steps, Axis::Vertical);
+                        report(e.scroll(-steps, Axis::Vertical));
                     }
                 });
             }
@@ -37,20 +37,32 @@ pub fn mouse(dx: i32, dy: i32, wheel: i32, flags: u32) {
     });
 }
 pub fn key(vk: u16, up: bool) {
+    if !supported_key(vk) {
+        crate::input_map::record_input_error(format!("Key {vk} is not supported on this platform"));
+        return;
+    }
     if let Some(key) = key_code(vk) {
         INPUT.with(|input| {
             if let Some(e) = input.borrow_mut().as_mut() {
-                let _ = e.key(
+                report(e.key(
                     key,
                     if up {
                         Direction::Release
                     } else {
                         Direction::Press
                     },
-                );
+                ));
             }
         });
     }
+}
+fn report(result: Result<(), enigo::InputError>) {
+    if let Err(error) = result {
+        crate::input_map::record_input_error(format!("Desktop input failed: {error}"));
+    }
+}
+pub fn supported_key(vk: u16) -> bool {
+    key_code(vk).is_some()
 }
 fn key_code(vk: u16) -> Option<Key> {
     Some(match vk {

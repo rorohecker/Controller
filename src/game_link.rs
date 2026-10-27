@@ -35,6 +35,10 @@ pub struct GameUpdate {
     pub triggers: [Option<TriggerSetting>; 2],
     pub rgb: Option<[u8; 3]>,
     pub reset: bool,
+    pub player_leds: Option<u8>,
+    pub microphone_led: Option<u8>,
+    pub packet: Option<String>,
+    pub format: Option<String>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -106,6 +110,14 @@ pub fn decode(data: &[u8], format: &str) -> Result<GameUpdate, &'static str> {
                         .map(|v| (f32::from(v) * gain).round() as u8),
                 );
             }
+            5 => {
+                output.microphone_led = Some(match number(1, 2)? {
+                    0 => 1,
+                    1 => 2,
+                    _ => 0,
+                })
+            }
+            6 => output.player_leds = Some([4, 10, 21, 27, 31, 0][usize::from(number(1, 5)?)]),
             7 => output.reset = true,
             0 => {} // Status request; reply is sent by the listener.
             _ => return Err("This DSX instruction is not supported; use trigger, RGB, or reset"),
@@ -209,8 +221,12 @@ fn dsx_trigger(mode: u8, args: &[Value]) -> Result<TriggerSetting, &'static str>
 pub struct GameLink {
     socket: Option<UdpSocket>,
     settings: LinkSettings,
+    recording: bool,
 }
 impl GameLink {
+    pub fn record(&mut self, enabled: bool) {
+        self.recording = enabled;
+    }
     pub fn set(&mut self, settings: LinkSettings) -> Result<(), String> {
         settings.validate().map_err(str::to_string)?;
         if self.settings.enabled == settings.enabled
@@ -238,8 +254,13 @@ impl GameLink {
     pub fn stop(&mut self) {
         self.socket = None;
         self.settings.enabled = false;
+        self.recording = false;
     }
-    pub fn poll(&self, connected: bool) -> Vec<Result<GameUpdate, &'static str>> {
+    pub fn poll(
+        &self,
+        connected: bool,
+        battery: Option<u8>,
+    ) -> Vec<Result<GameUpdate, &'static str>> {
         let mut output = Vec::new();
         let Some(socket) = &self.socket else {
             return output;
@@ -248,9 +269,16 @@ impl GameLink {
         for _ in 0..16 {
             match socket.recv_from(&mut buffer) {
                 Ok((n, peer)) => {
-                    let update = decode(&buffer[..n], &self.settings.format);
+                    let update = decode(&buffer[..n], &self.settings.format).map(|mut update| {
+                        if self.recording {
+                            update.packet =
+                                Some(String::from_utf8_lossy(&buffer[..n]).into_owned());
+                        }
+                        update.format = Some(self.settings.format.clone());
+                        update
+                    });
                     if self.settings.format == "dsx" {
-                        let _=socket.send_to(serde_json::json!({"Status":if update.is_ok(){"OK"}else{"Unsupported packet"},"isControllerConnected":connected,"BatteryLevel":0}).to_string().as_bytes(),peer);
+                        let _=socket.send_to(serde_json::json!({"Status":if update.is_ok(){"OK"}else{"Unsupported packet"},"isControllerConnected":connected,"BatteryLevel":battery,"BatteryKnown":battery.is_some()}).to_string().as_bytes(),peer);
                     }
                     output.push(update);
                 }
@@ -264,6 +292,55 @@ impl GameLink {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn status_returns_measured_battery_and_led_modes_stay_independent() {
+        let update = decode(
+            br#"{"instructions":[{"type":6,"parameters":[0,2]},{"type":5,"parameters":[0,1]}]}"#,
+            "dsx",
+        )
+        .unwrap();
+        assert_eq!(update.player_leds, Some(21));
+        assert_eq!(update.microphone_led, Some(2));
+        assert!(update.triggers.iter().all(Option::is_none));
+        assert!(
+            decode(
+                br#"{"instructions":[{"type":6,"parameters":[0,6]}]}"#,
+                "dsx"
+            )
+            .is_err()
+        );
+        let mut link = GameLink::default();
+        let probe = UdpSocket::bind("127.0.0.1:0").unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        link.set(LinkSettings {
+            enabled: true,
+            port,
+            format: "dsx".into(),
+        })
+        .unwrap();
+        let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
+        sender
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .unwrap();
+        sender
+            .send_to(
+                br#"{"instructions":[{"type":0,"parameters":[0]}]}"#,
+                ("127.0.0.1", port),
+            )
+            .unwrap();
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while link.poll(true, Some(75)).is_empty() {
+            assert!(std::time::Instant::now() < until);
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let mut buffer = [0; 1024];
+        let n = sender.recv(&mut buffer).unwrap();
+        let status: Value = serde_json::from_slice(&buffer[..n]).unwrap();
+        assert_eq!(status["BatteryLevel"], 75);
+        assert_eq!(status["BatteryKnown"], true);
+        assert_eq!(status["isControllerConnected"], true);
+    }
     #[test]
     fn validates_events_and_dsx_effects() {
         let e = decode(br#"{"weapon":"smg","events":["dash"]}"#, "json").unwrap();
@@ -308,7 +385,7 @@ mod tests {
             .unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         let packet = loop {
-            if let Some(packet) = link.poll(true).into_iter().next() {
+            if let Some(packet) = link.poll(true, Some(70)).into_iter().next() {
                 break packet;
             }
             assert!(

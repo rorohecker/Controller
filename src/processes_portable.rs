@@ -71,6 +71,12 @@ fn inspect_now() -> ProcessState {
             {
                 state.foreground_exe = name;
                 state.foreground_path = Some(path.to_string_lossy().into_owned());
+                if let Ok(command_line) = std::fs::read(format!("/proc/{pid}/cmdline"))
+                    && let Some((name, path)) = proton_executable(&command_line)
+                {
+                    state.foreground_exe = Some(name);
+                    state.foreground_path = Some(path);
+                }
                 state.foreground_title = properties
                     .lines()
                     .find(|line| line.starts_with("_NET_WM_NAME"))
@@ -80,6 +86,56 @@ fn inspect_now() -> ProcessState {
         }
     }
     state
+}
+
+#[cfg(target_os = "linux")]
+fn proton_executable(command_line: &[u8]) -> Option<(String, String)> {
+    if command_line.len() > 65536 {
+        return None;
+    }
+    command_line
+        .split(|b| *b == 0)
+        .filter_map(|s| std::str::from_utf8(s).ok())
+        .find_map(|arg| {
+            let path = arg.trim_matches('"').replace('\\', "/");
+            let name = path.rsplit('/').next()?;
+            if !name.to_lowercase().ends_with(".exe")
+                || name.len() > 80
+                || [
+                    "wine",
+                    "services.exe",
+                    "explorer.exe",
+                    "winedevice.exe",
+                    "rundll32.exe",
+                ]
+                .iter()
+                .any(|n| name.eq_ignore_ascii_case(n))
+                || path.starts_with('-')
+            {
+                return None;
+            }
+            let name = name.to_owned();
+            let path = if path.get(..3).is_some_and(|p| p.eq_ignore_ascii_case("z:/")) {
+                path[2..].to_owned()
+            } else {
+                path
+            };
+            Some((name, path))
+        })
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::proton_executable;
+    #[test]
+    fn identifies_game_in_proton_command_line_without_guessing_helper_names() {
+        assert_eq!(
+            proton_executable(b"wine64\0Z:\\games\\example\\game.exe\0--launch\0"),
+            Some(("game.exe".into(), "/games/example/game.exe".into()))
+        );
+        assert!(proton_executable(b"wine64\0C:\\windows\\services.exe\0").is_none());
+        assert!(proton_executable(b"wine64\0--game.exe\0").is_none());
+    }
 }
 
 fn output(program: &str, args: &[&str]) -> Option<String> {

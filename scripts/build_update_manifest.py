@@ -12,7 +12,7 @@ def create_manifest(version: str, bundle_dir: Path, repository: str) -> dict:
         raise ValueError("version must be a semantic version without a leading v")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("repository must be owner/name")
-    installers = list(bundle_dir.glob(f"*_{version}_*-setup.exe"))
+    installers = list(bundle_dir.glob(f"*_{version}_x64-setup.exe"))
     if len(installers) != 1:
         raise ValueError(f"expected one NSIS installer for version {version}, found {len(installers)}")
     installer = installers[0]

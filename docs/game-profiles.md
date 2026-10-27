@@ -32,7 +32,7 @@ Either field can be omitted. Names are case-insensitive, at most 80 bytes. At mo
 
 Choose **DSX mod UDP** and point a compatible mod to the same local port. Close DSX if it already owns that port. This implementation uses the published [DSX protocol and enum definitions](https://github.com/Paliverse/DSX/tree/main/Mod%20System%20%28DSX%20v3%29), not DSX application code or assets.
 
-Supported controller index: 0. Supported trigger modes: OFF/Normal, Feedback/Resistance, Weapon/SemiAutomaticGun, Vibration/AutomaticGun, Slope Feedback, Multiple Position Feedback, and Multiple Position Vibration. RGB and reset are supported. Status responses report connection state; their battery field is a placeholder, not a live battery reading. Player/mic LEDs, trigger thresholds, legacy named/custom effects, and other instructions are rejected with a status message. This is partial compatibility; an arbitrary DSX mod is not guaranteed to work. Effects return to the profile after 15 seconds without a trigger update.
+Supported controller index: 0. Supported trigger modes: OFF/Normal, Feedback/Resistance, Weapon/SemiAutomaticGun, Vibration/AutomaticGun, Slope Feedback, Multiple Position Feedback, and Multiple Position Vibration. RGB, player indicators (new revision), microphone LED, and reset are supported. Status replies use the latest measured battery percentage, or null with BatteryKnown false before a battery report arrives. Microphone LED commands change the light only. Trigger thresholds, legacy player LED instructions, legacy named/custom effects, and other instructions are rejected with a status message. This is partial compatibility; an arbitrary DSX mod is not guaranteed to work. Effects return to the profile after 15 seconds without a trigger update.
 
 ### Game research, 2026-10-27
 
@@ -46,3 +46,30 @@ Supported controller index: 0. Supported trigger modes: OFF/Normal, Feedback/Res
 In **PC controls**, select **Open app** and paste its full executable path. On macOS an absolute `.app` bundle path also works. Programs are launched directly, without a shell command. **Record shortcut** captures combinations such as Ctrl+Shift+K. Hold keeps the combination down; Tap presses and releases it. Key sequences accept one to five following key names or numeric virtual-key codes.
 
 Windows uses SendInput. macOS uses native events and needs Accessibility access. Linux uses X11, supported Wayland protocols, or the desktop portal through Enigo. The Wayland desktop may ask for permission. Exact support depends on the compositor. Auto profile detection uses macOS application names or X11 foreground window information; a pure Wayland session may require manual profile selection. XInput, screen sampling, and system audio capture remain Windows features. Hardware behavior on macOS/Linux has not been physically checked on this Windows PC.
+
+
+## Editor and recovery tools
+
+Search profiles by name, notes, tag, or executable; favorite the ones you use most. **Export this profile** includes its referenced trigger presets. Imports show a preview and add copies without replacing existing entries.
+
+Saves keep up to 20 local backups in `profile-backups` beside `profiles.json`, at most one automatic snapshot per minute. **Back up now** creates an immediate snapshot. Restore backs up the current valid archive and stops controller effects. A damaged current file is retained as `profiles-corrupt-<timestamp>.json` when restoring. These backups stay on the computer; exports remain the portable copy.
+
+On Triggers, use Undo/Redo (Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z outside text fields), copy either side, swap sides, and compare a saved preset. Undo is limited to the current session. Changes need Apply; automatic renewal keeps the last applied settings.
+
+**Installed Steam games** reads local library manifests and lists executable candidates. Choose the actual game executable before assigning it. Launchers and nested game installs may still need **Use last app**. The scan does not access game memory or infer weapons.
+
+**Controller profile shortcuts** cycle profiles or the current profile's weapon mappings in Game mode. They can use a held modifier. These shortcuts do not suppress the button in the game. Reset suspends them and automatic effects until an explicit Apply.
+
+## Macro steps
+
+Choose **Macro steps** for a PC button. Add key chords, waits, mouse clicks, scroll notches, or an app launch with arguments. Steps can be reordered. Macros allow 64 steps, up to 10 repeats, and at most 60 seconds total. Arguments use a JSON list, such as `["--fullscreen", "file name"]`, and are passed directly without a shell.
+
+Only one step macro runs at a time. It temporarily suspends ordinary PC keyboard/click bindings to avoid shared-key conflicts. Stop macros, focus changes, Game mode, disconnect, and Reset release its held keys and mouse buttons. Release the controller controls before starting another macro. Existing short key sequences remain available.
+
+## Integration monitor
+
+Diagnostics shows the selected profile, last applied output, foreground match, receiver, recent packets, and input errors. **Test receiver** sends a harmless JSON event or DSX status packet through the enabled loopback receiver, without needing a game or controller.
+
+Record local JSON/DSX game packets, export the recording, and replay it through the current receiver. Recording is opt-in and bounded to 2,000 packets, ten minutes, and about 4 MB of raw packet data. Playback follows recorded timestamps; configured game rules can produce output. Stop replay, Reset, disconnect, or a core restart cancels playback. Racing telemetry uses its separate existing test adapter.
+
+Ctrl/Cmd+K opens page/profile search and Stop/Reset actions. Display settings include reduced decorative motion and stronger panel contrast. Scroll positions are remembered per page during the session.
