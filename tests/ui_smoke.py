@@ -419,13 +419,18 @@ def main():
         page.locator("#apply-triggers").click()
         page.wait_for_function("window.sent.some(c=>c.action==='applyTriggers' && c.right.preloadStrength===30 && c.right.startZone===4)")
         page.locator('[data-weapon-preset="burst"]').click()
-        assert page.locator("#click-threshold-number").input_value() == "90"
-        assert page.locator("#burst-spacing").input_value() == "250"
+        assert page.locator("#click-threshold-number").input_value() == "32.9"
+        assert page.locator("#burst-spacing").input_value() == "220"
         assert page.locator("#burst-kick-style").input_value() == "strike"
-        assert page.locator("#burst-grip-strength").input_value() == "85"
+        assert page.locator("#burst-zone-start").input_value() == "2"
+        assert page.locator("#burst-grip-strength").input_value() == "100"
+        assert page.locator("#burst-grip-frequency").input_value() == "100"
+        assert page.locator("#burst-grip-duration").input_value() == "78"
         assert not page.locator("#burst-kick-control").is_visible()
         assert not page.locator("#weapon-rate-row").is_visible()
-        assert "4 hz" in page.locator("#burst-style-help").inner_text().lower()
+        assert "5 hz" in page.locator("#burst-style-help").inner_text().lower()
+        page.locator("#apply-triggers").click()
+        page.wait_for_function("window.sent.some(c=>c.action==='setInputEffects' && c.kind==='burst' && Math.abs(c.threshold-.329)<.000001 && c.strength===100 && c.spacingMs===220 && c.startZone===1 && c.hapticStrength===100 && c.hapticFrequency===100 && c.hapticDurationMs===78)")
         page.locator("#click-threshold-number").fill("90.1")
         page.locator("#click-threshold-number").press("Tab")
         page.locator("#burst-grip-strength").fill("92")
