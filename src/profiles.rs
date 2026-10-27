@@ -17,6 +17,8 @@ struct Archive {
     #[serde(default = "default_true")]
     auto_apply: bool,
     profiles: Vec<Profile>,
+    #[serde(default)]
+    trigger_presets: Vec<TriggerPreset>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -42,6 +44,29 @@ struct Profile {
     remap: RemapSettings,
     #[serde(default)]
     input_effects: InputEffectSettings,
+    #[serde(default)]
+    actions_enabled: bool,
+    #[serde(default)]
+    actions: Vec<crate::game_actions::ActionRule>,
+    #[serde(default)]
+    game_link: crate::game_link::LinkSettings,
+    #[serde(default)]
+    weapon_bindings: Vec<WeaponBinding>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TriggerPreset {
+    id: String,
+    name: String,
+    triggers: TriggerPair,
+    input_effects: InputEffectSettings,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WeaponBinding {
+    weapon: String,
+    preset_id: String,
 }
 
 fn default_true() -> bool {
@@ -138,6 +163,8 @@ struct RemapBinding {
     behavior: String,
     #[serde(default)]
     sequence: Vec<u16>,
+    #[serde(default)]
+    chord: Vec<u16>,
 }
 
 fn default_hold() -> String {
@@ -197,6 +224,35 @@ impl Default for InputEffectSettings {
     }
 }
 
+impl InputEffectSettings {
+    fn validate(&self) -> Result<(), String> {
+        if !(0.2..=0.95).contains(&self.threshold)
+            || self.strength > 100
+            || !(3..=20).contains(&self.rate)
+            || self.tuning.validate(self.kick_style == "return").is_err()
+            || !matches!(self.kick_style.as_str(), "return" | "strike" | "stop")
+            || (self.spacing_ms != 0 && !(50..=1000).contains(&self.spacing_ms))
+            || (self.kick_ms != 0 && !(20..=250).contains(&self.kick_ms))
+            || (self.kind == "burst"
+                && self.kick_style != "strike"
+                && self.kick_ms != 0
+                && u32::from(self.kick_ms) + 20
+                    > if self.spacing_ms == 0 {
+                        1000 / u32::from(self.rate.max(1))
+                    } else {
+                        u32::from(self.spacing_ms)
+                    })
+            || !matches!(
+                self.kind.as_str(),
+                "click" | "pistol" | "sniper" | "burst" | "smg"
+            )
+        {
+            return Err("Input-driven trigger settings are out of range".into());
+        }
+        Ok(())
+    }
+}
+
 fn paths() -> Result<(PathBuf, PathBuf), String> {
     let base = config_base()?;
     Ok((
@@ -244,6 +300,23 @@ fn validate(data: Value) -> Result<Archive, String> {
     if !archive.profiles.iter().any(|p| p.id == archive.active_id) {
         return Err("Active profile does not exist".into());
     }
+    if archive.trigger_presets.len() > 100 {
+        return Err("Up to 100 trigger presets can be saved".into());
+    }
+    let mut preset_ids = std::collections::HashSet::new();
+    for preset in &archive.trigger_presets {
+        if preset.id.is_empty()
+            || preset.id.len() > 80
+            || !preset_ids.insert(&preset.id)
+            || preset.name.trim().is_empty()
+            || preset.name.chars().count() > 40
+        {
+            return Err("Invalid trigger preset name or ID".into());
+        }
+        preset.triggers.left.validate().map_err(str::to_string)?;
+        preset.triggers.right.validate().map_err(str::to_string)?;
+        preset.input_effects.validate()?;
+    }
     let mut ids = std::collections::HashSet::new();
     for p in &archive.profiles {
         if !ids.insert(&p.id)
@@ -262,6 +335,22 @@ fn validate(data: Value) -> Result<Archive, String> {
             || (p.match_exe.is_empty() && (!p.match_title.is_empty() || !p.match_path.is_empty()))
         {
             return Err("Profile name, ID, description, or tag is invalid".into());
+        }
+        let mut actions = crate::game_actions::ActionMapper::default();
+        actions.set(p.actions.clone()).map_err(str::to_string)?;
+        p.game_link.validate().map_err(str::to_string)?;
+        let mut weapons = std::collections::HashSet::new();
+        if p.weapon_bindings.len() > 100
+            || p.weapon_bindings.iter().any(|b| {
+                b.weapon.trim().is_empty()
+                    || b.weapon.len() > 80
+                    || !weapons.insert(b.weapon.to_lowercase())
+                    || !preset_ids.contains(&b.preset_id)
+            })
+        {
+            return Err(
+                "Weapon mappings need distinct names and an existing trigger preset".into(),
+            );
         }
         p.triggers.left.validate().map_err(str::to_string)?;
         p.triggers.right.validate().map_err(str::to_string)?;
@@ -290,36 +379,7 @@ fn validate(data: Value) -> Result<Archive, String> {
         {
             return Err("Gyro aim settings are out of range".into());
         }
-        if !(0.2..=0.95).contains(&p.input_effects.threshold)
-            || p.input_effects.strength > 100
-            || !(3..=20).contains(&p.input_effects.rate)
-            || p.input_effects
-                .tuning
-                .validate(p.input_effects.kick_style == "return")
-                .is_err()
-            || !matches!(
-                p.input_effects.kick_style.as_str(),
-                "return" | "strike" | "stop"
-            )
-            || (p.input_effects.spacing_ms != 0
-                && !(50..=1000).contains(&p.input_effects.spacing_ms))
-            || (p.input_effects.kick_ms != 0 && !(20..=250).contains(&p.input_effects.kick_ms))
-            || (p.input_effects.kind == "burst"
-                && p.input_effects.kick_style != "strike"
-                && p.input_effects.kick_ms != 0
-                && u32::from(p.input_effects.kick_ms) + 20
-                    > if p.input_effects.spacing_ms == 0 {
-                        1000 / u32::from(p.input_effects.rate.max(1))
-                    } else {
-                        u32::from(p.input_effects.spacing_ms)
-                    })
-            || !matches!(
-                p.input_effects.kind.as_str(),
-                "click" | "pistol" | "sniper" | "burst" | "smg"
-            )
-        {
-            return Err("Input-driven trigger settings are out of range".into());
-        }
+        p.input_effects.validate()?;
         let mut mapped_buttons = std::collections::HashSet::new();
         if p.remap.bindings.len() > 46
             || p.remap.bindings.iter().any(|b| {
@@ -331,6 +391,9 @@ fn validate(data: Value) -> Result<Archive, String> {
                     || !matches!(b.behavior.as_str(), "hold" | "tap" | "macro")
                     || (b.behavior == "macro" && (b.sequence.is_empty() || b.sequence.len() > 5))
                     || (b.behavior != "macro" && !b.sequence.is_empty())
+                    || b.chord.len() > 8
+                    || b.chord.iter().any(|&vk| vk == 0 || vk > 255)
+                    || (b.behavior == "macro" && !b.chord.is_empty())
                     || b.sequence.iter().any(|&vk| vk == 0 || vk > 255)
                     || !mapped_buttons.insert((b.button, b.modifier))
             })
@@ -470,6 +533,21 @@ mod tests {
     fn archive_rejects_out_of_range_trigger() {
         let mut value = sample_profile();
         value["profiles"][0]["triggers"]["left"]["strength"] = 101.into();
+        assert!(validate(value).is_err());
+    }
+
+    #[test]
+    fn game_actions_and_weapon_library_roundtrip_and_reject_dangling_presets() {
+        let mut value = sample_profile();
+        value["triggerPresets"] = serde_json::json!([{"id":"rifle","name":"My rifle","triggers":value["profiles"][0]["triggers"],"inputEffects":{}}]);
+        value["profiles"][0]["actionsEnabled"] = true.into();
+        value["profiles"][0]["actions"] = serde_json::json!([{"id":"roll","name":"Roll","source":"double","button":1,"durationMs":120,"haptic":{"shape":"sine","frequency":80,"strength":40}}]);
+        value["profiles"][0]["weaponBindings"] =
+            serde_json::json!([{"weapon":"smg","presetId":"rifle"}]);
+        let roundtrip = serde_json::to_value(validate(value.clone()).unwrap()).unwrap();
+        assert_eq!(roundtrip["triggerPresets"][0]["id"], "rifle");
+        assert_eq!(roundtrip["profiles"][0]["actions"][0]["source"], "double");
+        value["profiles"][0]["weaponBindings"][0]["presetId"] = "missing".into();
         assert!(validate(value).is_err());
     }
 

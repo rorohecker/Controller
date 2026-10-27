@@ -90,6 +90,12 @@ The optional XInput bridge requires [ViGEmBus](https://github.com/nefarius/ViGEm
 
 ## Verify and build
 
+### Game profiles and shortcuts
+
+Save reusable L2/R2 presets, attach them to game profiles, and add press, double-tap, hold, or game-event feedback rules. Weapon mappings can select a saved preset from local JSON telemetry; compatible DSX mods can send supported trigger and RGB instructions. Automatic weapon detection requires a game integration. Crimson Desert, Modern Warfare, and Rematch currently use input rules or manual weapon selection. See [Game profiles](docs/game-profiles.md) for setup, protocol limits, and research.
+
+PC controls support recorded keyboard combinations and direct application launch paths. Native desktop input is available on Windows, macOS with Accessibility permission, and Linux through X11/Wayland backends. Pure Wayland foreground detection is limited; select profiles manually where needed. XInput and system audio capture are Windows-only.
+
 ```powershell
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings

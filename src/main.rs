@@ -2,8 +2,12 @@
 
 mod audio_haptics;
 mod device;
+mod game_actions;
+mod game_link;
 mod haptics;
 mod input_map;
+#[cfg(not(windows))]
+mod native_input;
 #[cfg(windows)]
 mod processes;
 #[cfg(not(windows))]
@@ -106,7 +110,7 @@ fn set_start_on_login(enabled: bool, app: tauri::AppHandle) -> Result<(), String
 
 #[tauri::command]
 fn platform_capabilities() -> Value {
-    json!({"os": std::env::consts::OS, "desktopInput": cfg!(windows), "xinput": cfg!(windows), "screenColor": cfg!(windows), "systemAudioBridge": cfg!(windows)})
+    json!({"os": std::env::consts::OS, "desktopInput":true, "xinput": cfg!(windows), "screenColor": cfg!(windows), "systemAudioBridge": cfg!(windows)})
 }
 
 #[cfg(windows)]

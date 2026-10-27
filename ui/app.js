@@ -16,6 +16,9 @@
     {vk: 0x41, label: 'A'}, {vk: 0x42, label: 'B'}, {vk: 0x43, label: 'C'}, {vk: 0x45, label: 'E'},
     {vk: 0x51, label: 'Q'}, {vk: 0x52, label: 'R'}, {vk: 0x56, label: 'V'}, {vk: 0x58, label: 'X'}, {vk: 0x5A, label: 'Z'}
   ];
+  for(let vk=48;vk<=90;vk++)if((vk<=57||vk>=65)&&!vkChoices.some(k=>k.vk===vk))vkChoices.push({vk,label:String.fromCharCode(vk)});
+  for(let i=0;i<24;i++)if(!vkChoices.some(k=>k.vk===112+i))vkChoices.push({vk:112+i,label:`F${i+1}`});
+  for(const [vk,label] of [[8,'Backspace'],[20,'Caps Lock'],[33,'Page Up'],[34,'Page Down'],[35,'End'],[36,'Home'],[45,'Insert'],[46,'Delete'],[91,'Super / Command'],[186,';'],[187,'='],[188,','],[189,'-'],[190,'.'],[191,'/'],[192,'`'],[219,'['],[220,'Backslash'],[221,']'],[222,"'"]])vkChoices.push({vk,label});
   const presets = {
     Linear: [0,.1,.2,.3,.4,.5,.6,.7,.8,.9,1],
     Wall: [0,0,.02,.04,.1,.84,.96,1,1,1,1],
@@ -78,6 +81,8 @@
     {button:14,vk:37,behavior:'hold',sequence:[]},
     {button:15,vk:39,behavior:'hold',sequence:[]}
   ];
+  const validAppPath=path=>typeof path==='string'&&path.length<=1024&&!path.includes('\0')&&(/^[a-zA-Z]:\\.*\.exe$/i.test(path)||path.startsWith('/'));
+  const validPcKey=vk=>Number.isInteger(vk)&&vk>=1&&vk<=255;
   let pcBindings=defaultPcBindings();
   let pcClickThreshold=.55;
   let pcPointerSensitivity=.7,pcReverseScroll=true;
@@ -95,7 +100,7 @@
   }catch{}
   try{
     const saved=JSON.parse(localStorage.getItem('aftertouch.pcBindings')||'null');
-    if(Array.isArray(saved)&&saved.length<=pcButtons.length&&saved.every(b=>pcButtons.includes(b.button)&&(vkChoices.some(k=>k.vk===b.vk)||b.behavior==='launch'&&b.vk===0)&&['hold','tap','macro','launch'].includes(b.behavior)&&Array.isArray(b.sequence)&&b.sequence.length<=5&&b.sequence.every(vk=>vkChoices.some(k=>k.vk===vk))&&(!b.launchPath||typeof b.launchPath==='string'&&b.launchPath.length<=1024)))pcBindings=saved;
+    if(Array.isArray(saved)&&saved.length<=pcButtons.length&&saved.every(b=>pcButtons.includes(b.button)&&(Number.isInteger(b.vk)&&b.vk>=1&&b.vk<=255||b.behavior==='launch'&&b.vk===0)&&['hold','tap','macro','launch'].includes(b.behavior)&&Array.isArray(b.sequence)&&b.sequence.length<=5&&b.sequence.every(vk=>Number.isInteger(vk)&&vk>=1&&vk<=255)&&(!b.chord||Array.isArray(b.chord)&&b.chord.length<=8&&b.chord.every(vk=>Number.isInteger(vk)&&vk>=1&&vk<=255))&&(!b.launchPath||typeof b.launchPath==='string'&&b.launchPath.length<=1024)))pcBindings=saved;
     const click=Number(localStorage.getItem('aftertouch.pcClickThreshold'));
     if(Number.isFinite(click)&&click>=.05&&click<=.95)pcClickThreshold=click;
     const pointer=Number(localStorage.getItem('aftertouch.pcPointerSensitivity'));
@@ -111,6 +116,7 @@
     try{localStorage.setItem('aftertouch.pcAudioSketch',String(pcAudioSketch));}catch{}
   });
   let updateChecking=false, updateInstalling=false, availableVersion='';
+  let triggerPresets=[],activeWeaponPreset="";
   const profile = () => state.profiles.find(p => p.id === state.profileId) || state.profiles[0];
   const trigger = () => profile().triggers[state.side];
   const timeLabel = () => new Date().toLocaleTimeString('en-US',{hour12:false});
@@ -126,6 +132,10 @@
     n.gyroAim = Object.assign(defaultGyro(), n.gyroAim || {});
     n.remap = Object.assign(defaultRemap(), n.remap || {});
     n.inputEffects = Object.assign(defaultInputEffects(), n.inputEffects || {});
+    n.actionsEnabled=!!n.actionsEnabled;
+    n.actions=Array.isArray(n.actions)?n.actions:[];
+    n.gameLink=Object.assign({enabled:false,port:6969,format:'json'},n.gameLink||{});
+    n.weaponBindings=Array.isArray(n.weaponBindings)?n.weaponBindings:[];
     for(const side of ['left','right']){
       const t=n.triggers[side];
       t.startZone=Number.isInteger(t.startZone)?t.startZone:(t.mode==='weapon'?5:2);
@@ -134,7 +144,7 @@
       t.forceCap=clamp(Math.round(t.forceCap??6),1,8);
       if(!Array.isArray(t.zoneForces)||t.zoneForces.length!==10)t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);
     }
-    n.remap.bindings = Array.isArray(n.remap.bindings) ? n.remap.bindings.map(b=>({button:b.button,vk:b.vk,modifier:b.modifier??null,behavior:b.behavior||'hold',sequence:Array.isArray(b.sequence)?b.sequence:[]})) : [];
+    n.remap.bindings = Array.isArray(n.remap.bindings) ? n.remap.bindings.map(b=>({button:b.button,vk:b.vk,modifier:b.modifier??null,behavior:b.behavior||'hold',sequence:Array.isArray(b.sequence)?b.sequence:[],chord:Array.isArray(b.chord)?b.chord:[]})) : [];
     return n;
   }
 
@@ -213,7 +223,7 @@
     catch (error) { toast(String(error)); log(`CORE ERROR / ${error}`); return false; }
   }
   function sendPcBindings(){
-    if(state.connected)send({action:'setPcBindings',bindings:pcBindings.filter(b=>b.behavior!=='launch'||/^[a-zA-Z]:\\.*\.exe$/i.test(b.launchPath||'')),click_threshold:pcClickThreshold,pointer_sensitivity:pcPointerSensitivity,reverse_scroll:pcReverseScroll});
+    if(state.connected)send({action:'setPcBindings',bindings:pcBindings.filter(b=>b.behavior!=='launch'||validAppPath(b.launchPath||'')),click_threshold:pcClickThreshold,pointer_sensitivity:pcPointerSensitivity,reverse_scroll:pcReverseScroll});
   }
   function sendCalibration(){
     if(state.connected)return send({action:'setCalibration',calibration:inputCalibration||defaultCalibration()});
@@ -365,55 +375,47 @@
       localStorage.setItem('aftertouch.pcReverseScroll',String(pcReverseScroll));
     }catch{}
     sendPcBindings();
-    $('#pc-bindings-status').textContent=pcBindings.some(b=>b.behavior==='launch'&&!/^[a-zA-Z]:\\.*\.exe$/i.test(b.launchPath||''))?'Enter an absolute .exe path to finish the app shortcut.':'Saved locally. Shortcuts take effect in PC control while another window is focused.';
+    $('#pc-bindings-status').textContent=pcBindings.some(b=>b.behavior==='launch'&&!validAppPath(b.launchPath||''))?'Enter the full application path to finish the shortcut.':'Saved locally. Shortcuts take effect in PC control while another window is focused.';
   }
   function renderPcBindings(){
     const host=$('#pc-bindings');host.replaceChildren();
     for(const button of pcButtons){
-      const binding=pcBindings.find(item=>item.button===button);
-      const row=document.createElement('div');row.className='pc-binding';
-      const label=document.createElement('span');label.textContent=names[button];
-      const key=document.createElement('select');key.setAttribute('aria-label',`${names[button]} key`);
-      key.add(new Option('Unassigned',''));
-      for(const choice of vkChoices)key.add(new Option(choice.label,String(choice.vk)));
-      key.value=binding?String(binding.vk):'';
-      const behavior=document.createElement('select');behavior.setAttribute('aria-label',`${names[button]} action`);
-      for(const [value,text] of [['hold','Hold'],['tap','Tap'],['macro','Key sequence'],['launch','Open app']])behavior.add(new Option(text,value));
-      behavior.value=binding?.behavior||'tap';behavior.disabled=!binding;
-      key.hidden=behavior.value==='launch';
-      const sequence=document.createElement('input');sequence.type='text';sequence.maxLength=60;
-      sequence.placeholder='Then: E, Space';sequence.setAttribute('aria-label',`${names[button]} following keys`);
-      sequence.value=(binding?.sequence||[]).map(vk=>vkChoices.find(item=>item.vk===vk)?.label||'').join(', ');
-      sequence.hidden=behavior.value!=='macro';
-      const launch=document.createElement('input');launch.type='text';launch.maxLength=1024;launch.placeholder='C:\\Path\\App.exe';launch.setAttribute('aria-label',`${names[button]} app path`);launch.value=binding?.launchPath||'';launch.hidden=behavior.value!=='launch';
-      key.addEventListener('change',()=>{
+      const binding=pcBindings.find(item=>item.button===button),row=gameNode('div',{class:'pc-binding'}),label=gameNode('span',{text:names[button]});
+      const behavior=gameSelect([['','Unassigned'],['hold','Hold key / shortcut'],['tap','Tap key / shortcut'],['macro','Key sequence'],['launch','Open app']],binding?.behavior||'',value=>{
         pcBindings=pcBindings.filter(item=>item.button!==button);
-        if(key.value)pcBindings.push({button,vk:+key.value,behavior:'tap',sequence:[]});
+        if(value)pcBindings.push({button,vk:value==='launch'?0:(binding?.vk||13),behavior:value,sequence:value==='macro'?[32]:[],chord:value==='launch'||value==='macro'?[]:(binding?.chord||[]),launchPath:value==='launch'?(binding?.launchPath||''):undefined});
         savePcBindings();renderPcBindings();
-      });
-      behavior.addEventListener('change',()=>{
-        const selected=pcBindings.find(item=>item.button===button);if(!selected)return;
-        selected.behavior=behavior.value;selected.sequence=behavior.value==='macro'?[32]:[];selected.vk=behavior.value==='launch'?0:(selected.vk||13);selected.launchPath=behavior.value==='launch'?(selected.launchPath||''):undefined;
-        savePcBindings();renderPcBindings();
-      });
-      launch.addEventListener('change',()=>{const selected=pcBindings.find(item=>item.button===button);if(!selected)return;selected.launchPath=launch.value.trim();savePcBindings();});
-      sequence.addEventListener('change',()=>{
-        const selected=pcBindings.find(item=>item.button===button);if(!selected)return;
-        const labels=sequence.value.split(',').map(value=>value.trim().toLowerCase()).filter(Boolean);
-        const keys=labels.map(value=>vkChoices.find(choice=>choice.label.toLowerCase()===value)?.vk);
-        if(!keys.length||keys.length>5||keys.some(vk=>!vk)){
-          $('#pc-bindings-status').textContent='Enter one to five listed keys, separated by commas.';
-          sequence.value=selected.sequence.map(vk=>vkChoices.find(item=>item.vk===vk)?.label||'').join(', ');return;
+      });behavior.setAttribute('aria-label',`${names[button]} action`);row.append(label,behavior);
+      if(binding?.behavior==='launch'){
+        const launch=gameNode('input',{type:'text',maxLength:1024,value:binding.launchPath||'',placeholder:'Full application path'});launch.setAttribute('aria-label',`${names[button]} app path`);launch.addEventListener('change',()=>{binding.launchPath=launch.value.trim();savePcBindings();});row.append(launch);
+      }else if(binding){
+        const keys=gameNode('div',{class:'pc-key-editor'}),key=gameSelect([['','Choose key'],...vkChoices.map(k=>[k.vk,k.label])],binding.vk,value=>{if(!value)return;binding.vk=+value;binding.chord=[];savePcBindings();renderPcBindings();});key.setAttribute('aria-label',`${names[button]} key`);
+        if(!vkChoices.some(k=>k.vk===binding.vk))key.add(new Option(`Key ${binding.vk}`,binding.vk));key.value=String(binding.vk);
+        keys.append(key);
+        if(binding.behavior!=='macro'){
+          const record=gameNode('button',{class:'quiet-action pc-record',type:'button',text:binding.chord?.length?binding.chord.map(vk=>vkChoices.find(k=>k.vk===vk)?.label||`Key ${vk}`).join(' + '):'Record shortcut'});
+          record.setAttribute('aria-label',`${names[button]} record shortcut`);
+          record.addEventListener('click',()=>{
+            record.textContent='Press shortcut…';let timer;
+            const finish=()=>{window.removeEventListener('keydown',capture,true);clearTimeout(timer);renderPcBindings();};
+            const capture=event=>{event.preventDefault();event.stopImmediatePropagation();if(['Control','Shift','Alt','Meta'].includes(event.key))return;
+              const vk=event.code.startsWith('Key')?event.code.charCodeAt(3):event.code.startsWith('Digit')?event.code.charCodeAt(5):event.keyCode;
+              if(!validPcKey(vk))return;
+              const chord=[event.ctrlKey?17:0,event.altKey?18:0,event.shiftKey?16:0,event.metaKey?91:0,vk].filter(Boolean);
+              binding.vk=vk;binding.chord=[...new Set(chord)];savePcBindings();finish();
+            };
+            window.addEventListener('keydown',capture,true);timer=setTimeout(finish,10000);
+          });keys.append(record);
+        }else{
+          const sequence=gameNode('input',{type:'text',maxLength:120,placeholder:'Then: E, Space',value:binding.sequence.map(vk=>vkChoices.find(k=>k.vk===vk)?.label||`Key ${vk}`).join(', ')});sequence.setAttribute('aria-label',`${names[button]} following keys`);
+          sequence.addEventListener('change',()=>{const values=sequence.value.split(',').map(v=>v.trim()).filter(Boolean).map(label=>vkChoices.find(k=>k.label.toLowerCase()===label.toLowerCase())?.vk||Number(label.replace(/^Key\s+/i,'')));if(values.length<1||values.length>5||!values.every(validPcKey)){toast('Enter one to five key names or key codes, separated by commas.');return;}binding.sequence=values;savePcBindings();});keys.append(sequence);
         }
-        selected.sequence=keys;savePcBindings();
-      });
-      row.append(label,key,behavior,sequence,launch);host.append(row);
+        row.append(keys);
+      }
+      host.append(row);
     }
-    $('#pc-click-threshold').value=String(Math.round(pcClickThreshold*100));
-    $('#pc-click-value').textContent=`${Math.round(pcClickThreshold*100)}%`;
-    $('#pc-pointer-sensitivity').value=String(Math.round(pcPointerSensitivity*100));
-    $('#pc-pointer-value').textContent=`${Math.round(pcPointerSensitivity*100)}%`;
-    $('#pc-reverse-scroll').checked=pcReverseScroll;
+    $('#pc-click-threshold').value=String(Math.round(pcClickThreshold*100));$('#pc-click-value').textContent=`${Math.round(pcClickThreshold*100)}%`;
+    $('#pc-pointer-sensitivity').value=String(Math.round(pcPointerSensitivity*100));$('#pc-pointer-value').textContent=`${Math.round(pcPointerSensitivity*100)}%`;$('#pc-reverse-scroll').checked=pcReverseScroll;
   }
   $('#pc-click-threshold').addEventListener('input',event=>{
     pcClickThreshold=+event.target.value/100;
@@ -470,7 +472,7 @@
   if(native)invoke('platform_capabilities').then(cap=>{
     if(!cap)return;
     state.platformDesktopInput=!!cap.desktopInput;
-    $('#platform-support').textContent=cap.desktopInput?'Windows: desktop controls, XInput, and system audio capture are available.':`${cap.os}: USB/Bluetooth input, triggers, lights, profiles, and USB audio are available. Desktop controls and system audio capture are still Windows only.`;
+    $('#platform-support').textContent=cap.os==='windows'?'Windows: desktop controls, XInput, and system audio capture.':cap.os==='macos'?'macOS: controller features and desktop input. Allow Accessibility access for pointer and keyboard controls. XInput and system audio capture are Windows only.':'Linux: controller features and desktop input through X11 or the Wayland desktop portal. Pure Wayland may need manual profile selection. XInput and system audio capture are Windows only.';
     if(!cap.desktopInput){renderPcMode();renderGyroControls();}
   }).catch(()=>{});
   let padNavPrev = null, padFocus = null;
@@ -483,7 +485,7 @@
     $('strong',button).textContent=enabled?'PC control':'Game mode';
     $('#input-mode-help').textContent=!state.platformDesktopInput?'Game mode is available. PC control is still Windows only.':enabled
       ?'Touchpad: pointer. Right stick: scroll. L2/R2: clicks. Edit shortcuts under PC controls.'
-      :'Game mode: games receive input. PC control: pad controls this app and Windows.';
+      :'Game mode: games receive input. PC control: pad controls this app and the desktop.';
     if(!enabled){padNavPrev=null;clearPadFocus();}
   }
   $('#input-mode-toggle').addEventListener('click',()=>send({action:'setPcMode',enabled:!state.pcMode}));
@@ -494,7 +496,7 @@
   function padControls(){
     const selector='button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href],[tabindex]:not([tabindex="-1"])';
     return [$('#'+state.currentView),$('.masthead'),$('.session-rail')].flatMap(root=>$$(selector,root))
-      .filter(el=>el.getClientRects().length && el.getAttribute('type')!=='hidden');
+      .filter(el=>el.getClientRects().length && el.getAttribute('type')!=='hidden').sort((a,b)=>Number(!!a.closest('.preset-library'))-Number(!!b.closest('.preset-library')));
   }
   function focusPadControl(el){
     if(!el)return;
@@ -615,6 +617,7 @@
       const data = native ? await invoke('load_profiles') : JSON.parse(localStorage.getItem('aftertouch.profiles.v3') || localStorage.getItem('aftertouch.profiles.v2') || 'null');
       if (data && [1,2,3].includes(data.schemaVersion) && Array.isArray(data.profiles) && data.profiles.length && data.profiles.every(validProfile)) {
         state.profiles = data.profiles.map(normalizeProfile);
+        triggerPresets=Array.isArray(data.triggerPresets)?data.triggerPresets:[];
         state.profileId = state.profiles.some(p=>p.id===data.activeId) ? data.activeId : state.profiles[0].id;
         state.autoApply = data.autoApply !== false;
       }
@@ -623,7 +626,7 @@
     renderAllProfileControls();
   }
   function persistProfiles() {
-    const data={schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles)};
+    const data={schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles),triggerPresets:clone(triggerPresets)};
     saveChain=saveChain.catch(()=>{}).then(async()=>{
       if(native) await invoke('save_profiles',{data});
       else localStorage.setItem('aftertouch.profiles.v3',JSON.stringify(data));
@@ -635,7 +638,71 @@
     if(immediate)return persistProfiles();
     saveTimeout=setTimeout(persistProfiles,180);
   }
-  function renderAllProfileControls() { renderProfiles(); renderTriggerControls(); renderHapticControls(); renderRemapEditor(); renderGyroControls(); }
+  function gameNode(tag,props={},children=[]){const n=document.createElement(tag);for(const [key,value] of Object.entries(props))if(key==='text')n.textContent=value;else if(key==='class')n.className=value;else n[key]=value;for(const child of children)n.append(child);return n;}
+  function gameSelect(items,value,onchange){const n=gameNode('select');items.forEach(([v,label])=>n.add(new Option(label,String(v))));n.value=String(value);n.addEventListener('change',()=>onchange(n.value));return n;}
+  function gameField(label,input){return gameNode('label',{class:'game-field',text:label},[input]);}
+  function gameNumber(value,min,max,change,step=1){const n=gameNode('input',{type:'number',min,max,step,value});n.addEventListener('change',()=>{const value=Number(n.value);if(!Number.isFinite(value)||value<min||value>max){n.value=String(min);toast(`Enter ${min}–${max}`);return;}change(value);saveProfiles();});return n;}
+  function libraryOptions(){return [['','No trigger change'],...triggerPresets.map(p=>[p.id,p.name])];}
+  function renderTriggerLibrary(){const select=$('#trigger-library'),old=select.value;select.replaceChildren(new Option(triggerPresets.length?'Choose a preset':'No saved presets',''));triggerPresets.forEach(p=>select.add(new Option(p.name,p.id)));select.value=triggerPresets.some(p=>p.id===old)?old:'';for(const id of ['load-trigger-preset','delete-trigger-preset','update-trigger-preset'])$('#'+id).disabled=!select.value;}
+  $('#trigger-library').addEventListener('change',()=>{const preset=triggerPresets.find(p=>p.id===$('#trigger-library').value);if(preset)$('#trigger-preset-name').value=preset.name;renderTriggerLibrary();});
+  $('#save-trigger-preset').addEventListener('click',async()=>{
+    const name=$('#trigger-preset-name').value.trim();if(!name){toast('Name your trigger preset.');return;}if(triggerPresets.length>=100){toast('100 preset limit.');return;}
+    const preset={id:`trigger-${crypto.randomUUID()}`,name,triggers:clone(profile().triggers),inputEffects:clone(profile().inputEffects)};
+    triggerPresets.push(preset);if(!await saveProfiles(true)){triggerPresets.pop();return;}renderGameProfiles();$('#trigger-library').value=preset.id;renderTriggerLibrary();toast('Trigger preset saved');
+  });
+  $('#update-trigger-preset').addEventListener('click',async()=>{const p=triggerPresets.find(p=>p.id===$('#trigger-library').value);if(!p)return;const previous=clone(p);Object.assign(p,{name:$('#trigger-preset-name').value.trim()||p.name,triggers:clone(profile().triggers),inputEffects:clone(profile().inputEffects)});if(!await saveProfiles(true))Object.assign(p,previous);renderGameProfiles();});
+  $('#load-trigger-preset').addEventListener('click',()=>{const p=triggerPresets.find(p=>p.id===$('#trigger-library').value);if(!p)return;profile().triggers=clone(p.triggers);profile().inputEffects=clone(p.inputEffects);renderTriggerControls();saveProfiles();toast(`Loaded ${p.name}. Press Apply to use it.`);});
+  $('#delete-trigger-preset').addEventListener('click',async()=>{const id=$('#trigger-library').value;if(!id)return;const used=state.profiles.some(p=>p.weaponBindings.some(b=>b.presetId===id));if(used){toast('Remove this preset’s weapon mappings before deleting it.');return;}const previous=triggerPresets.slice();triggerPresets=triggerPresets.filter(p=>p.id!==id);if(!await saveProfiles(true))triggerPresets=previous;renderGameProfiles();});
+  async function applyGameRules(){
+    const p=profile(),active=!state.pcMode&&(!p.matchExe||matchesForeground(p));
+    const a=await send({action:'setGameActions',enabled:p.actionsEnabled&&active,rules:clone(p.actions)});
+    const b=await send({action:'setGameLink',settings:{...p.gameLink,enabled:p.gameLink.enabled&&active}});
+    return a&&b;
+  }
+  async function useWeapon(name,fromLink=false){
+    const p=profile();if(fromLink&&(!p.gameLink.enabled||p.matchExe&&!matchesForeground(p)))return;
+    const match=p.weaponBindings.find(b=>b.weapon.toLowerCase()===name.toLowerCase()),preset=triggerPresets.find(t=>t.id===match?.presetId);
+    if(!state.connected){toast('Connect a controller.');return;}
+    const id=preset?.id||'';if(fromLink&&activeWeaponPreset===id)return;
+    if(await send({action:'applyTriggers',...(preset?.triggers||p.triggers)})){
+      await send(inputEffectCommand(preset?.inputEffects||p.inputEffects));activeWeaponPreset=id;
+      $('#game-link-status').textContent=preset?`${name} · ${preset.name}`:name?`${name} · profile default (no match)`:'Profile default';
+    }
+  }
+  function renderGameProfiles(){
+    renderTriggerLibrary();const p=profile();$('#game-actions-enabled').checked=p.actionsEnabled;
+    $('#game-link-enabled').checked=p.gameLink.enabled;$('#game-link-port').value=p.gameLink.port;$('#game-link-format').value=p.gameLink.format;
+    const host=$('#game-actions-list');host.replaceChildren();
+    if(!p.actions.length)host.append(gameNode('p',{class:'pc-note',text:'No action rules yet. Add one, then choose a button and feel.'}));
+    p.actions.forEach(rule=>{
+      const card=gameNode('div',{class:'game-action-card'}),grid=gameNode('div',{class:'game-form-grid'});
+      const name=gameNode('input',{value:rule.name,maxLength:40});name.addEventListener('change',()=>{rule.name=name.value.trim()||'Action';saveProfiles();});
+      grid.append(gameField('Action name',name),gameField('When',gameSelect([['press','Press'],['double','Double-tap'],['hold','Hold'],['event','Game event']],rule.source,v=>{rule.source=v;saveProfiles();renderGameProfiles();})));
+      if(rule.source==='event'){const e=gameNode('input',{value:rule.event,maxLength:80,placeholder:'dash'});e.addEventListener('change',()=>{rule.event=e.value.trim();saveProfiles();});grid.append(gameField('Event name',e));}
+      else grid.append(gameField('Button',gameSelect(names.map((name,i)=>[i,name]),rule.button,v=>{rule.button=+v;saveProfiles();})));
+      grid.append(gameField('Tap / hold window · ms',gameNumber(rule.windowMs,80,1000,v=>rule.windowMs=v)),gameField('Duration · ms',gameNumber(rule.durationMs,20,650,v=>rule.durationMs=v)),gameField('Cooldown · ms',gameNumber(rule.cooldownMs,0,10000,v=>rule.cooldownMs=v)));
+      const h=rule.haptic||{shape:'sine',strength:45,frequency:85,pan:0};
+      grid.append(gameField('Grip texture',gameSelect([['','No grip effect'],['sine','Smooth'],['square','Sharp'],['saw','Snap'],['noise','Rough']],rule.haptic?.shape||'',v=>{rule.haptic=v?{...h,shape:v}:null;saveProfiles();renderGameProfiles();})));
+      if(rule.haptic)grid.append(gameField('Grip strength · %',gameNumber(h.strength,0,100,v=>h.strength=v)),gameField('Frequency · Hz',gameNumber(h.frequency,20,300,v=>h.frequency=v)),gameField('Left / right · −100 / 100',gameNumber(h.pan,-100,100,v=>h.pan=v)));
+      const snapshots=triggerPresets.find(t=>JSON.stringify(t.triggers.left)===JSON.stringify(rule.leftTrigger)&&JSON.stringify(t.triggers.right)===JSON.stringify(rule.rightTrigger));
+      const options=libraryOptions();if(!snapshots&&(rule.leftTrigger||rule.rightTrigger))options.push(['snapshot','Saved action trigger settings']);
+      grid.append(gameField('Trigger feel',gameSelect(options,snapshots?.id||(rule.leftTrigger||rule.rightTrigger?'snapshot':''),v=>{const t=triggerPresets.find(p=>p.id===v);rule.leftTrigger=t?clone(t.triggers.left):null;rule.rightTrigger=t?clone(t.triggers.right):null;saveProfiles();})));
+      const buttons=gameNode('div',{class:'game-buttons'}),test=gameNode('button',{type:'button',class:'quiet-action',text:'Test feel'}),remove=gameNode('button',{type:'button',class:'quiet-action',text:'Remove'});
+      test.addEventListener('click',()=>{if(state.connected)send({action:'testGameAction',rule:clone(rule)});else toast('Connect a controller.');});remove.addEventListener('click',()=>{p.actions=p.actions.filter(r=>r.id!==rule.id);saveProfiles();renderGameProfiles();});buttons.append(test,remove);card.append(grid,buttons);host.append(card);
+    });
+    const weapons=$('#weapon-bindings');weapons.replaceChildren();const manual=$('#manual-weapon');manual.replaceChildren(new Option('Profile default',''));
+    p.weaponBindings.forEach((binding,index)=>{const row=gameNode('div',{class:'weapon-binding'}),name=gameNode('input',{value:binding.weapon,placeholder:'Weapon name, e.g. smg',maxLength:80});name.setAttribute('aria-label','Weapon name');name.addEventListener('change',()=>{binding.weapon=name.value.trim();saveProfiles();renderGameProfiles();});
+      const preset=gameSelect(triggerPresets.map(t=>[t.id,t.name]),binding.presetId,v=>{binding.presetId=v;saveProfiles();});preset.setAttribute('aria-label','Weapon trigger preset');
+      const remove=gameNode('button',{class:'quiet-action',type:'button',text:'Remove'});remove.addEventListener('click',()=>{p.weaponBindings.splice(index,1);saveProfiles();renderGameProfiles();});row.append(name,preset,remove);weapons.append(row);manual.add(new Option(binding.weapon,binding.weapon));});
+  }
+  $('#game-actions-enabled').addEventListener('change',e=>{profile().actionsEnabled=e.target.checked;saveProfiles();});
+  $('#add-game-action').addEventListener('click',()=>{if(profile().actions.length>=24){toast('24 action limit.');return;}profile().actions.push({id:crypto.randomUUID(),name:'New action',source:'press',button:1,event:'dash',windowMs:280,cooldownMs:180,durationMs:120,haptic:{shape:'sine',frequency:85,strength:45,pan:0},leftTrigger:null,rightTrigger:null});saveProfiles();renderGameProfiles();});
+  $('#save-game-actions').addEventListener('click',async()=>{if(await saveProfiles(true)&&state.connected){await applyGameRules();toast('Game rules applied');}else if(!state.connected)toast('Saved. Connect a controller to apply.');});
+  for(const id of ['game-link-enabled','game-link-format','game-link-port'])$('#'+id).addEventListener('change',()=>{profile().gameLink={enabled:$('#game-link-enabled').checked,format:$('#game-link-format').value,port:Number($('#game-link-port').value)};saveProfiles();});
+  $('#add-weapon-binding').addEventListener('click',()=>{if(!triggerPresets.length){toast('Save a trigger preset on Triggers first.');return;}if(profile().weaponBindings.length>=100)return;let name='Weapon',i=1;while(profile().weaponBindings.some(b=>b.weapon===name))name=`Weapon ${++i}`;profile().weaponBindings.push({weapon:name,presetId:triggerPresets[0].id});saveProfiles();renderGameProfiles();});
+  $('#apply-manual-weapon').addEventListener('click',()=>useWeapon($('#manual-weapon').value));
+
+  function renderAllProfileControls() { renderProfiles(); renderTriggerControls(); renderHapticControls(); renderRemapEditor(); renderGyroControls(); renderGameProfiles(); }
 
   async function applyProfileHardware(announce=true) {
     const p = profile();
@@ -646,6 +713,8 @@
     const ok = await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right});
     if (!ok) return false;
     if (!await send(inputEffectCommand(p.inputEffects))) return false;
+    activeWeaponPreset='';
+    if(!await applyGameRules())return false;
     if (p.gyroAim) {
       if (!await send({
         action:'setGyroAim',
@@ -664,7 +733,7 @@
       if (!await send({
         action:'setRemap',
         enabled: !!p.remap.enabled,
-        bindings: (p.remap.bindings||[]).map(b=>({button:+b.button,vk:+b.vk,modifier:b.modifier??null,behavior:b.behavior||'hold',sequence:b.sequence||[]}))
+        bindings: (p.remap.bindings||[]).map(b=>({button:+b.button,vk:+b.vk,modifier:b.modifier??null,behavior:b.behavior||'hold',sequence:b.sequence||[],chord:b.chord||[]}))
       })) return false;
     }
     if (announce) { state.autoSuppressed=false; toast(`Sent ${p.name} settings to controller`); log(`PROFILE / ${p.name} sent`); }
@@ -681,9 +750,10 @@
     if (!state.connected || !state.autoApply || state.autoSuppressed || !state.autoMatchId ||
         state.profileId !== state.autoMatchId || !profile().autoApply ||
         !matchesForeground(profile())) return;
-    if (profile().triggers.left.mode==='off' && profile().triggers.right.mode==='off') return;
+    const currentTriggers=triggerPresets.find(p=>p.id===activeWeaponPreset)?.triggers||profile().triggers;
+    if (currentTriggers.left.mode==='off' && currentTriggers.right.mode==='off') return;
     if (state.leaseUntil>performance.now()) await send({action:'renewTriggers'});
-    else await applyProfileHardware(false);
+    else if(activeWeaponPreset){const preset=triggerPresets.find(p=>p.id===activeWeaponPreset);if(preset){await send({action:'applyTriggers',...preset.triggers});await send(inputEffectCommand(preset.inputEffects));}}else await applyProfileHardware(false);
   }, 5000);
 
   function renderAutoApply() {
@@ -776,7 +846,7 @@
   $('#learn-process-path').addEventListener('click',()=>{if(!state.lastExternalExe||!state.lastExternalPath){toast('Focus the game first.');return;}$('#profile-match').value=state.lastExternalExe;$('#profile-match-path').value=state.lastExternalPath;commitProfileDraft(true);});
   $('#export-profiles').addEventListener('click',async () => {
     if(!await commitProfileDraft(false))return;
-    const data={schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:state.profiles};
+    const data={schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:state.profiles,triggerPresets};
     if(native) { try { const path=await invoke('export_profiles',{data}); toast(`Exported to ${path}`); } catch(error){toast(String(error));} }
     else { const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='CONTROLLER-profiles.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000); }
   });
@@ -786,11 +856,16 @@
     try { if(file.size>1_000_000)throw Error('File is too large'); const data=JSON.parse(await file.text());
       if(![1,2,3].includes(data.schemaVersion)||!Array.isArray(data.profiles)||!data.profiles.length||data.profiles.length>50||!data.profiles.every(validProfile))throw Error('Unsupported or invalid profile file');
       if(state.profiles.length+data.profiles.length>50)throw Error('50 profile limit');
-      const imported=data.profiles.map(p=>{const c=normalizeProfile(p);c.id=`import-${crypto.randomUUID()}`;c.name=c.name.slice(0,40);c.description=String(c.description||'').slice(0,180);c.tag='IMPORTED';return c;});
-      const previousProfiles=state.profiles.slice(),previousId=state.profileId;
+      const incoming=Array.isArray(data.triggerPresets)?data.triggerPresets:[];
+      if(triggerPresets.length+incoming.length>100)throw Error('100 trigger preset limit');
+      const presetIds=new Map(incoming.map(p=>[p.id,`trigger-${crypto.randomUUID()}`]));
+      const importedPresets=incoming.map(p=>({...p,id:presetIds.get(p.id)}));
+      const imported=data.profiles.map(p=>{const c=normalizeProfile(p);c.id=`import-${crypto.randomUUID()}`;c.name=c.name.slice(0,40);c.description=String(c.description||'').slice(0,180);c.tag='IMPORTED';c.weaponBindings=c.weaponBindings.map(b=>({...b,presetId:presetIds.get(b.presetId)||b.presetId}));return c;});
+      const previousProfiles=state.profiles.slice(),previousId=state.profileId,previousPresets=triggerPresets.slice();
+      triggerPresets.push(...importedPresets);
       state.profiles.unshift(...imported);state.profileId=imported[0].id;renderAllProfileControls();
       if(await saveProfiles(true))toast(`Imported ${imported.length}`);
-      else{state.profiles=previousProfiles;state.profileId=previousId;renderAllProfileControls();}
+      else{state.profiles=previousProfiles;state.profileId=previousId;triggerPresets=previousPresets;renderAllProfileControls();}
     } catch(error){toast(`Import failed: ${error.message}`);} e.target.value='';
   });
 
@@ -1737,7 +1812,7 @@
       el.classList.toggle('is-charging', full && !!state.charging);
       el.classList.toggle('is-fault', fault);
     });
-    state.touch.forEach((point,i)=>{const el=$(`#contact-${i}`);el.classList.toggle('is-active',!!point);if(point){el.style.left=`${point.x*100}%`;el.style.top=`${point.y*100}%`;} $(`#touch-${i+1}-pos`).textContent=point?`${point.x.toFixed(3)} / ${point.y.toFixed(3)}`:'—';});
+    state.touch.forEach((point,i)=>{const el=$(`#contact-${i}`);el.classList.toggle('is-active',!!point);if(point){el.style.left=`clamp(15px, ${clamp(point.x)*100}%, calc(100% - 15px))`;el.style.top=`clamp(15px, ${clamp(point.y)*100}%, calc(100% - 15px))`;} $(`#touch-${i+1}-pos`).textContent=point?`${point.x.toFixed(3)} / ${point.y.toFixed(3)}`:'—';});
     state.gyro.forEach((n,i)=>{const k=['x','y','z'][i];$(`#gyro-${k}`).textContent=String(n);const f=clamp(Math.abs(n)/16000)*50;const el=$(`#gyro-${k}-fill`);el.style.width=`${f}%`;el.style.left=n<0?`${50-f}%`:'50%';});
     const activity=clamp(active.length/8+Math.abs(a[0])/4+Math.abs(a[1])/4+Math.abs(a[2])/4+Math.abs(a[3])/4+(b[6]+b[7])/4);
     state.activity.push(activity);state.activity.shift();
@@ -1751,7 +1826,7 @@
       const changed=state.connected!==!!event.connected || (event.connected&&(state.name!==event.name||state.transport!==event.transport||state.path!==(event.path||'')));
       if(changed)padNavPrev=null;
       setConnected(!!event.connected,event.name||'',event.transport||'',event.firmware||'',event.path||'');
-      if(changed && event.connected){sendPcBindings();sendCalibration();}
+      if(changed && event.connected){sendPcBindings();sendCalibration();applyGameRules();}
       if(event.path) state.selectedPath = event.path;
       if(changed||state.manualScan){const msg=event.connected?`${event.name} · ${event.transport}`:(event.message||'Disconnected');log(msg);toast(msg);}
       if(state.manualScan)finishScan();
@@ -1809,6 +1884,13 @@
       renderAlerts();
     }else if(event.type==='hapticAlert'){
       toast(event.message||'Haptic alert');log(event.message||'Haptic alert');
+    }else if(event.type==='gameAction'){
+      $('#game-action-status').textContent=`Played ${event.name}`;
+    }else if(event.type==='gameLinkStatus'||event.type==='gameLinkError'){
+      $('#game-link-status').textContent=event.message;
+    }else if(event.type==='gameEvent'){
+      if(event.weapon!=null&&state.connected)useWeapon(event.weapon,true);
+      if(event.events?.length)$('#game-action-status').textContent=`Game event: ${event.events.join(', ')}`;
     }else if(event.type==='telemetryStatus'){
       state.telemetryOn=!!event.enabled;
       if(event.port)$('#telemetry-port').value=event.port;
@@ -1866,10 +1948,11 @@
       } else if (match && previousMatch!==match.id && state.autoApply && match.autoApply !== false) {
         applyProfileHardware(false);
       }
+      if(state.connected)applyGameRules();
     }else if(event.type==='mouseMode'){
       state.mouse=!!event.enabled;renderMouseSwitch();
     }else if(event.type==='pcMode'){
-      state.pcMode=!!event.enabled;renderPcMode();
+      state.pcMode=!!event.enabled;renderPcMode();if(state.connected)applyGameRules();
     }else if(event.type==='touchGestures'){
       state.gestures=!!event.enabled;renderGestureSwitch();
     }else if(event.type==='gyroAim'){

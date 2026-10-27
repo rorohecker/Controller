@@ -275,7 +275,17 @@ impl DesktopMapper {
                         .get(&launch.button)
                         .is_none_or(|last| now.duration_since(*last) >= Duration::from_secs(1))
                 {
-                    let _ = Command::new(&launch.path).spawn();
+                    #[cfg(target_os = "macos")]
+                    let mut app_command = if launch.path.extension().is_some_and(|e| e == "app") {
+                        let mut c = Command::new("open");
+                        c.arg("-a").arg(&launch.path);
+                        c
+                    } else {
+                        Command::new(&launch.path)
+                    };
+                    #[cfg(not(target_os = "macos"))]
+                    let mut app_command = Command::new(&launch.path);
+                    let _ = app_command.spawn();
                     self.last_launch.insert(launch.button, now);
                 }
                 self.launch_held.insert(launch.button);
@@ -466,6 +476,7 @@ pub struct RemapBinding {
     pub modifier: Option<u8>,
     pub behavior: RemapBehavior,
     pub sequence: Vec<u16>,
+    pub chord: Vec<u16>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -540,13 +551,17 @@ impl RemapMapper {
         }
         let selected = self.active_bindings(input);
         let active = self.active_keys(input);
-        for vk in self.keys_down.difference(&active) {
+        let mut releasing: Vec<_> = self.keys_down.difference(&active).copied().collect();
+        releasing.sort_by_key(|vk| matches!(vk,16..=18|91|92|160..=165));
+        for vk in &releasing {
             if self.macro_held.is_none_or(|(held, _)| held != *vk) {
                 send_key(*vk, true);
             }
         }
-        for vk in active.difference(&self.keys_down) {
-            send_key(*vk, false);
+        let mut pressing: Vec<_> = active.difference(&self.keys_down).copied().collect();
+        pressing.sort_by_key(|vk| !matches!(vk,16..=18|91|92|160..=165));
+        for vk in pressing {
+            send_key(vk, false);
         }
         self.keys_down = active;
         let mut taps_down = HashSet::new();
@@ -561,8 +576,20 @@ impl RemapMapper {
                 continue;
             }
             if binding.behavior == RemapBehavior::Tap {
-                if !self.keys_down.contains(&binding.vk) {
-                    tap_key(binding.vk);
+                let keys = if binding.chord.is_empty() {
+                    vec![binding.vk]
+                } else {
+                    binding.chord.clone()
+                };
+                for key in &keys {
+                    if !self.keys_down.contains(key) {
+                        send_key(*key, false);
+                    }
+                }
+                for key in keys.iter().rev() {
+                    if !self.keys_down.contains(key) {
+                        send_key(*key, true);
+                    }
                 }
             } else if self.macro_queue.len() + binding.sequence.len() < 32 {
                 self.macro_queue.push_back(binding.vk);
@@ -616,7 +643,13 @@ impl RemapMapper {
             .iter()
             .map(|&index| &self.bindings[index])
             .filter(|binding| binding.behavior == RemapBehavior::Hold)
-            .map(|binding| binding.vk)
+            .flat_map(|binding| {
+                if binding.chord.is_empty() {
+                    vec![binding.vk]
+                } else {
+                    binding.chord.clone()
+                }
+            })
             .collect()
     }
 
@@ -920,9 +953,24 @@ fn send_key(vk: u16, up: bool) {
 }
 
 #[cfg(not(windows))]
-fn send_mouse(_dx: i32, _dy: i32, _wheel: i32, _flags: u32) {}
+fn send_mouse(dx: i32, dy: i32, wheel: i32, flags: u32) {
+    crate::native_input::mouse(dx, dy, wheel, flags);
+}
 #[cfg(not(windows))]
-fn send_key(_vk: u16, _up: bool) {}
+fn send_key(vk: u16, up: bool) {
+    crate::native_input::key(vk, up);
+}
+
+pub fn prepare_desktop() -> Result<(), String> {
+    #[cfg(all(not(windows), not(test)))]
+    {
+        crate::native_input::prepare()
+    }
+    #[cfg(any(windows, test))]
+    {
+        Ok(())
+    }
+}
 
 fn tap_key(vk: u16) {
     send_key(vk, false);
@@ -971,6 +1019,7 @@ mod tests {
                     modifier: None,
                     behavior: RemapBehavior::Hold,
                     sequence: vec![],
+                    chord: vec![],
                 },
                 RemapBinding {
                     button: 1,
@@ -978,6 +1027,7 @@ mod tests {
                     modifier: None,
                     behavior: RemapBehavior::Hold,
                     sequence: vec![],
+                    chord: vec![],
                 },
             ],
             ..Default::default()
@@ -996,6 +1046,41 @@ mod tests {
     }
 
     #[test]
+    fn shortcut_keeps_all_keys_and_shared_modifier_until_the_last_binding_releases() {
+        let mapper = RemapMapper {
+            enabled: true,
+            bindings: vec![
+                RemapBinding {
+                    button: 0,
+                    vk: 75,
+                    modifier: None,
+                    behavior: RemapBehavior::Hold,
+                    sequence: vec![],
+                    chord: vec![17, 16, 75],
+                },
+                RemapBinding {
+                    button: 1,
+                    vk: 17,
+                    modifier: None,
+                    behavior: RemapBehavior::Hold,
+                    sequence: vec![],
+                    chord: vec![],
+                },
+            ],
+            ..RemapMapper::default()
+        };
+        let mut input = aftertouch_protocol::parse_input(&[0x01; 64]).unwrap();
+        input.buttons = [0.; 23];
+        input.buttons[0] = 1.;
+        input.buttons[1] = 1.;
+        assert_eq!(mapper.active_keys(&input), HashSet::from([17, 16, 75]));
+        input.buttons[0] = 0.;
+        assert_eq!(mapper.active_keys(&input), HashSet::from([17]));
+        input.buttons[1] = 0.;
+        assert!(mapper.active_keys(&input).is_empty());
+    }
+
+    #[test]
     fn held_modifier_selects_layer_binding_over_base() {
         let mapper = RemapMapper {
             enabled: true,
@@ -1006,6 +1091,7 @@ mod tests {
                     modifier: None,
                     behavior: RemapBehavior::Hold,
                     sequence: vec![],
+                    chord: vec![],
                 },
                 RemapBinding {
                     button: 0,
@@ -1013,6 +1099,7 @@ mod tests {
                     modifier: Some(4),
                     behavior: RemapBehavior::Hold,
                     sequence: vec![],
+                    chord: vec![],
                 },
                 RemapBinding {
                     button: 4,
@@ -1020,6 +1107,7 @@ mod tests {
                     modifier: None,
                     behavior: RemapBehavior::Hold,
                     sequence: vec![],
+                    chord: vec![],
                 },
             ],
             ..Default::default()

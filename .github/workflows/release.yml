@@ -1,4 +1,4 @@
-name: Windows release
+name: Desktop release
 
 on:
   push:
@@ -6,6 +6,8 @@ on:
       - 'v*'
 
 jobs:
+  portable:
+    uses: ./.github/workflows/portable-build.yml
   release:
     runs-on: windows-latest
     permissions:
@@ -46,6 +48,7 @@ jobs:
           python -m pip install playwright==1.64.0
           python -m playwright install chromium
           python tests/ui_smoke.py
+          python tests/game_profiles_smoke.py
       - name: Build core smoke executable
         run: cargo build --bin controller
       - name: Controller-free core smoke
@@ -62,15 +65,31 @@ jobs:
         run: |
           $version = (Get-Content tauri.conf.json | ConvertFrom-Json).version
           python scripts/build_update_manifest.py $version target/release/bundle/nsis $env:GITHUB_REPOSITORY
-      - name: Publish release
-        shell: pwsh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: controller-Windows-release
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/*-setup.exe.sig
+            target/release/bundle/nsis/latest.json
+          if-no-files-found: error
+  publish:
+    needs: [release, portable]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: controller-*
+          path: release-assets
+          merge-multiple: true
+      - name: Publish all platforms
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          $bundle = 'target/release/bundle/nsis'
-          $version = (Get-Content tauri.conf.json | ConvertFrom-Json).version
-          $installer = @(Get-ChildItem -LiteralPath $bundle -Filter "*_${version}_*-setup.exe")
-          if ($installer.Count -ne 1) { throw 'Expected one NSIS installer' }
-          $signature = "$($installer[0].FullName).sig"
-          if (-not (Test-Path -LiteralPath $signature)) { throw 'Installer signature missing' }
-          gh release create $env:GITHUB_REF_NAME $installer[0].FullName $signature (Join-Path $bundle 'latest.json') --title "CONTROLLER $env:GITHUB_REF_NAME" --generate-notes --verify-tag
+          mapfile -d '' assets < <(find release-assets -type f \( -name '*-setup.exe' -o -name '*.sig' -o -name latest.json -o -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' \) -print0)
+          test "${#assets[@]}" -ge 6
+          gh release create "$GITHUB_REF_NAME" "${assets[@]}" --title "CONTROLLER $GITHUB_REF_NAME" --generate-notes --verify-tag

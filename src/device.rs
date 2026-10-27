@@ -6,6 +6,8 @@ use std::{
 
 use crate::{
     audio_haptics::{AudioEngine, VoiceClip},
+    game_actions::{ActionMapper, ActionRule},
+    game_link::{GameLink, LinkSettings},
     haptics::HapticClip,
     input_map::{
         DesktopMapper, GyroActivation, GyroAimConfig, GyroAimMapper, InputCalibration, MouseMapper,
@@ -36,6 +38,16 @@ pub enum DeviceCommand {
         right: TriggerSetting,
     },
     RenewTriggers,
+    SetGameActions {
+        enabled: bool,
+        rules: Vec<ActionRule>,
+    },
+    TestGameAction {
+        rule: ActionRule,
+    },
+    SetGameLink {
+        settings: LinkSettings,
+    },
     SetLightbar {
         rgb: [u8; 3],
     },
@@ -184,6 +196,8 @@ pub struct RemapBindingDto {
     pub behavior: String,
     #[serde(default)]
     pub sequence: Vec<u16>,
+    #[serde(default)]
+    pub chord: Vec<u16>,
     #[serde(default, rename = "launchPath")]
     pub launch_path: Option<String>,
 }
@@ -225,10 +239,16 @@ fn valid_launch_path(path: &str) -> bool {
     path.len() <= 1024
         && !path.contains('\0')
         && file.is_absolute()
-        && file.is_file()
-        && file
-            .extension()
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+        && if cfg!(windows) {
+            file.is_file()
+                && file
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+        } else if cfg!(target_os = "macos") {
+            file.is_file() || file.is_dir() && file.extension().is_some_and(|ext| ext == "app")
+        } else {
+            file.is_file()
+        }
 }
 
 fn sensor_color(sensor_byte: u8) -> [u8; 3] {
@@ -285,6 +305,8 @@ struct Connected {
     input_effect: Option<InputEffect>,
     input_effect_until: Option<Instant>,
     bows: [Option<BowReturn>; 2],
+    game_actions: ActionMapper,
+    action_until: Option<Instant>,
     low_battery_alert: bool,
     low_battery_latched: bool,
     haptic_timer: Option<Instant>,
@@ -629,6 +651,84 @@ impl Connected {
         self.haptic = Some(fallback);
     }
 
+    fn play_action(&mut self, rule: &ActionRule) -> Result<(), String> {
+        if let Some(h) = &rule.haptic {
+            self.play_feedback(
+                &h.shape,
+                h.frequency,
+                3,
+                rule.duration_ms.min(650),
+                h.strength,
+                h.pan,
+            );
+        }
+        if rule.left_trigger.is_some() || rule.right_trigger.is_some() {
+            let off = protocol::encode_trigger(&TriggerSetting {
+                mode: "off".into(),
+                curve: vec![0.; 11],
+                ..TriggerSetting::default()
+            })
+            .map_err(str::to_string)?;
+            let (base_left, base_right) = self.last_trigger.unwrap_or((off, off));
+            let left = rule
+                .left_trigger
+                .as_ref()
+                .map(encode_live_trigger)
+                .transpose()?
+                .unwrap_or(base_left);
+            let right = rule
+                .right_trigger
+                .as_ref()
+                .map(encode_live_trigger)
+                .transpose()?
+                .unwrap_or(base_right);
+            self.write(protocol::usb_report(
+                0x0c,
+                0,
+                0,
+                Some(right),
+                Some(left),
+                None,
+                None,
+                false,
+            ))?;
+            self.trigger_active = true;
+            self.input_effect_until = None;
+            if let Some(effect) = self.input_effect.as_mut() {
+                effect.remaining = 0;
+                effect.next_pulse = None;
+                effect.armed = false;
+            }
+            self.action_until =
+                Some(Instant::now() + Duration::from_millis(u64::from(rule.duration_ms)));
+        }
+        Ok(())
+    }
+    fn restore_action(&mut self) -> Result<(), String> {
+        if self.action_until.is_none() {
+            return Ok(());
+        }
+        let off = protocol::encode_trigger(&TriggerSetting {
+            mode: "off".into(),
+            curve: vec![0.; 11],
+            ..TriggerSetting::default()
+        })
+        .map_err(str::to_string)?;
+        let (left, right) = self.last_trigger.unwrap_or((off, off));
+        self.write(protocol::usb_report(
+            0x0c,
+            0,
+            0,
+            Some(right),
+            Some(left),
+            None,
+            None,
+            false,
+        ))?;
+        self.action_until = None;
+        self.trigger_active = left[0] != 0x05 || right[0] != 0x05;
+        Ok(())
+    }
     fn set_speaker_route(&mut self, enabled: bool) -> Result<(), String> {
         if !matches!(self.transport, BusType::Usb) {
             return Err("Controller speaker routing requires USB.".into());
@@ -724,6 +824,8 @@ impl Connected {
         self.screen_light = false;
         self.screen_color = None;
         self.sensor_light = false;
+        self.game_actions = ActionMapper::default();
+        self.action_until = None;
         self.last_sensor = None;
         if !(self.trigger_active
             || self.light_active
@@ -822,6 +924,9 @@ impl Connected {
     }
 
     fn update_input_effect(&mut self, right_pull: f32) -> Result<(), String> {
+        if self.action_until.is_some() {
+            return Ok(());
+        }
         if self.input_effect_until.is_some_and(|t| Instant::now() >= t) {
             self.restore_input_effect()?;
         }
@@ -873,6 +978,9 @@ impl Connected {
     }
 
     fn update_bow_returns(&mut self, pulls: [f32; 2]) -> Result<(), String> {
+        if self.action_until.is_some() {
+            return Ok(());
+        }
         for (side, pull) in pulls.into_iter().enumerate() {
             let change = self.bows[side].as_mut().and_then(|bow| bow.update(pull));
             if let Some(unloaded) = change
@@ -1022,6 +1130,8 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     panic_latched: false,
                     firmware,
                     last_trigger: None,
+                    game_actions: ActionMapper::default(),
+                    action_until: None,
                     last_light: None,
                     battery_light: false,
                     sensor_light: false,
@@ -1119,6 +1229,7 @@ fn handle_command(
     remap: &mut RemapMapper,
     xinput: &mut XInputBridge,
     telemetry: &mut TelemetryBridge,
+    game_link: &mut GameLink,
     script: &mut Option<ScriptProgram>,
     screen: &ScreenSampler,
     telemetry_stale_latched: &mut bool,
@@ -1126,6 +1237,25 @@ fn handle_command(
     preferred_path: &mut Option<String>,
 ) -> bool {
     match command {
+        DeviceCommand::SetGameLink { settings } => {
+            match game_link.set(settings.clone()) {
+                Ok(()) => emit(
+                    proxy,
+                    json!({"type":"gameLinkStatus","enabled":settings.enabled,"message":if settings.enabled {format!("Listening on 127.0.0.1:{} · {}",settings.port,settings.format)}else{"Game link off".into()}}),
+                ),
+                Err(message) => emit(proxy, json!({"type":"error","message":message})),
+            }
+            return true;
+        }
+        DeviceCommand::SetGameActions { enabled, rules } => {
+            if let Some(d) = device.as_mut() {
+                let _ = d.restore_action();
+                if let Err(message) = d.game_actions.set(if enabled { rules } else { Vec::new() }) {
+                    emit(proxy, json!({"type":"error","message":message}));
+                }
+            }
+            return true;
+        }
         DeviceCommand::Shutdown => {
             stop_input_mappers(mouse, gyro, remap, xinput, proxy);
             if let Some(device) = device.as_mut() {
@@ -1212,11 +1342,8 @@ fn handle_command(
             return true;
         }
         DeviceCommand::SetTouchMouse { enabled } => {
-            if enabled && !cfg!(windows) {
-                emit(
-                    proxy,
-                    json!({"type":"error","message":"Desktop pointer control is currently available on Windows."}),
-                );
+            if enabled && let Err(message) = crate::input_map::prepare_desktop() {
+                emit(proxy, json!({"type":"error","message":message}));
                 return true;
             }
             if enabled && device.is_none() {
@@ -1255,11 +1382,8 @@ fn handle_command(
             return true;
         }
         DeviceCommand::SetPcMode { enabled } => {
-            if enabled && !cfg!(windows) {
-                emit(
-                    proxy,
-                    json!({"type":"error","message":"PC control is currently available on Windows."}),
-                );
+            if enabled && let Err(message) = crate::input_map::prepare_desktop() {
+                emit(proxy, json!({"type":"error","message":message}));
                 return true;
             }
             let Some(device) = device.as_mut() else {
@@ -1308,10 +1432,15 @@ fn handle_command(
                                 || b.launch_path.is_some()))
                         || (b.behavior == "launch"
                             && (b.vk != 0
-                                || b.launch_path.as_deref().is_none_or(valid_launch_path)))
+                                || b.launch_path
+                                    .as_deref()
+                                    .is_none_or(|p| !valid_launch_path(p))))
                         || (b.behavior == "macro"
                             && (b.sequence.is_empty() || b.sequence.len() > 5))
                         || (b.behavior != "macro" && !b.sequence.is_empty())
+                        || b.chord.len() > 8
+                        || b.chord.iter().any(|&vk| vk == 0 || vk > 255)
+                        || (b.behavior == "macro" && !b.chord.is_empty())
                         || b.sequence.iter().any(|&vk| vk == 0 || vk > 255)
                         || !seen.insert(b.button)
                 })
@@ -1339,6 +1468,7 @@ fn handle_command(
                     modifier: None,
                     behavior: RemapBehavior::from_label(&b.behavior).unwrap_or(RemapBehavior::Hold),
                     sequence: b.sequence,
+                    chord: b.chord,
                 })
                 .collect();
             device.desktop.set_bindings(
@@ -1395,11 +1525,8 @@ fn handle_command(
             deadzone,
             smoothing,
         } => {
-            if enabled && !cfg!(windows) {
-                emit(
-                    proxy,
-                    json!({"type":"error","message":"Gyro pointer control is currently available on Windows."}),
-                );
+            if enabled && let Err(message) = crate::input_map::prepare_desktop() {
+                emit(proxy, json!({"type":"error","message":message}));
                 return true;
             }
             if enabled && device.is_none() {
@@ -1452,11 +1579,8 @@ fn handle_command(
             return true;
         }
         DeviceCommand::SetRemap { enabled, bindings } => {
-            if enabled && !cfg!(windows) {
-                emit(
-                    proxy,
-                    json!({"type":"error","message":"Keyboard remap is currently available on Windows."}),
-                );
+            if enabled && let Err(message) = crate::input_map::prepare_desktop() {
+                emit(proxy, json!({"type":"error","message":message}));
                 return true;
             }
             if enabled && device.is_none() {
@@ -1479,6 +1603,9 @@ fn handle_command(
                         || (b.behavior == "macro"
                             && (b.sequence.is_empty() || b.sequence.len() > 5))
                         || (b.behavior != "macro" && !b.sequence.is_empty())
+                        || b.chord.len() > 8
+                        || b.chord.iter().any(|&vk| vk == 0 || vk > 255)
+                        || (b.behavior == "macro" && !b.chord.is_empty())
                         || b.sequence.iter().any(|&vk| vk == 0 || vk > 255)
                         || !seen.insert((b.button, b.modifier))
                 })
@@ -1497,6 +1624,7 @@ fn handle_command(
                     modifier: b.modifier,
                     behavior: RemapBehavior::from_label(&b.behavior).unwrap_or(RemapBehavior::Hold),
                     sequence: b.sequence,
+                    chord: b.chord,
                 })
                 .collect();
             remap.set(enabled, mapped);
@@ -1604,7 +1732,9 @@ fn handle_command(
     };
 
     let result: Result<&str, String> = match command {
+        DeviceCommand::TestGameAction {rule} => {rule.validate().map_err(str::to_string).and_then(|()|device.play_action(&rule)).map(|()|"Action played")}
         DeviceCommand::ApplyTriggers { left, right } => {
+            let _=device.restore_action();
             let bow_sides = [left.mode == "bow", right.mode == "bow"];
             let high_points = [&left,&right].map(|t| t.release_point.unwrap_or((f32::from(t.end_zone.unwrap_or(9))/10.0).clamp(0.2,0.97)));
             match (encode_live_trigger(&left), encode_live_trigger(&right)) {
@@ -2079,7 +2209,9 @@ fn handle_command(
         | DeviceCommand::SetUiFocused { .. }
         | DeviceCommand::SetPcMode { .. }
         | DeviceCommand::SetPcBindings { .. }
-        | DeviceCommand::SetCalibration { .. } => unreachable!(),
+        | DeviceCommand::SetCalibration { .. }
+        | DeviceCommand::SetGameActions { .. }
+        | DeviceCommand::SetGameLink { .. } => unreachable!(),
     };
     match result {
         Ok(message) => emit(proxy, json!({ "type": "notice", "message": message })),
@@ -2105,6 +2237,8 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     let mut remap = RemapMapper::default();
     let mut xinput = XInputBridge::default();
     let mut telemetry = TelemetryBridge::default();
+    let mut game_link = GameLink::default();
+    let mut next_game_error = Instant::now();
     let mut script: Option<ScriptProgram> = None;
     let mut last_script_cue: Option<Instant> = None;
     let screen = ScreenSampler::new();
@@ -2113,9 +2247,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     let mut next_scan = Instant::now();
     let mut input_report = [0u8; 78];
     let mut next_process_check = Instant::now();
+    #[cfg(windows)]
     let gui_pid = std::env::var("CONTROLLER_GUI_PID")
         .ok()
         .and_then(|value| value.parse::<u32>().ok());
+    #[cfg(windows)]
     let mut next_focus_check = Instant::now();
     let mut last_conflicts = Vec::<&'static str>::new();
     let mut first_process_check = true;
@@ -2126,6 +2262,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     let mut next_rate = Instant::now() + Duration::from_secs(1);
     let mut telemetry_stale_latched = false;
     loop {
+        #[cfg(windows)]
         if let Some(gui_pid) = gui_pid
             && Instant::now() >= next_focus_check
         {
@@ -2200,6 +2337,9 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
         loop {
             match rx.try_recv() {
                 Ok(command) => {
+                    if matches!(command, DeviceCommand::Reset | DeviceCommand::Shutdown) {
+                        game_link.stop();
+                    }
                     if !handle_command(
                         command,
                         &mut device,
@@ -2209,6 +2349,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         &mut remap,
                         &mut xinput,
                         &mut telemetry,
+                        &mut game_link,
                         &mut script,
                         &screen,
                         &mut telemetry_stale_latched,
@@ -2226,6 +2367,61 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     return;
                 }
                 Err(TryRecvError::Empty) => break,
+            }
+        }
+        for update in game_link.poll(device.is_some()) {
+            match update {
+                Ok(update) => {
+                    if let Some(d) = device.as_mut() {
+                        if update.reset {
+                            let _ = d.restore_action();
+                        }
+                        if update.triggers.iter().any(Option::is_some) {
+                            let rule = ActionRule {
+                                id: "dsx".into(),
+                                name: "DSX mod".into(),
+                                source: "event".into(),
+                                button: 0,
+                                event: "dsx".into(),
+                                window_ms: 280,
+                                cooldown_ms: 0,
+                                duration_ms: 15000,
+                                haptic: None,
+                                left_trigger: update.triggers[0].clone(),
+                                right_trigger: update.triggers[1].clone(),
+                            };
+                            let _ = d.play_action(&rule);
+                        }
+                        if let Some(rgb) = update.rgb {
+                            let _ = d.write(protocol::usb_report(
+                                0,
+                                4,
+                                0,
+                                None,
+                                None,
+                                Some(rgb),
+                                None,
+                                false,
+                            ));
+                            d.light_active = true;
+                        }
+                        for event in &update.events {
+                            for rule in d.game_actions.event(event, Instant::now()) {
+                                let _ = d.play_action(&rule);
+                            }
+                        }
+                    }
+                    emit(
+                        &proxy,
+                        json!({"type":"gameEvent","weapon":update.weapon,"events":update.events}),
+                    );
+                }
+                Err(message) => {
+                    if Instant::now() >= next_game_error {
+                        emit(&proxy, json!({"type":"gameLinkError","message":message}));
+                        next_game_error = Instant::now() + Duration::from_secs(2);
+                    }
+                }
             }
         }
         if let Some(tick) = telemetry.poll() {
@@ -2428,6 +2624,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     json!({"type":"hapticAlert","message":"Haptic timer finished"}),
                 );
             }
+            if connected.action_until.is_some_and(|t| Instant::now() >= t)
+                && let Err(message) = connected.restore_action()
+            {
+                emit(&proxy, json!({"type":"error","message":message}));
+            }
             if connected
                 .input_effect_until
                 .is_some_and(|t| Instant::now() >= t)
@@ -2587,6 +2788,21 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         gyro.update(&input);
                         remap.update(&input);
                         connected.desktop.update(&input);
+                        if !connected.desktop.enabled() && !input.panic_combo {
+                            for rule in connected
+                                .game_actions
+                                .update(&input.buttons, Instant::now())
+                            {
+                                match connected.play_action(&rule) {
+                                    Ok(()) => {
+                                        emit(&proxy, json!({"type":"gameAction","name":rule.name}))
+                                    }
+                                    Err(message) => {
+                                        emit(&proxy, json!({"type":"error","message":message}))
+                                    }
+                                }
+                            }
+                        }
                         if let Some(event) = xinput.update(&input) {
                             emit(&proxy, event.clone());
                             if let Some(message) = event["message"].as_str() {
@@ -2594,6 +2810,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                             }
                         }
                         if input.panic_combo && !connected.panic_latched {
+                            game_link.stop();
                             screen.set_enabled(false);
                             let _ = telemetry.set(false, 0, false);
                             script = None;

@@ -1,0 +1,112 @@
+//! Native desktop input for macOS and Linux. Constructed only when a pointer mode is enabled.
+use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
+use std::cell::RefCell;
+thread_local! { static INPUT:RefCell<Option<Enigo>>=const {RefCell::new(None)}; static WHEEL:RefCell<i32>=const {RefCell::new(0)}; }
+#[cfg_attr(test, allow(dead_code))]
+pub fn prepare() -> Result<(), String> {
+    INPUT.with(|input|{if input.borrow().is_none(){let enigo=Enigo::new(&Settings::default()).map_err(|e|format!("Desktop input unavailable: {e}. On macOS allow Accessibility access. On Wayland allow the desktop control prompt."))?;*input.borrow_mut()=Some(enigo);}Ok(())})
+}
+pub fn mouse(dx: i32, dy: i32, wheel: i32, flags: u32) {
+    INPUT.with(|input| {
+        if let Some(e) = input.borrow_mut().as_mut() {
+            if flags & 1 != 0 {
+                let _ = e.move_mouse(dx, dy, Coordinate::Rel);
+            }
+            for (flag, button, direction) in [
+                (2, Button::Left, Direction::Press),
+                (4, Button::Left, Direction::Release),
+                (8, Button::Right, Direction::Press),
+                (16, Button::Right, Direction::Release),
+            ] {
+                if flags & flag != 0 {
+                    let _ = e.button(button, direction);
+                }
+            }
+            if flags & 0x800 != 0 {
+                WHEEL.with(|remainder| {
+                    let mut r = remainder.borrow_mut();
+                    *r += wheel;
+                    let steps = *r / 120;
+                    *r -= steps * 120;
+                    if steps != 0 {
+                        let _ = e.scroll(-steps, Axis::Vertical);
+                    }
+                });
+            }
+        }
+    });
+}
+pub fn key(vk: u16, up: bool) {
+    if let Some(key) = key_code(vk) {
+        INPUT.with(|input| {
+            if let Some(e) = input.borrow_mut().as_mut() {
+                let _ = e.key(
+                    key,
+                    if up {
+                        Direction::Release
+                    } else {
+                        Direction::Press
+                    },
+                );
+            }
+        });
+    }
+}
+fn key_code(vk: u16) -> Option<Key> {
+    Some(match vk {
+        8 => Key::Backspace,
+        9 => Key::Tab,
+        13 => Key::Return,
+        16 | 160 | 161 => Key::Shift,
+        17 | 162 | 163 => Key::Control,
+        18 | 164 | 165 => Key::Alt,
+        20 => Key::CapsLock,
+        27 => Key::Escape,
+        32 => Key::Space,
+        33 => Key::PageUp,
+        34 => Key::PageDown,
+        35 => Key::End,
+        36 => Key::Home,
+        37 => Key::LeftArrow,
+        38 => Key::UpArrow,
+        39 => Key::RightArrow,
+        40 => Key::DownArrow,
+        46 => Key::Delete,
+        91 | 92 => Key::Meta,
+        48..=57 => Key::Unicode(char::from_u32(u32::from(vk))?),
+        65..=90 => Key::Unicode(char::from_u32(u32::from(vk + 32))?),
+        112 => Key::F1,
+        113 => Key::F2,
+        114 => Key::F3,
+        115 => Key::F4,
+        116 => Key::F5,
+        117 => Key::F6,
+        118 => Key::F7,
+        119 => Key::F8,
+        120 => Key::F9,
+        121 => Key::F10,
+        122 => Key::F11,
+        123 => Key::F12,
+        173 => Key::VolumeMute,
+        174 => Key::VolumeDown,
+        175 => Key::VolumeUp,
+        186 => Key::Unicode(';'),
+        187 => Key::Unicode('='),
+        188 => Key::Unicode(','),
+        189 => Key::Unicode('-'),
+        190 => Key::Unicode('.'),
+        191 => Key::Unicode('/'),
+        192 => Key::Unicode('`'),
+        219 => Key::Unicode('['),
+        220 => Key::Unicode('\\'),
+        221 => Key::Unicode(']'),
+        222 => Key::Unicode('\''),
+        #[cfg(target_os = "linux")]
+        176 => Key::MediaNextTrack,
+        #[cfg(target_os = "linux")]
+        177 => Key::MediaPrevTrack,
+        #[cfg(target_os = "linux")]
+        179 => Key::MediaPlayPause,
+        _ => return None,
+    })
+}

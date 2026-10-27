@@ -21,7 +21,7 @@ def mock_core(page):
           if (name === 'set_close_to_tray') { window.mockAppSettings.closeToTray=args.enabled; return null; }
           if (name === 'set_start_on_login') { window.mockAppSettings.startOnLogin=args.enabled; return null; }
           if (name === 'platform_capabilities') return {os:'windows',desktopInput:true,xinput:true,screenColor:true,systemAudioBridge:true};
-          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.13.0'}; }
+          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.14.0'}; }
           if (name === 'install_update') { window.installedUpdate=true; return null; }
           if (name === 'send_demo_telemetry') { window.demoPort=args.port; return null; }
           if (name === 'open_driver_setup') { window.driverOpened=args.kind; return 'Driver setup opened'; }
@@ -97,7 +97,7 @@ def main():
         assert not page.evaluate("window.sent.some(c=>c.action==='playHaptic')")
         page.locator('[data-view="diagnostics"]').click()
         page.locator("#check-update").click()
-        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.13.0 is current')")
+        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.14.0 is current')")
         assert page.locator("#install-update").is_hidden()
         page.locator('[data-view="settings"]').click()
         assert page.locator('#close-to-tray').is_checked()
@@ -106,9 +106,9 @@ def main():
         page.locator('#start-on-login').check()
         page.wait_for_function("window.mockAppSettings.startOnLogin===true")
         page.locator('[data-view="diagnostics"]').click()
-        page.evaluate("window.mockUpdateVersion='0.13.0'")
+        page.evaluate("window.mockUpdateVersion='0.14.0'")
         page.locator("#check-update").click()
-        page.wait_for_function("document.querySelector('#install-update').textContent.includes('0.13.0')")
+        page.wait_for_function("document.querySelector('#install-update').textContent.includes('0.14.0')")
         assert page.locator("#install-update").is_visible()
         page.locator("#install-update").click()
         page.wait_for_function("window.installedUpdate===true")
