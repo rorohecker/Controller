@@ -2788,6 +2788,9 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         gyro.update(&input);
                         remap.update(&input);
                         connected.desktop.update(&input);
+                        if let Some(message) = connected.desktop.take_launch_error() {
+                            emit(&proxy, json!({"type":"error","message":message}));
+                        }
                         if !connected.desktop.enabled() && !input.panic_combo {
                             for rule in connected
                                 .game_actions

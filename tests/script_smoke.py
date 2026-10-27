@@ -71,7 +71,22 @@ def main():
         assert core.poll() is None, "Core exited after script failure"
         send("setTelemetry", enabled=False, port=port)
         until(lambda event: event.get("type") == "telemetryStatus" and event.get("enabled") is False)
-        print("Script smoke passed: local UDP effect output, bounded loop failure, live core")
+        send("setGameLink", settings={"enabled": True, "format": "json", "port": port})
+        until(lambda event: event.get("type") == "gameLinkStatus" and event.get("enabled") is True)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.sendto(b'{"weapon":"smg","events":["dash"]}', ("127.0.0.1", port))
+        received = until(lambda event: event.get("type") == "gameEvent")
+        assert received["weapon"] == "smg" and received["events"] == ["dash"]
+        # Switching format on the same port must reuse the listener.
+        send("setGameLink", settings={"enabled": True, "format": "dsx", "port": port})
+        until(lambda event: event.get("type") == "gameLinkStatus" and event.get("enabled") is True)
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(2)
+            sock.sendto(b'{"instructions":[{"type":0,"parameters":[0]}]}', ("127.0.0.1", port))
+            assert json.loads(sock.recv(4096))["Status"] == "OK"
+        send("setGameLink", settings={"enabled": False, "format": "dsx", "port": port})
+        until(lambda event: event.get("type") == "gameLinkStatus" and event.get("enabled") is False)
+        print("Script smoke passed: racing telemetry, bounded scripts, weapon/events UDP, DSX status and port reuse")
     finally:
         core.stdin.close()
         try:

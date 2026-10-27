@@ -135,6 +135,7 @@ pub struct DesktopMapper {
     launches: Vec<PcLaunchBinding>,
     launch_held: HashSet<u8>,
     last_launch: HashMap<u8, Instant>,
+    launch_error: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -161,11 +162,15 @@ impl Default for DesktopMapper {
             launches: Vec::new(),
             launch_held: HashSet::new(),
             last_launch: HashMap::new(),
+            launch_error: None,
         }
     }
 }
 
 impl DesktopMapper {
+    pub fn take_launch_error(&mut self) -> Option<String> {
+        self.launch_error.take()
+    }
     fn scroll_delta(&mut self, vertical: f32, elapsed: f32) -> i32 {
         if vertical.abs() <= 0.18 {
             self.wheel_remainder = 0.0;
@@ -285,7 +290,10 @@ impl DesktopMapper {
                     };
                     #[cfg(not(target_os = "macos"))]
                     let mut app_command = Command::new(&launch.path);
-                    let _ = app_command.spawn();
+                    if let Err(error) = app_command.spawn() {
+                        self.launch_error =
+                            Some(format!("Could not open {}: {error}", launch.path.display()));
+                    }
                     self.last_launch.insert(launch.button, now);
                 }
                 self.launch_held.insert(launch.button);

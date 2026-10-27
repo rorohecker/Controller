@@ -306,7 +306,18 @@ mod tests {
                 (std::net::Ipv4Addr::LOCALHOST, port),
             )
             .unwrap();
-        assert_eq!(link.poll(true)[0].as_ref().unwrap().events, ["roll"]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let packet = loop {
+            if let Some(packet) = link.poll(true).into_iter().next() {
+                break packet;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "Loopback packet was not delivered"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        };
+        assert_eq!(packet.unwrap().events, ["roll"]);
         link.stop();
         assert!(UdpSocket::bind((std::net::Ipv4Addr::LOCALHOST, port)).is_ok());
     }

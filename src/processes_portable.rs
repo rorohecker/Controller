@@ -1,3 +1,4 @@
+#[derive(Clone, Default)]
 pub struct ProcessState {
     pub conflicts: Vec<&'static str>,
     pub foreground_exe: Option<String>,
@@ -6,6 +7,30 @@ pub struct ProcessState {
 }
 
 pub fn inspect() -> ProcessState {
+    // Keep external process inspection away from the controller read loop.
+    static STATUS: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<ProcessState>>> =
+        std::sync::OnceLock::new();
+    let status = STATUS.get_or_init(|| {
+        let status = std::sync::Arc::new(std::sync::Mutex::new(ProcessState::default()));
+        let worker = status.clone();
+        std::thread::spawn(move || {
+            loop {
+                let next = inspect_now();
+                if let Ok(mut current) = worker.lock() {
+                    *current = next;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        });
+        status
+    });
+    status
+        .lock()
+        .map(|current| current.clone())
+        .unwrap_or_default()
+}
+
+fn inspect_now() -> ProcessState {
     let mut state = ProcessState {
         conflicts: Vec::new(),
         foreground_exe: None,

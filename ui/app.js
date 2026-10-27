@@ -561,10 +561,22 @@
   window.addEventListener('blur',()=>{padNavPrev=null;clearPadFocus();});
   document.addEventListener('visibilitychange',()=>{if(document.hidden){padNavPrev=null;clearPadFocus();}});
 
+  function validGameFields(p){
+    if(p.actionsEnabled!=null&&typeof p.actionsEnabled!=='boolean')return false;
+    const rules=p.actions??[],weapons=p.weaponBindings??[];
+    if(!Array.isArray(rules)||rules.length>24||!Array.isArray(weapons)||weapons.length>100)return false;
+    const text=(v,max)=>typeof v==='string'&&v.trim().length>0&&v.length<=max;
+    const integer=(v,min,max)=>Number.isInteger(v)&&v>=min&&v<=max;
+    if(rules.some(r=>!r||!text(r.id,80)||!text(r.name,40)||!['press','double','hold','event'].includes(r.source)||!integer(r.button??0,0,22)||!integer(r.windowMs??280,80,1000)||!integer(r.durationMs,20,2000)||!integer(r.cooldownMs??180,0,10000)||r.source==='event'&&!text(r.event,80)||!r.haptic&&!r.leftTrigger&&!r.rightTrigger||r.haptic&&(!['sine','square','saw','noise'].includes(r.haptic.shape)||!integer(r.haptic.frequency,20,300)||!integer(r.haptic.strength,0,100)||!integer(r.haptic.pan??0,-100,100))))return false;
+    if(new Set(rules.map(r=>r.id)).size!==rules.length||weapons.some(b=>!b||!text(b.weapon,80)||!text(b.presetId,80))||new Set(weapons.map(b=>b.weapon.toLowerCase())).size!==weapons.length)return false;
+    const link=p.gameLink;if(link&&(!['json','dsx'].includes(link.format??'json')||!integer(link.port??6969,1024,65535)||typeof(link.enabled??false)!=='boolean'))return false;
+    return true;
+  }
+  function validLibrary(presets){return Array.isArray(presets)&&presets.length<=100&&new Set(presets.map(p=>p?.id)).size===presets.length&&presets.every(p=>p&&validProfile({...clone(defaultProfiles[0]),id:p.id,name:p.name,triggers:p.triggers,inputEffects:p.inputEffects}));}
   function validProfile(p) {
     const g=p?.gyroAim || defaultGyro(), r=p?.remap || defaultRemap(),c=p?.inputEffects || defaultInputEffects();
     const bindings=Array.isArray(r.bindings)?r.bindings:[];
-    return p && typeof p.id==='string' && p.id.length>0 && p.id.length<=80
+    return p && validGameFields(p) && typeof p.id==='string' && p.id.length>0 && p.id.length<=80
       && typeof p.name === 'string' && p.name.trim().length>0 && p.name.length<=40
       && typeof p.description==='string' && p.description.length<=180 && typeof p.tag==='string' && p.tag.length<=40
       && (!p.matchExe || (typeof p.matchExe==='string' && p.matchExe.length<=80 && !/[\\/]/.test(p.matchExe)))
@@ -615,7 +627,7 @@
   async function loadProfiles() {
     try {
       const data = native ? await invoke('load_profiles') : JSON.parse(localStorage.getItem('aftertouch.profiles.v3') || localStorage.getItem('aftertouch.profiles.v2') || 'null');
-      if (data && [1,2,3].includes(data.schemaVersion) && Array.isArray(data.profiles) && data.profiles.length && data.profiles.every(validProfile)) {
+      if (data && [1,2,3].includes(data.schemaVersion) && Array.isArray(data.profiles) && data.profiles.length && data.profiles.every(validProfile) && validLibrary(data.triggerPresets??[])) {
         state.profiles = data.profiles.map(normalizeProfile);
         triggerPresets=Array.isArray(data.triggerPresets)?data.triggerPresets:[];
         state.profileId = state.profiles.some(p=>p.id===data.activeId) ? data.activeId : state.profiles[0].id;
@@ -854,7 +866,7 @@
   $('#import-file').addEventListener('change',async e => {
     const file=e.target.files[0]; if(!file)return;
     try { if(file.size>1_000_000)throw Error('File is too large'); const data=JSON.parse(await file.text());
-      if(![1,2,3].includes(data.schemaVersion)||!Array.isArray(data.profiles)||!data.profiles.length||data.profiles.length>50||!data.profiles.every(validProfile))throw Error('Unsupported or invalid profile file');
+      if(![1,2,3].includes(data.schemaVersion)||!Array.isArray(data.profiles)||!data.profiles.length||data.profiles.length>50||!data.profiles.every(validProfile)||!validLibrary(data.triggerPresets??[]))throw Error('Unsupported or invalid profile file');
       if(state.profiles.length+data.profiles.length>50)throw Error('50 profile limit');
       const incoming=Array.isArray(data.triggerPresets)?data.triggerPresets:[];
       if(triggerPresets.length+incoming.length>100)throw Error('100 trigger preset limit');
