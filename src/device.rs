@@ -683,7 +683,12 @@ impl Connected {
                 .transpose()?
                 .unwrap_or(base_right);
             self.write(protocol::usb_report(
-                0x0c,
+                (if rule.left_trigger.is_some() { 0x08 } else { 0 })
+                    | (if rule.right_trigger.is_some() {
+                        0x04
+                    } else {
+                        0
+                    }),
                 0,
                 0,
                 Some(right),
@@ -2375,6 +2380,20 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     if let Some(d) = device.as_mut() {
                         if update.reset {
                             let _ = d.restore_action();
+                            if let Some(rgb) = d.last_light {
+                                let _ = d.write(protocol::usb_report(
+                                    0,
+                                    4,
+                                    0,
+                                    None,
+                                    None,
+                                    Some(rgb),
+                                    None,
+                                    false,
+                                ));
+                            } else {
+                                let _ = d.release_lightbar();
+                            }
                         }
                         if update.triggers.iter().any(Option::is_some) {
                             let rule = ActionRule {
