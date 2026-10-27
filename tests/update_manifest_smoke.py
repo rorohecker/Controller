@@ -2,6 +2,7 @@
 
 import json
 import sys
+import subprocess
 import tempfile
 from pathlib import Path
 
@@ -12,6 +13,10 @@ from build_update_manifest import create_manifest  # noqa: E402
 
 def main() -> None:
     version = json.loads((ROOT / "tauri.conf.json").read_text(encoding="utf-8"))["version"]
+    metadata = json.loads(subprocess.check_output(["cargo", "metadata", "--no-deps", "--format-version", "1"], cwd=ROOT, text=True))
+    package = next(p for p in metadata["packages"] if p["name"] == "controller")
+    assert package["version"] == version, "installer and Cargo versions differ"
+    assert [t["name"] for t in package["targets"] if "bin" in t["kind"]] == ["controller"], "developer probes must not be bundled with the app"
     major, minor, patch = map(int, version.split("."))
     wrong_version = f"{major}.{minor}.{patch + 1}"
     with tempfile.TemporaryDirectory() as folder:

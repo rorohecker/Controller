@@ -1,7 +1,7 @@
 //! Read-only endpoint inspection, plus an opt-in silent stream smoke test.
 
 #[allow(dead_code)]
-#[path = "../audio_haptics.rs"]
+#[path = "../src/audio_haptics.rs"]
 mod audio_haptics;
 
 use cpal::traits::{DeviceTrait, HostTrait};

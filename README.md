@@ -105,8 +105,8 @@ cargo build --bin controller
 python tests/script_smoke.py
 python tests/core_smoke.py
 python tests/feature_smoke.py
-cargo run --bin audio_probe -- --smoke-silent
-cargo run --bin audio_probe -- --smoke-loopback
+cargo run --example audio_probe -- --smoke-silent
+cargo run --example audio_probe -- --smoke-loopback
 cargo build --release --bin controller
 ```
 

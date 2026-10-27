@@ -1,7 +1,9 @@
 [package]
 name = "controller"
-version = "0.15.0"
+version = "0.15.1"
 edition = "2024"
+autobins = false
+autoexamples = false
 build = "build.rs"
 description = "CONTROLLER, a native DualSense tuning studio"
 
@@ -46,6 +48,12 @@ lto = "thin"
 name = "controller"
 path = "src/main.rs"
 
-[[bin]]
+[[example]]
 name = "aftertouch-probe"
-path = "src/bin/probe.rs"
+path = "examples/probe.rs"
+test = true
+
+[[example]]
+name = "audio_probe"
+path = "examples/audio_probe.rs"
+test = true

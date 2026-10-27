@@ -6,7 +6,7 @@ use std::{
 };
 
 #[allow(dead_code)]
-#[path = "../audio_haptics.rs"]
+#[path = "../src/audio_haptics.rs"]
 mod audio_haptics;
 
 fn gyro_spread(

@@ -618,7 +618,7 @@ dependencies = [
 
 [[package]]
 name = "controller"
-version = "0.15.0"
+version = "0.15.1"
 dependencies = [
  "aftertouch-protocol",
  "base64 0.22.1",
