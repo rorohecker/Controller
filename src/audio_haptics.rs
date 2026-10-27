@@ -7,8 +7,9 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
-    time::Instant,
 };
+#[cfg(windows)]
+use std::{sync::mpsc, thread, time::Duration};
 
 use cpal::{
     BufferSize, SampleFormat, Stream, StreamConfig,
@@ -23,15 +24,16 @@ const MAX_SPEAKER_SAMPLES: usize = RATE as usize * 3;
 
 #[derive(Clone)]
 struct SpeakerPcm {
-    started: Instant,
-    samples: Arc<[i16]>,
+    start_frame: u64,
+    samples: Vec<i16>,
     speaker: bool,
-    grips: Option<Arc<[f32]>>,
+    grips: Option<Vec<f32>>,
+    grip_filter: GripFilter,
 }
 
 #[derive(Clone, Copy)]
 struct SpeakerChirp {
-    started: Instant,
+    start_frame: u64,
 }
 
 impl SpeakerChirp {
@@ -54,7 +56,7 @@ pub struct VoiceClip {
     pub strength: f32,
     pub pan: f32,
     pub shape: Shape,
-    started: Instant,
+    start_frame: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -88,7 +90,7 @@ impl VoiceClip {
                 "sniper" => Shape::Sniper,
                 _ => Shape::Sine,
             },
-            started: Instant::now(),
+            start_frame: 0,
         }
     }
 
@@ -140,6 +142,10 @@ struct Shared {
     preset: AtomicU32,
     bridge_on: AtomicBool,
     callbacks: AtomicU64,
+    rendered_frames: AtomicU64,
+    speaker_frames: AtomicU64,
+    grip_frames: AtomicU64,
+    bridge_frames: AtomicU64,
     glitches: AtomicU64,
     error: Mutex<Option<String>>,
 }
@@ -155,6 +161,10 @@ impl Default for Shared {
             preset: AtomicU32::new(3),
             bridge_on: AtomicBool::new(false),
             callbacks: AtomicU64::new(0),
+            rendered_frames: AtomicU64::new(0),
+            speaker_frames: AtomicU64::new(0),
+            grip_frames: AtomicU64::new(0),
+            bridge_frames: AtomicU64::new(0),
             glitches: AtomicU64::new(0),
             error: Mutex::new(None),
         }
@@ -162,7 +172,10 @@ impl Default for Shared {
 }
 
 pub struct AudioEngine {
+    #[cfg(not(windows))]
     output: Option<Stream>,
+    #[cfg(windows)]
+    output: Option<ExclusiveOutput>,
     capture: Option<Stream>,
     shared: Arc<Shared>,
     endpoint: Option<String>,
@@ -179,12 +192,37 @@ impl Default for AudioEngine {
     }
 }
 
+#[cfg(windows)]
+struct ExclusiveOutput {
+    stop: Arc<AtomicBool>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+#[cfg(windows)]
+impl Drop for ExclusiveOutput {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 impl AudioEngine {
     pub fn endpoint(&self) -> Option<&str> {
         self.endpoint.as_deref()
     }
     pub fn callbacks(&self) -> u64 {
         self.shared.callbacks.load(Ordering::Relaxed)
+    }
+    pub fn speaker_frames(&self) -> u64 {
+        self.shared.speaker_frames.load(Ordering::Relaxed)
+    }
+    pub fn grip_frames(&self) -> u64 {
+        self.shared.grip_frames.load(Ordering::Relaxed)
+    }
+    pub fn bridge_frames(&self) -> u64 {
+        self.shared.bridge_frames.load(Ordering::Relaxed)
     }
     pub fn glitches(&self) -> u64 {
         self.shared.glitches.load(Ordering::Relaxed)
@@ -197,10 +235,44 @@ impl AudioEngine {
         self.shared.error.lock().ok()?.take()
     }
 
+    #[cfg(windows)]
     pub fn start_output(&mut self) -> Result<&str, String> {
         if self.output.is_some() {
             return Ok(self.endpoint.as_deref().unwrap_or("DualSense"));
         }
+        self.shared.rendered_frames.store(0, Ordering::Relaxed);
+        let shared = self.shared.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let thread = thread::Builder::new()
+            .name("dualsense-exclusive-audio".into())
+            .spawn(move || {
+                let result = run_exclusive_output(shared.clone(), thread_stop, sender);
+                if let Err(error) = result
+                    && let Ok(mut slot) = shared.error.lock()
+                {
+                    *slot = Some(format!("USB haptic audio stopped: {error}"));
+                }
+            })
+            .map_err(|e| format!("Could not start USB audio thread: {e}"))?;
+        let name = receiver
+            .recv_timeout(Duration::from_secs(4))
+            .map_err(|e| format!("DualSense audio did not open: {e}"))??;
+        self.output = Some(ExclusiveOutput {
+            stop,
+            thread: Some(thread),
+        });
+        self.endpoint = Some(name);
+        Ok(self.endpoint.as_deref().unwrap())
+    }
+
+    #[cfg(not(windows))]
+    pub fn start_output(&mut self) -> Result<&str, String> {
+        if self.output.is_some() {
+            return Ok(self.endpoint.as_deref().unwrap_or("DualSense"));
+        }
+        self.shared.rendered_frames.store(0, Ordering::Relaxed);
         let host = cpal::default_host();
         let mut candidate = None;
         let mut eligible_endpoints = 0usize;
@@ -286,8 +358,9 @@ impl AudioEngine {
         Ok(self.endpoint.as_deref().unwrap())
     }
 
-    pub fn play(&mut self, clip: VoiceClip) -> Result<&str, String> {
+    pub fn play(&mut self, mut clip: VoiceClip) -> Result<&str, String> {
         self.start_output()?;
+        clip.start_frame = self.shared.rendered_frames.load(Ordering::Relaxed);
         *self.shared.clip.lock().map_err(|e| e.to_string())? = Some(clip);
         Ok(self.endpoint.as_deref().unwrap_or("DualSense"))
     }
@@ -296,28 +369,56 @@ impl AudioEngine {
         self.start_output()?;
         *self.shared.speaker_pcm.lock().map_err(|e| e.to_string())? = None;
         *self.shared.speaker.lock().map_err(|e| e.to_string())? = Some(SpeakerChirp {
-            started: Instant::now(),
+            start_frame: self.shared.rendered_frames.load(Ordering::Relaxed),
         });
         Ok(self.endpoint.as_deref().unwrap_or("DualSense"))
     }
 
-    pub fn play_speaker_pcm(&mut self, samples: Vec<i16>, route: &str) -> Result<&str, String> {
+    pub fn play_speaker_pcm(
+        &mut self,
+        samples: Vec<i16>,
+        route: &str,
+        append: bool,
+    ) -> Result<&str, String> {
         if samples.is_empty() || samples.len() > MAX_SPEAKER_SAMPLES {
             return Err("Choose a sound between 1 sample and 3 seconds.".into());
         }
         if !matches!(route, "speaker" | "both" | "grips") {
             return Err("Choose a valid sound route.".into());
         }
-        let grips = matches!(route, "both" | "grips").then(|| low_bass(&samples));
+        let use_grips = matches!(route, "both" | "grips");
         self.start_output()?;
         *self.shared.speaker.lock().map_err(|e| e.to_string())? = None;
-        *self.shared.speaker_pcm.lock().map_err(|e| e.to_string())? = Some(SpeakerPcm {
-            started: Instant::now(),
-            samples: samples.into(),
+        let mut current = self.shared.speaker_pcm.lock().map_err(|e| e.to_string())?;
+        if append && let Some(active) = current.as_mut() {
+            if active.speaker != (route != "grips") || active.grips.is_some() != use_grips {
+                return Err("Sound route changed during playback. Start the track again.".into());
+            }
+            if active.samples.len() + samples.len() > RATE as usize * 600 {
+                return Err("The controller audio queue is full.".into());
+            }
+            if let Some(grips) = active.grips.as_mut() {
+                grips.extend(active.grip_filter.process(&samples));
+            }
+            active.samples.extend(samples);
+            return Ok(self.endpoint.as_deref().unwrap_or("DualSense"));
+        }
+        let mut grip_filter = GripFilter::default();
+        let grips = use_grips.then(|| grip_filter.process(&samples));
+        *current = Some(SpeakerPcm {
+            start_frame: self.shared.rendered_frames.load(Ordering::Relaxed),
+            samples,
             speaker: route != "grips",
             grips,
+            grip_filter,
         });
         Ok(self.endpoint.as_deref().unwrap_or("DualSense"))
+    }
+
+    pub fn stop_speaker_pcm(&mut self) {
+        if let Ok(mut current) = self.shared.speaker_pcm.lock() {
+            *current = None;
+        }
     }
 
     pub fn set_bridge(&mut self, enabled: bool, gain: f32, preset: &str) -> Result<String, String> {
@@ -333,11 +434,11 @@ impl AudioEngine {
             return Err("Bridge gain must be between 0 and 1.".into());
         }
         let (preset_id, preset_gain) = match preset {
-            "explosions" => (0, 0.85),
-            "footsteps" => (1, 0.65),
-            "music" => (2, 0.55),
-            "gentle" => (3, 0.3),
-            "quiet" => (4, 0.12),
+            "explosions" => (0, 1.5),
+            "footsteps" => (1, 1.3),
+            "music" => (2, 1.4),
+            "gentle" => (3, 0.8),
+            "quiet" => (4, 0.25),
             _ => return Err("Choose a valid audio bridge preset.".into()),
         };
         self.start_output()?;
@@ -347,6 +448,7 @@ impl AudioEngine {
         self.shared.preset.store(preset_id, Ordering::Relaxed);
         if self.capture.is_none() {
             self.shared.glitches.store(0, Ordering::Relaxed);
+            self.shared.bridge_frames.store(0, Ordering::Relaxed);
             self.capture = Some(build_loopback(self.shared.clone())?);
         }
         self.shared.bridge_on.store(true, Ordering::Relaxed);
@@ -376,21 +478,134 @@ impl AudioEngine {
     }
 }
 
-fn low_bass(samples: &[i16]) -> Arc<[f32]> {
-    let lp_alpha = std::f32::consts::TAU * 250.0 / RATE as f32;
-    let hp_alpha = RATE as f32 / (RATE as f32 + std::f32::consts::TAU * 35.0);
-    let (mut low, mut previous_low, mut high) = (0.0f32, 0.0f32, 0.0f32);
-    samples
-        .iter()
-        .map(|sample| {
-            let x = *sample as f32 / i16::MAX as f32;
-            low += lp_alpha * (x - low);
-            high = hp_alpha * (high + low - previous_low);
-            previous_low = low;
-            (high * 2.5).clamp(-1.0, 1.0)
-        })
-        .collect::<Vec<_>>()
-        .into()
+#[cfg(windows)]
+fn run_exclusive_output(
+    shared: Arc<Shared>,
+    stop: Arc<AtomicBool>,
+    ready: mpsc::SyncSender<Result<String, String>>,
+) -> Result<(), String> {
+    use wasapi::{DeviceEnumerator, Direction, SampleType, ShareMode, StreamMode, WaveFormat};
+
+    let setup = (|| {
+        wasapi::initialize_mta()
+            .ok()
+            .map_err(|e| format!("COM audio setup failed: {e}"))?;
+        let enumerator = DeviceEnumerator::new().map_err(|e| e.to_string())?;
+        let devices = enumerator
+            .get_device_collection(&Direction::Render)
+            .map_err(|e| e.to_string())?;
+        let format = WaveFormat::new(16, 16, &SampleType::Int, RATE as usize, 4, Some(0));
+        let mut selected = None;
+        for device in &devices {
+            let device = device.map_err(|e| e.to_string())?;
+            let name = device.get_friendlyname().map_err(|e| e.to_string())?;
+            let lower = name.to_ascii_lowercase();
+            if !lower.contains("dualsense") && !lower.contains("wireless controller") {
+                continue;
+            }
+            let client = device.get_iaudioclient().map_err(|e| e.to_string())?;
+            if client.is_supported(&format, &ShareMode::Exclusive).is_err() {
+                continue;
+            }
+            if selected.is_some() {
+                return Err(
+                    "More than one compatible DualSense USB audio endpoint is connected.".into(),
+                );
+            }
+            selected = Some((name, client));
+        }
+        let (name, mut client) = selected.ok_or(
+            "No four-channel DualSense USB audio endpoint at 48 kHz. Connect the pad by USB."
+                .to_string(),
+        )?;
+        let (_, minimum_period) = client.get_device_period().map_err(|e| e.to_string())?;
+        let period = minimum_period.max(100_000);
+        client
+            .initialize_client(
+                &format,
+                &Direction::Render,
+                &StreamMode::PollingExclusive {
+                    buffer_duration_hns: period * 2,
+                    period_hns: period,
+                },
+            )
+            .map_err(|e| format!("Exclusive DualSense audio setup failed: {e}"))?;
+        let render = client.get_audiorenderclient().map_err(|e| e.to_string())?;
+        Ok::<_, String>((name, client, render))
+    })();
+    let (name, client, render) = match setup {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = ready.send(Err(error.clone()));
+            return Err(error);
+        }
+    };
+    let mut position = 0;
+    let mut duty = 0.0;
+    let mut samples = Vec::new();
+    let mut bytes = Vec::new();
+    let mut write_available = || -> Result<(), String> {
+        let frames = client
+            .get_available_space_in_frames()
+            .map_err(|e| e.to_string())? as usize;
+        if frames == 0 {
+            return Ok(());
+        }
+        samples.resize(frames * 4, 0);
+        render_output_i16(&mut samples, &shared, &mut position, &mut duty);
+        bytes.clear();
+        bytes.reserve(samples.len() * 2 - bytes.capacity().min(samples.len() * 2));
+        for sample in &samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        render
+            .write_to_device(frames, &bytes, None)
+            .map_err(|e| format!("DualSense USB audio write failed: {e}"))
+    };
+    if let Err(error) = write_available().and_then(|_| {
+        client
+            .start_stream()
+            .map_err(|e| format!("Could not start exclusive DualSense audio: {e}"))
+    }) {
+        let _ = ready.send(Err(error.clone()));
+        return Err(error);
+    }
+    let _ = ready.send(Ok(name));
+    while !stop.load(Ordering::Acquire) {
+        write_available()?;
+        thread::sleep(Duration::from_millis(3));
+    }
+    client.stop_stream().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(Clone, Default)]
+struct GripFilter {
+    low: f32,
+    previous_low: f32,
+    high: f32,
+    energy: f32,
+    phase: f32,
+}
+
+impl GripFilter {
+    fn process(&mut self, samples: &[i16]) -> Vec<f32> {
+        let lp_alpha = std::f32::consts::TAU * 250.0 / RATE as f32;
+        let hp_alpha = RATE as f32 / (RATE as f32 + std::f32::consts::TAU * 35.0);
+        samples
+            .iter()
+            .map(|sample| {
+                let x = *sample as f32 / i16::MAX as f32;
+                self.low += lp_alpha * (x - self.low);
+                self.high = hp_alpha * (self.high + self.low - self.previous_low);
+                self.previous_low = self.low;
+                self.energy += 0.002 * (x * x - self.energy);
+                self.phase = (self.phase + std::f32::consts::TAU * 85.0 / RATE as f32)
+                    % std::f32::consts::TAU;
+                (self.high * 3.0 + self.phase.sin() * self.energy.sqrt() * 0.45).clamp(-1.0, 1.0)
+            })
+            .collect()
+    }
 }
 
 fn record_audio_error(shared: &Shared, error: cpal::Error, route: &str) {
@@ -423,19 +638,17 @@ fn fill_frames(
     let clip = clip_guard.as_ref().and_then(|guard| **guard);
     let speaker = speaker_guard.as_ref().and_then(|guard| **guard);
     let pcm = pcm_guard.as_ref().and_then(|guard| guard.as_ref());
-    let elapsed = clip
-        .map(|c| c.started.elapsed().as_secs_f32())
-        .unwrap_or(0.0);
-    let speaker_elapsed = speaker
-        .map(|chirp| chirp.started.elapsed().as_secs_f32())
-        .unwrap_or(0.0);
-    let pcm_start = pcm
-        .map(|sound| (sound.started.elapsed().as_secs_f32() * RATE as f32) as usize)
-        .unwrap_or(0);
     let bridge_on = shared.bridge_on.load(Ordering::Relaxed);
+    let mut speaker_frames = 0u64;
+    let mut grip_frames = 0u64;
     for index in 0..frames {
+        let frame = *position + index as u64;
         let tone = clip
-            .and_then(|c| c.sample(elapsed + index as f32 / RATE as f32))
+            .and_then(|c| {
+                frame
+                    .checked_sub(c.start_frame)
+                    .and_then(|at| c.sample(at as f32 / RATE as f32))
+            })
             .unwrap_or([0.0; 2]);
         let audio = if bridge_on {
             ring_guard
@@ -447,41 +660,68 @@ fn fill_frames(
         };
         let grip = pcm
             .and_then(|sound| sound.grips.as_ref())
-            .and_then(|samples| samples.get(pcm_start + index))
+            .and_then(|samples| {
+                pcm.and_then(|sound| {
+                    frame
+                        .checked_sub(sound.start_frame)
+                        .and_then(|at| samples.get(at as usize))
+                })
+            })
             .copied()
             .unwrap_or(0.0);
         let l = soft_limit(tone[0] + audio[0] + grip, duty);
         let r = soft_limit(tone[1] + audio[1] + grip, duty);
         let chirp = speaker
-            .and_then(|sound| sound.sample(speaker_elapsed + index as f32 / RATE as f32))
+            .and_then(|sound| {
+                frame
+                    .checked_sub(sound.start_frame)
+                    .and_then(|at| sound.sample(at as f32 / RATE as f32))
+            })
             .unwrap_or(0.0)
             + pcm
                 .filter(|sound| sound.speaker)
-                .and_then(|sound| sound.samples.get(pcm_start + index))
+                .and_then(|sound| {
+                    frame
+                        .checked_sub(sound.start_frame)
+                        .and_then(|at| sound.samples.get(at as usize))
+                })
                 .map(|sample| *sample as f32 / i16::MAX as f32 * 0.35)
                 .unwrap_or(0.0);
+        speaker_frames += u64::from(chirp.abs() > 0.005);
+        grip_frames += u64::from(l.abs() > 0.005 || r.abs() > 0.005);
         write(index, [chirp, chirp, l, r]);
     }
-    if clip.is_some_and(|c| elapsed + frames as f32 / RATE as f32 >= c.attack + c.release)
-        && let Some(guard) = clip_guard.as_mut()
+    shared
+        .speaker_frames
+        .fetch_add(speaker_frames, Ordering::Relaxed);
+    shared.grip_frames.fetch_add(grip_frames, Ordering::Relaxed);
+    if clip.is_some_and(|c| {
+        (*position + frames as u64).saturating_sub(c.start_frame) as f32 / RATE as f32
+            >= c.attack + c.release
+    }) && let Some(guard) = clip_guard.as_mut()
     {
         **guard = None;
     }
-    if speaker
-        .is_some_and(|_| speaker_elapsed + frames as f32 / RATE as f32 >= SPEAKER_CHIRP_SECONDS)
-        && let Some(guard) = speaker_guard.as_mut()
+    if speaker.is_some_and(|c| {
+        (*position + frames as u64).saturating_sub(c.start_frame) as f32 / RATE as f32
+            >= SPEAKER_CHIRP_SECONDS
+    }) && let Some(guard) = speaker_guard.as_mut()
     {
         **guard = None;
     }
-    if pcm.is_some_and(|sound| pcm_start + frames >= sound.samples.len())
-        && let Some(guard) = pcm_guard.as_mut()
+    if pcm.is_some_and(|sound| {
+        (*position + frames as u64).saturating_sub(sound.start_frame) as usize
+            >= sound.samples.len()
+    }) && let Some(guard) = pcm_guard.as_mut()
     {
         **guard = None;
     }
     *position += frames as u64;
+    shared.rendered_frames.store(*position, Ordering::Relaxed);
     shared.callbacks.fetch_add(1, Ordering::Relaxed);
 }
 
+#[cfg(any(test, not(windows)))]
 fn render_output(data: &mut [f32], shared: &Shared, position: &mut u64, duty: &mut f32) {
     let frames = data.len() / 4;
     fill_frames(
@@ -510,6 +750,9 @@ fn render_output_i16(data: &mut [i16], shared: &Shared, position: &mut u64, duty
 
 struct CaptureDsp {
     low: [f32; 2],
+    high: [f32; 2],
+    previous_low: [f32; 2],
+    phase: f32,
     envelope: [f32; 2],
     resample: f32,
     ratio: f32,
@@ -526,6 +769,9 @@ impl CaptureDsp {
     fn new(rate: u32, gain: f32) -> Self {
         let mut dsp = Self {
             low: [0.0; 2],
+            high: [0.0; 2],
+            previous_low: [0.0; 2],
+            phase: 0.0,
             envelope: [0.0; 2],
             resample: 0.0,
             ratio: RATE as f32 / rate as f32,
@@ -557,11 +803,18 @@ impl CaptureDsp {
         self.transient_gain = transient;
         self.gate = gate;
     }
-    fn frame(&mut self, input: [f32; 2], ring: &mut VecDeque<[f32; 2]>) {
+    fn frame(&mut self, input: [f32; 2], ring: &mut VecDeque<[f32; 2]>) -> bool {
         let mut out = [0.0; 2];
+        let carrier = self.phase.cos();
+        self.phase =
+            (self.phase + std::f32::consts::TAU * 85.0 / self.rate as f32) % std::f32::consts::TAU;
+        let hp_alpha = self.rate as f32 / (self.rate as f32 + std::f32::consts::TAU * 35.0);
         for channel in 0..2 {
             let x = input[channel].clamp(-1.0, 1.0);
             self.low[channel] += self.low_alpha * (x - self.low[channel]);
+            self.high[channel] =
+                hp_alpha * (self.high[channel] + self.low[channel] - self.previous_low[channel]);
+            self.previous_low[channel] = self.low[channel];
             let target = x.abs();
             let alpha = if target > self.envelope[channel] {
                 0.2
@@ -570,8 +823,11 @@ impl CaptureDsp {
             };
             self.envelope[channel] += alpha * (target - self.envelope[channel]);
             let transient = (target - self.envelope[channel]).max(0.0);
+            let level_gain = (0.16 / (self.envelope[channel] + 0.02)).clamp(1.0, 3.5);
             out[channel] = if self.envelope[channel] >= self.gate {
-                (self.low[channel] * self.bass_gain + transient * self.transient_gain) * self.gain
+                (self.high[channel] * self.bass_gain + transient * self.transient_gain * carrier)
+                    * self.gain
+                    * level_gain
             } else {
                 0.0
             };
@@ -584,6 +840,7 @@ impl CaptureDsp {
             }
             ring.push_back(out);
         }
+        out.iter().any(|sample| sample.abs() > 0.002)
     }
 }
 
@@ -620,7 +877,8 @@ fn build_loopback(shared: Arc<Shared>) -> Result<Stream, String> {
                 dsp.gain = f32::from_bits(shared.gain_bits.load(Ordering::Relaxed));
                 dsp.set_preset(shared.preset.load(Ordering::Relaxed));
                 if let Ok(mut ring) = shared.bridge.try_lock() {
-                    for frame in data.chunks_exact(channels) { dsp.frame([frame[0], frame[channels.min(2)-1]], &mut ring); }
+                    let active = data.chunks_exact(channels).filter(|frame| dsp.frame([frame[0], frame[channels.min(2)-1]], &mut ring)).count();
+                    shared.bridge_frames.fetch_add(active as u64, Ordering::Relaxed);
                 }
             }, on_error, None)
         }
@@ -632,7 +890,8 @@ fn build_loopback(shared: Arc<Shared>) -> Result<Stream, String> {
                 dsp.gain = f32::from_bits(shared.gain_bits.load(Ordering::Relaxed));
                 dsp.set_preset(shared.preset.load(Ordering::Relaxed));
                 if let Ok(mut ring) = shared.bridge.try_lock() {
-                    for frame in data.chunks_exact(channels) { dsp.frame([frame[0] as f32 / 32768.0, frame[channels.min(2)-1] as f32 / 32768.0], &mut ring); }
+                    let active = data.chunks_exact(channels).filter(|frame| dsp.frame([frame[0] as f32 / 32768.0, frame[channels.min(2)-1] as f32 / 32768.0], &mut ring)).count();
+                    shared.bridge_frames.fetch_add(active as u64, Ordering::Relaxed);
                 }
             }, move |error| {
                 record_audio_error(&error_shared, error, "System audio capture");
@@ -689,8 +948,7 @@ mod tests {
     #[test]
     fn full_strength_preview_reaches_useful_level_without_exceeding_cap() {
         let shared = Shared::default();
-        let mut clip = VoiceClip::new("square", 90, 2, 100, 100, 0);
-        clip.started = Instant::now() - std::time::Duration::from_millis(15);
+        let clip = VoiceClip::new("square", 90, 2, 100, 100, 0);
         *shared.clip.lock().unwrap() = Some(clip);
         let mut frames = [0.0f32; 4096];
         render_output(&mut frames, &shared, &mut 0, &mut 0.0);
@@ -707,10 +965,11 @@ mod tests {
     fn custom_speaker_pcm_stays_on_front_channels() {
         let shared = Shared::default();
         *shared.speaker_pcm.lock().unwrap() = Some(SpeakerPcm {
-            started: Instant::now(),
-            samples: vec![i16::MAX; 2048].into(),
+            start_frame: 0,
+            samples: vec![i16::MAX; 2048],
             speaker: true,
             grips: None,
+            grip_filter: GripFilter::default(),
         });
         let mut frames = [0.0f32; 4096];
         render_output(&mut frames, &shared, &mut 0, &mut 0.0);
@@ -738,17 +997,29 @@ mod tests {
                 ((i as f32 * std::f32::consts::TAU * 3000.0 / RATE as f32).sin() * 20_000.0) as i16
             })
             .collect();
-        let rms = |samples: Arc<[f32]>| {
+        let rms = |samples: Vec<f32>| {
             (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt()
         };
-        assert!(rms(low_bass(&bass)) > rms(low_bass(&treble)) * 3.0);
+        assert!(
+            rms(GripFilter::default().process(&bass))
+                > rms(GripFilter::default().process(&treble)) * 3.0
+        );
+    }
+    #[test]
+    fn grip_filter_keeps_its_phase_between_file_chunks() {
+        let samples: Vec<i16> = (0..2000)
+            .map(|i| ((i as f32 * 0.017).sin() * 16000.0) as i16)
+            .collect();
+        let complete = GripFilter::default().process(&samples);
+        let mut filter = GripFilter::default();
+        let mut split = filter.process(&samples[..777]);
+        split.extend(filter.process(&samples[777..]));
+        assert_eq!(complete, split);
     }
     #[test]
     fn explicit_chirp_uses_only_speaker_channels_and_stays_quiet() {
         let shared = Shared::default();
-        *shared.speaker.lock().unwrap() = Some(SpeakerChirp {
-            started: Instant::now(),
-        });
+        *shared.speaker.lock().unwrap() = Some(SpeakerChirp { start_frame: 0 });
         let mut pcm = [0.0f32; 4096];
         render_output(&mut pcm, &shared, &mut 0, &mut 0.0);
         let frames = pcm.as_chunks::<4>().0;
@@ -757,6 +1028,22 @@ mod tests {
             && frame[0] == frame[1]
             && frame[2] == 0.0
             && frame[3] == 0.0));
+    }
+    #[test]
+    fn audio_phase_is_continuous_across_output_buffers() {
+        let single = Shared::default();
+        let split = Shared::default();
+        *single.speaker.lock().unwrap() = Some(SpeakerChirp { start_frame: 0 });
+        *split.speaker.lock().unwrap() = Some(SpeakerChirp { start_frame: 0 });
+        let mut one = [0.0f32; 4096];
+        let mut first = [0.0f32; 2048];
+        let mut second = [0.0f32; 2048];
+        render_output(&mut one, &single, &mut 0, &mut 0.0);
+        let mut position = 0;
+        render_output(&mut first, &split, &mut position, &mut 0.0);
+        render_output(&mut second, &split, &mut position, &mut 0.0);
+        assert_eq!(&one[..2048], &first);
+        assert_eq!(&one[2048..], &second);
     }
     #[test]
     fn capture_queue_stays_bounded() {

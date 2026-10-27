@@ -109,11 +109,17 @@ pub enum DeviceCommand {
         pan: i16,
     },
     PlaySpeakerChirp,
+    SetMicrophoneMute {
+        enabled: bool,
+    },
     PlaySpeakerSound {
         #[serde(rename = "pcmBase64")]
         pcm_base64: String,
         route: String,
+        #[serde(default)]
+        append: bool,
     },
+    StopSpeakerSound,
     SetAudioBridge {
         enabled: bool,
         gain: f32,
@@ -246,6 +252,7 @@ struct Connected {
     haptic: Option<HapticClip>,
     audio: AudioEngine,
     speaker_route_until: Option<Instant>,
+    microphone_muted: Option<bool>,
     desktop: DesktopMapper,
     calibration: InputCalibration,
     last_input_sent: Instant,
@@ -263,6 +270,9 @@ struct Connected {
     last_rumble: Option<[u8; 2]>,
     input_effect: Option<InputEffect>,
     input_effect_until: Option<Instant>,
+    input_kick: Option<(Instant, [u8; 11])>,
+    sniper_spent: bool,
+    bows: [Option<BowReturn>; 2],
     low_battery_alert: bool,
     low_battery_latched: bool,
     haptic_timer: Option<Instant>,
@@ -278,10 +288,65 @@ struct InputEffect {
     next_pulse: Option<Instant>,
 }
 
+#[derive(Default)]
+struct BowReturn {
+    peak: f32,
+    unloaded: bool,
+}
+
+impl BowReturn {
+    fn update(&mut self, pull: f32) -> Option<bool> {
+        if self.unloaded {
+            if pull < 0.04 {
+                self.peak = 0.0;
+                self.unloaded = false;
+                return Some(false);
+            }
+        } else {
+            self.peak = self.peak.max(pull);
+            if self.peak > 0.12 && pull < self.peak - 0.035 {
+                self.unloaded = true;
+                return Some(true);
+            }
+        }
+        None
+    }
+}
+
+fn encode_live_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str> {
+    setting.validate()?;
+    if setting.mode != "bow" {
+        return protocol::encode_trigger(setting);
+    }
+    let start = usize::from(setting.start_zone.unwrap_or(0));
+    let end = usize::from(setting.end_zone.unwrap_or(9)).max(start + 1);
+    let mut draw = setting.clone();
+    draw.mode = "resistance".into();
+    draw.zone_forces = Some(
+        (0..10)
+            .map(|zone| {
+                if zone < start {
+                    0.0
+                } else if zone <= end {
+                    0.25 + 0.75 * (zone - start + 1) as f32 / (end - start + 1) as f32
+                } else {
+                    (setting.snap_strength.unwrap_or(55.0) / setting.strength.max(1.0)).min(1.0)
+                }
+            })
+            .collect(),
+    );
+    protocol::encode_trigger(&draw)
+}
+
 impl InputEffect {
     fn advance(&mut self, now: Instant, right_pull: f32) -> bool {
         let interval = Duration::from_secs_f64(1.0 / f64::from(self.rate.max(1)));
-        if right_pull < self.threshold - 0.08 {
+        let release_point = if matches!(self.kind, WeaponKind::Sniper | WeaponKind::Burst) {
+            0.15
+        } else {
+            self.threshold - 0.08
+        };
+        if right_pull < release_point {
             self.armed = true;
             if self.kind == WeaponKind::Smg {
                 self.next_pulse = None;
@@ -329,14 +394,29 @@ impl WeaponKind {
         match self {
             Self::Click => ("square", 145, 2, 75, (strength / 2).max(1), 45),
             Self::Pistol => ("square", 155, 2, 105, strength, 35),
-            Self::Sniper => ("sniper", 55, 2, 300, strength, 0),
-            Self::Burst => ("square", 110, 2, 65, strength, 20),
+            Self::Sniper => ("sniper", 68, 2, 115, strength, 0),
+            Self::Burst => ("square", 110, 2, 95, strength, 20),
             Self::Smg => ("square", 95, 2, 75, strength, 20),
         }
     }
 }
 
 impl Connected {
+    fn enable_pcm(&mut self) -> Result<(), String> {
+        self.haptic = None;
+        self.rumble_until = None;
+        if self.rumble_active {
+            self.write_rumble([0, 0])?;
+        }
+        self.last_rumble = None;
+        self.write(protocol::audio_haptics_enable_report())
+    }
+
+    fn play_voice(&mut self, voice: VoiceClip) -> Result<&str, String> {
+        self.enable_pcm()?;
+        self.audio.play(voice)
+    }
+
     fn play_feedback(
         &mut self,
         shape: &str,
@@ -347,7 +427,7 @@ impl Connected {
         pan: i16,
     ) {
         let voice = VoiceClip::new(shape, frequency, attack, release, strength, pan);
-        if matches!(self.transport, BusType::Usb) && self.audio.play(voice).is_ok() {
+        if matches!(self.transport, BusType::Usb) && self.play_voice(voice).is_ok() {
             return;
         }
         let fallback = HapticClip::new(shape.into(), frequency, attack, release, strength, pan);
@@ -366,7 +446,20 @@ impl Connected {
         Ok(())
     }
 
-    fn write(&mut self, report: [u8; protocol::USB_OUTPUT_LEN]) -> Result<(), String> {
+    fn set_microphone_mute(&mut self, muted: bool) -> Result<(), String> {
+        let previous = self.microphone_muted;
+        self.microphone_muted = Some(muted);
+        if let Err(error) = self.write(protocol::microphone_mute_report(muted)) {
+            self.microphone_muted = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn write(&mut self, mut report: [u8; protocol::USB_OUTPUT_LEN]) -> Result<(), String> {
+        if report[2] & 0x02 != 0 && self.microphone_muted.unwrap_or(false) {
+            report[10] |= 0x10;
+        }
         if matches!(self.transport, BusType::Bluetooth) {
             let bt = protocol::bt_report(&report, self.sequence);
             self.sequence = self.sequence.wrapping_add(1);
@@ -427,6 +520,9 @@ impl Connected {
         }
         self.input_effect = None;
         self.input_effect_until = None;
+        self.input_kick = None;
+        self.sniper_spent = false;
+        self.bows = [None, None];
         self.low_battery_alert = false;
         self.low_battery_latched = false;
         self.haptic_timer = None;
@@ -512,7 +608,11 @@ impl Connected {
             ..TriggerSetting::default()
         })
         .unwrap();
-        let right = self.last_trigger.map(|(_, right)| right).unwrap_or(off);
+        let right = if self.sniper_spent {
+            off
+        } else {
+            self.last_trigger.map(|(_, right)| right).unwrap_or(off)
+        };
         self.write(protocol::usb_report(
             0x04,
             0,
@@ -524,6 +624,7 @@ impl Connected {
             false,
         ))?;
         self.input_effect_until = None;
+        self.input_kick = None;
         self.trigger_active = self
             .last_trigger
             .is_some_and(|(l, r)| l[0] != 0x05 || r[0] != 0x05);
@@ -531,6 +632,21 @@ impl Connected {
     }
 
     fn update_input_effect(&mut self, right_pull: f32) -> Result<(), String> {
+        if self.sniper_spent && right_pull < 0.15 && self.input_effect_until.is_none() {
+            self.sniper_spent = false;
+            if let Some((_, right)) = self.last_trigger {
+                self.write(protocol::usb_report(
+                    0x04,
+                    0,
+                    0,
+                    Some(right),
+                    None,
+                    None,
+                    None,
+                    false,
+                ))?;
+            }
+        }
         if self.input_effect_until.is_some_and(|t| Instant::now() >= t) {
             self.restore_input_effect()?;
         }
@@ -547,52 +663,95 @@ impl Connected {
             self.restore_input_effect()?;
         }
         let mut curve = vec![0.0; 11];
-        let vibration = matches!(
+        let full_travel = matches!(
             kind,
             WeaponKind::Sniper | WeaponKind::Burst | WeaponKind::Smg
         );
-        if vibration {
+        if full_travel {
             curve[2..].fill(1.0);
         } else {
             let zone = ((threshold * 10.0).round() as usize).clamp(2, 7);
             curve[zone + 1..].fill(1.0);
         }
         let click = protocol::encode_trigger(&TriggerSetting {
-            mode: if vibration { "vibration" } else { "weapon" }.into(),
+            mode: if kind == WeaponKind::Smg {
+                "vibration"
+            } else if full_travel {
+                "resistance"
+            } else {
+                "weapon"
+            }
+            .into(),
             strength: strength as f32,
             curve,
-            force_cap: (kind == WeaponKind::Sniper).then_some(8),
+            force_cap: matches!(kind, WeaponKind::Sniper | WeaponKind::Burst).then_some(8),
+            start_zone: (kind == WeaponKind::Burst).then_some(2),
+            end_zone: (kind == WeaponKind::Burst).then_some(8),
             ..TriggerSetting::default()
         })
         .map_err(str::to_string)?;
+        let mechanical_kick = matches!(kind, WeaponKind::Sniper | WeaponKind::Burst);
+        let immediate = if mechanical_kick {
+            [0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        } else {
+            click
+        };
         self.write(protocol::usb_report(
             0x04,
             0,
             0,
-            Some(click),
+            Some(immediate),
             None,
             None,
             None,
             false,
         ))?;
         self.trigger_active = true;
+        if mechanical_kick {
+            self.input_kick = Some((Instant::now() + Duration::from_millis(16), click));
+        }
+        if kind == WeaponKind::Sniper {
+            self.sniper_spent = true;
+        }
         self.input_effect_until = Some(
             Instant::now()
                 + Duration::from_millis(match kind {
-                    WeaponKind::Sniper => 210,
-                    WeaponKind::Burst => 70,
+                    WeaponKind::Sniper => 105,
+                    WeaponKind::Burst => 90,
                     WeaponKind::Smg => 65,
                     _ => 65,
                 }),
         );
         let (shape, frequency, attack, release, power, pan) = kind.cue(strength);
-        self.play_feedback(shape, frequency, attack, release, power, pan);
-        if kind == WeaponKind::Sniper && matches!(self.transport, BusType::Usb) {
-            self.write_rumble([72, 88])?;
-            self.rumble_until = Some(Instant::now() + Duration::from_millis(145));
-        } else if kind == WeaponKind::Burst && matches!(self.transport, BusType::Usb) {
-            self.write_rumble([38, 50])?;
-            self.rumble_until = Some(Instant::now() + Duration::from_millis(60));
+        if !mechanical_kick {
+            self.play_feedback(shape, frequency, attack, release, power, pan);
+        }
+        Ok(())
+    }
+
+    fn update_bow_returns(&mut self, pulls: [f32; 2]) -> Result<(), String> {
+        for (side, pull) in pulls.into_iter().enumerate() {
+            let change = self.bows[side].as_mut().and_then(|bow| bow.update(pull));
+            if let Some(unloaded) = change
+                && let Some((left, right)) = self.last_trigger
+            {
+                let baseline = if side == 0 { left } else { right };
+                let effect = if unloaded {
+                    [0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+                } else {
+                    baseline
+                };
+                self.write(protocol::usb_report(
+                    if side == 0 { 0x08 } else { 0x04 },
+                    0,
+                    0,
+                    (side == 1).then_some(effect),
+                    (side == 0).then_some(effect),
+                    None,
+                    None,
+                    false,
+                ))?;
+            }
         }
         Ok(())
     }
@@ -711,6 +870,7 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     haptic: None,
                     audio: AudioEngine::default(),
                     speaker_route_until: None,
+                    microphone_muted: None,
                     desktop: DesktopMapper::default(),
                     calibration: InputCalibration::default(),
                     last_input_sent: Instant::now() - Duration::from_secs(1),
@@ -728,6 +888,9 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     last_rumble: None,
                     input_effect: None,
                     input_effect_until: None,
+                    input_kick: None,
+                    sniper_spent: false,
+                    bows: [None, None],
                     low_battery_alert: false,
                     low_battery_latched: false,
                     haptic_timer: None,
@@ -1301,10 +1464,8 @@ fn handle_command(
 
     let result: Result<&str, String> = match command {
         DeviceCommand::ApplyTriggers { left, right } => {
-            match (
-                protocol::encode_trigger(&left),
-                protocol::encode_trigger(&right),
-            ) {
+            let bow_sides = [left.mode == "bow", right.mode == "bow"];
+            match (encode_live_trigger(&left), encode_live_trigger(&right)) {
                 (Ok(left), Ok(right)) => {
                     let active = left[0] != 0x05 || right[0] != 0x05;
                     let changed = device.input_effect_until.is_some()
@@ -1326,6 +1487,10 @@ fn handle_command(
                     result.map(|_| {
                         device.last_trigger = Some((left, right));
                         device.input_effect_until = None;
+                        device.input_kick = None;
+                        device.sniper_spent = false;
+                        device.bows = bow_sides.map(|bow| bow.then(BowReturn::default));
+                        if bow_sides[1] { device.input_effect = None; }
                         device.trigger_active = active;
                         device.trigger_until =
                             active.then(|| Instant::now() + Duration::from_secs(15));
@@ -1530,7 +1695,7 @@ fn handle_command(
         } => {
             let voice = VoiceClip::new(&shape, frequency, attack, release, strength, pan);
             if matches!(device.transport, BusType::Usb) {
-                match device.audio.play(voice) {
+                match device.play_voice(voice) {
                     Ok(endpoint) => {
                         emit(
                             proxy,
@@ -1561,6 +1726,16 @@ fn handle_command(
                 Ok("Bluetooth motor haptic playing")
             }
         }
+        DeviceCommand::SetMicrophoneMute { enabled } => {
+            device.set_microphone_mute(enabled).map(|_| {
+                emit(proxy, json!({"type":"microphoneStatus","muted":enabled}));
+                if enabled {
+                    "Controller microphone muted"
+                } else {
+                    "Controller microphone live"
+                }
+            })
+        }
         DeviceCommand::PlaySpeakerChirp => {
             if !matches!(device.transport, BusType::Usb) {
                 Err("Controller speaker chirps require USB.".into())
@@ -1573,7 +1748,11 @@ fn handle_command(
                 })
             }
         }
-        DeviceCommand::PlaySpeakerSound { pcm_base64, route } => {
+        DeviceCommand::PlaySpeakerSound {
+            pcm_base64,
+            route,
+            append,
+        } => {
             if !matches!(device.transport, BusType::Usb) {
                 Err("Controller speaker playback requires USB.".into())
             } else if pcm_base64.len() > 400_000 {
@@ -1589,13 +1768,25 @@ fn handle_command(
                     let samples: Vec<i16> = bytes.as_chunks::<2>().0.iter().map(|pair| i16::from_le_bytes(*pair)).collect();
                     let duration = Duration::from_secs_f32(samples.len() as f32 / 48_000.0);
                     let routing = device.audio.start_output().map(|_| ());
-                    routing.and_then(|_| if route == "grips" { device.set_speaker_route(false) } else { device.set_speaker_route(true) })
-                    .and_then(|_| device.audio.play_speaker_pcm(samples, &route)).map(|endpoint| {
-                        device.speaker_route_until = (route != "grips").then(|| Instant::now() + duration + Duration::from_millis(100));
-                        emit(proxy, json!({"type":"speakerStatus","source":"file","message":format!("Sound sent to {endpoint}")}));
+                    routing.and_then(|_| device.enable_pcm()).and_then(|_| if append { Ok(()) } else if route == "grips" { device.set_speaker_route(false) } else { device.set_speaker_route(true) })
+                    .and_then(|_| device.audio.play_speaker_pcm(samples, &route, append)).map(|endpoint| {
+                        device.speaker_route_until = (route != "grips").then(|| Instant::now() + duration + Duration::from_secs(1));
+                        if !append {
+                            emit(proxy, json!({"type":"speakerStatus","source":"file","message":format!("Sound sent to {endpoint}")}));
+                        }
                         "Controller speaker playing"
                     })
                 })
+            }
+        }
+        DeviceCommand::StopSpeakerSound => {
+            device.audio.stop_speaker_pcm();
+            if device.speaker_route_until.is_some() {
+                device
+                    .set_speaker_route(false)
+                    .map(|_| "Controller audio stopped")
+            } else {
+                Ok("Controller audio stopped")
             }
         }
         DeviceCommand::SetAudioBridge {
@@ -1608,7 +1799,8 @@ fn handle_command(
             } else if enabled && !matches!(device.transport, BusType::Usb) {
                 Err("System audio haptics require USB. Bluetooth motor fallback remains available in Haptic Lab.".into())
             } else {
-                let result = device.audio.set_bridge(enabled, gain, &preset);
+                let result = if enabled { device.enable_pcm() } else { Ok(()) }
+                    .and_then(|_| device.audio.set_bridge(enabled, gain, &preset));
                 if let Ok(message) = &result {
                     emit(
                         proxy,
@@ -1640,6 +1832,7 @@ fn handle_command(
             {
                 Err("Weapon cue settings are out of range.".into())
             } else {
+                let enabled = enabled && device.bows[1].is_none();
                 device.restore_input_effect().map(|_| {
                     device.input_effect = enabled.then_some(InputEffect {threshold,strength,kind:WeaponKind::parse(&kind).unwrap(),rate,armed:true,remaining:0,next_pulse:None});
                     emit(proxy, json!({"type":"inputEffects","enabled":enabled,"threshold":threshold,"strength":strength,"kind":kind,"rate":rate}));
@@ -1807,7 +2000,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 } else if connected.audio.bridge_on() {
                     emit(
                         &proxy,
-                        json!({"type":"audioStatus","route":"voiceCoil","bridge":true,"endpoint":connected.audio.endpoint(),"callbacks":connected.audio.callbacks(),"glitches":connected.audio.glitches()}),
+                        json!({"type":"audioStatus","route":"voiceCoil","bridge":true,"endpoint":connected.audio.endpoint(),"callbacks":connected.audio.callbacks(),"glitches":connected.audio.glitches(),"speakerFrames":connected.audio.speaker_frames(),"gripFrames":connected.audio.grip_frames(),"bridgeFrames":connected.audio.bridge_frames()}),
                     );
                 }
             }
@@ -1950,7 +2143,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     };
                     let clip = VoiceClip::new(shape, frequency, attack, release, strength, pan);
                     if !matches!(connected.transport, BusType::Usb)
-                        || connected.audio.play(clip).is_err()
+                        || connected.play_voice(clip).is_err()
                     {
                         let fallback = HapticClip::new(
                             shape.into(),
@@ -2078,6 +2271,24 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 );
             }
             if connected
+                .input_kick
+                .as_ref()
+                .is_some_and(|(at, _)| Instant::now() >= *at)
+                && let Some((_, kick)) = connected.input_kick.take()
+                && let Err(error) = connected.write(protocol::usb_report(
+                    0x04,
+                    0,
+                    0,
+                    Some(kick),
+                    None,
+                    None,
+                    None,
+                    false,
+                ))
+            {
+                emit(&proxy, json!({"type":"error","message":error}));
+            }
+            if connected
                 .input_effect_until
                 .is_some_and(|t| Instant::now() >= t)
                 && let Err(error) = connected.restore_input_effect()
@@ -2101,6 +2312,8 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     connected.trigger_active = false;
                     connected.trigger_until = None;
                     connected.last_trigger = None;
+                    connected.bows = [None, None];
+                    connected.input_kick = None;
                     emit(
                         &proxy,
                         json!({"type":"triggerLease","active":false,"durationMs":0}),
@@ -2134,6 +2347,22 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
             match connected.hid.read_timeout(&mut input_report, 20) {
                 Ok(length) if length > 0 => {
                     if let Some(mut input) = protocol::parse_input(&input_report[..length]) {
+                        if connected.microphone_muted.is_none() {
+                            connected.microphone_muted = Some(input.battery_info.microphone_muted);
+                            emit(
+                                &proxy,
+                                json!({"type":"microphoneStatus","muted":input.battery_info.microphone_muted}),
+                            );
+                        }
+                        if input.buttons[18] > 0.5 && !connected.last_input_buttons[18] {
+                            let muted = !connected.microphone_muted.unwrap_or(false);
+                            match connected.set_microphone_mute(muted) {
+                                Ok(()) => {
+                                    emit(&proxy, json!({"type":"microphoneStatus","muted":muted}))
+                                }
+                                Err(error) => emit(&proxy, json!({"type":"error","message":error})),
+                            }
+                        }
                         connected.last_valid_report = Instant::now();
                         raw_reports += 1;
                         if input.charging || input.battery.is_some_and(|level| level >= 30) {
@@ -2268,12 +2497,18 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                             };
                             let clip = VoiceClip::new("sine", 180, 2, 55, 18, pan);
                             if !matches!(connected.transport, BusType::Usb)
-                                || connected.audio.play(clip).is_err()
+                                || connected.play_voice(clip).is_err()
                             {
                                 let fallback = HapticClip::new("sine".into(), 180, 2, 55, 18, pan);
                                 connected.rumble_until = Some(Instant::now() + fallback.duration());
                                 connected.haptic = Some(fallback);
                             }
+                        }
+                        if !input.panic_combo
+                            && let Err(error) =
+                                connected.update_bow_returns([input.buttons[6], input.buttons[7]])
+                        {
+                            emit(&proxy, json!({"type":"error","message":error}));
                         }
                         if !input.panic_combo
                             && let Err(error) = connected.update_input_effect(input.buttons[7])
@@ -2343,8 +2578,55 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{InputEffect, WeaponKind, sensor_color};
+    use super::{
+        BowReturn, InputEffect, TriggerSetting, WeaponKind, encode_live_trigger, sensor_color,
+    };
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn bow_unloads_on_return_and_rearms_at_rest() {
+        let mut bow = BowReturn::default();
+        for pull in [0.0, 0.2, 0.6, 0.98, 0.96] {
+            assert_eq!(bow.update(pull), None);
+        }
+        assert_eq!(bow.update(0.9), Some(true));
+        assert_eq!(bow.update(0.3), None);
+        assert_eq!(bow.update(0.02), Some(false));
+        assert_eq!(bow.update(0.5), None);
+        assert_eq!(bow.update(0.4), Some(true));
+        let encoded = encode_live_trigger(&TriggerSetting {
+            mode: "bow".into(),
+            strength: 90.0,
+            curve: vec![1.0; 11],
+            start_zone: Some(0),
+            end_zone: Some(9),
+            force_cap: Some(8),
+            ..TriggerSetting::default()
+        })
+        .unwrap();
+        assert_eq!(encoded[0], 0x21);
+        let packed = u32::from_le_bytes(encoded[3..7].try_into().unwrap());
+        assert!((packed & 7) < ((packed >> 27) & 7));
+    }
+
+    #[test]
+    fn sniper_does_not_rearm_when_its_kick_moves_the_finger() {
+        let now = Instant::now();
+        let mut effect = InputEffect {
+            threshold: 0.84,
+            strength: 100,
+            kind: WeaponKind::Sniper,
+            rate: 3,
+            armed: true,
+            remaining: 0,
+            next_pulse: None,
+        };
+        assert!(effect.advance(now, 0.9));
+        assert!(!effect.advance(now + Duration::from_millis(50), 0.5));
+        assert!(!effect.advance(now + Duration::from_millis(150), 0.9));
+        assert!(!effect.advance(now + Duration::from_millis(200), 0.1));
+        assert!(effect.advance(now + Duration::from_millis(300), 0.9));
+    }
 
     #[test]
     fn raw_sensor_byte_spans_the_color_palette() {

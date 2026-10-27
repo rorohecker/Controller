@@ -124,10 +124,10 @@ def main():
                 wav.setnchannels(1)
                 wav.setsampwidth(2)
                 wav.setframerate(48_000)
-                wav.writeframes(b"".join(struct.pack("<h", int(12_000 * math.sin(2 * math.pi * 100 * i / 48_000))) for i in range(48_000 * 4)))
+                wav.writeframes(b"".join(struct.pack("<h", int(12_000 * math.sin(2 * math.pi * 100 * i / 48_000))) for i in range(48_000 * 12)))
             page.locator('[data-view="haptics"]').click()
             page.locator('#speaker-file').set_input_files({"name":"tone.wav","mimeType":"audio/wav","buffer":sound.getvalue()})
-        page.wait_for_function("document.querySelector('#speaker-time').textContent==='0:00 / 0:04'")
+        page.wait_for_function("document.querySelector('#speaker-time').textContent==='0:00 / 0:12'")
         assert page.locator('#speaker-start').is_enabled()
         page.locator('#speaker-start').fill('1')
         assert page.locator('#speaker-start-value').inner_text() == '0:01'
@@ -137,6 +137,19 @@ def main():
         assert page.evaluate("window.sent.findLast(c=>c.action==='playSpeakerSound').route") == 'both'
         page.evaluate("window.coreHandler({type:'speakerStatus',source:'file',message:'Sound sent to test pad'})")
         page.wait_for_function("document.querySelector('#speaker-progress').value>1")
+        page.locator('[data-view="pc-controls"]').click()
+        page.wait_for_function("window.sent.filter(c=>c.action==='playSpeakerSound'&&c.append).length>=3",timeout=8000)
+        page.locator('[data-view="haptics"]').click()
+        page.locator('#speaker-route').select_option('grips')
+        page.locator('#speaker-file-play').click()
+        assert page.evaluate("window.sent.findLast(c=>c.action==='playSpeakerSound').route==='grips'&&!window.sent.findLast(c=>c.action==='playSpeakerSound').append")
+        page.evaluate("window.coreHandler({type:'speakerStatus',source:'file',message:'Playing grips'})")
+        page.wait_for_function("window.sent.some(c=>c.action==='playSpeakerSound'&&c.append&&c.route==='grips')")
+        page.locator('#speaker-file-stop').click()
+        page.evaluate("window.coreHandler({type:'microphoneStatus',muted:true})")
+        assert page.locator('#controller-mic').inner_text().lower()=='controller mic: muted'
+        page.locator('#controller-mic').click()
+        assert page.evaluate("window.sent.at(-1).action==='setMicrophoneMute'&&window.sent.at(-1).enabled===false")
         page.locator('[data-view="pc-controls"]').click()
         assert page.locator("#pc-bindings .pc-binding").count() == 21
         page.locator("#pc-click-threshold").fill("70")
@@ -298,7 +311,11 @@ def main():
         page.evaluate("window.coreHandler({type:'audioStatus',route:'voiceCoil',bridge:true,message:'Audio bridge on'})")
         assert page.locator("#bridge-toggle").inner_text().lower() == "stop bridge"
         page.evaluate("window.coreHandler({type:'audioStatus',route:'voiceCoil',bridge:true,callbacks:10,glitches:2})")
-        assert "2 audio buffer glitches" in page.locator("#bridge-status").inner_text()
+        assert "2 audio glitches" in page.locator("#bridge-status").inner_text()
+        page.evaluate("window.coreHandler({type:'audioStatus',route:'voiceCoil',bridge:true,bridgeFrames:100,glitches:0})")
+        assert "PC audio detected" in page.locator("#bridge-status").inner_text()
+        page.evaluate("window.coreHandler({type:'audioStatus',route:'voiceCoil',bridge:true,bridgeFrames:100,glitches:0})")
+        assert "play audio" in page.locator("#bridge-status").inner_text()
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-haptics-new.png"), full_page=True)
         page.locator('[data-view="lights"]').click()
         page.locator("#temperature-light").click()
@@ -364,11 +381,11 @@ def main():
         page.locator("#break-start").fill("3")
         page.locator("#break-end").fill("8")
         page.locator("#break-snap").fill("5")
-        assert page.locator("#break-snap-value").inner_text() == "5 / 6"
+        assert page.locator("#break-snap-value").inner_text() == "5 / 8"
         assert page.locator("#break-start-value").inner_text() == "Zone 4"
         assert page.locator("#break-preview-track .is-draw").count() == 5
         page.locator("#apply-triggers").click()
-        assert page.evaluate("window.sent.some(c=>c.action==='applyTriggers' && [c.left,c.right].some(t=>t?.mode==='bow'&&t.startZone===3&&t.endZone===8&&t.snapStrength===83))")
+        assert page.evaluate("window.sent.some(c=>c.action==='applyTriggers' && [c.left,c.right].some(t=>t?.mode==='bow'&&t.startZone===3&&t.endZone===8&&t.snapStrength===63))")
         page.locator("#break-force-cap").select_option("8")
         page.locator("#break-snap").fill("7")
         assert page.locator("#break-snap-value").inner_text() == "7 / 8"

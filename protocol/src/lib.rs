@@ -71,7 +71,10 @@ impl TriggerSetting {
         {
             return Err("Snap strength must be 0–100");
         }
-        if self.force_cap.is_some_and(|level| !(1..=8).contains(&level)) {
+        if self
+            .force_cap
+            .is_some_and(|level| !(1..=8).contains(&level))
+        {
             return Err("Trigger force cap must be 1–8");
         }
         if matches!(self.mode.as_str(), "weapon" | "bow") {
@@ -155,6 +158,7 @@ pub struct BatteryInfo {
     pub sensor_byte: Option<u8>,
     pub headphone_jack: bool,
     pub microphone_jack: bool,
+    pub microphone_muted: bool,
 }
 
 impl BatteryInfo {
@@ -179,6 +183,7 @@ impl BatteryInfo {
             sensor_byte,
             headphone_jack: status1 & 0x01 != 0,
             microphone_jack: status1 & 0x02 != 0,
+            microphone_muted: status1 & 0x04 != 0,
         }
     }
 
@@ -192,6 +197,7 @@ impl BatteryInfo {
             sensor_byte: None,
             headphone_jack: false,
             microphone_jack: false,
+            microphone_muted: false,
         }
     }
 }
@@ -382,8 +388,7 @@ pub fn encode_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str
                 .clamp(start + 1, 8);
             let mask = (1u16 << start) | (1u16 << stop);
             block[1..3].copy_from_slice(&mask.to_le_bytes());
-            block[3] =
-                ((setting.strength / 100.0 * max_level as f32).round() as u8).max(1) - 1;
+            block[3] = ((setting.strength / 100.0 * max_level as f32).round() as u8).max(1) - 1;
         }
         "bow" => {
             // Unofficial mode 0x22. Choose a start and peak from the authored curve;
@@ -404,13 +409,12 @@ pub fn encode_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str
                 .unwrap_or(inferred_peak)
                 .clamp(start + 1, 9);
             let mask = (1u16 << start) | (1u16 << peak);
-            let force = ((setting.strength / 100.0 * max_level as f32).round() as u8)
-                .clamp(1, max_level);
+            let force =
+                ((setting.strength / 100.0 * max_level as f32).round() as u8).clamp(1, max_level);
             let snap = setting
                 .snap_strength
                 .map(|strength| {
-                    ((strength / 100.0 * max_level as f32).round() as u8)
-                        .clamp(1, max_level)
+                    ((strength / 100.0 * max_level as f32).round() as u8).clamp(1, max_level)
                 })
                 .unwrap_or((force / 2).max(1));
             block[0] = 0x22;
@@ -462,12 +466,28 @@ pub fn player_leds_report(mask: u8) -> [u8; USB_OUTPUT_LEN] {
     report
 }
 
+/// Clear the controller's power-save audio mute so USB PCM can reach the grip coils.
+/// Do not set HAPTICS_SELECT here: that hands the coils to classic motor rumble.
+pub fn audio_haptics_enable_report() -> [u8; USB_OUTPUT_LEN] {
+    let mut report = usb_report(0, 0x02, 0, None, None, None, None, false);
+    report[10] = 0;
+    report
+}
+
+/// The mute button is reported as input; the host controls the microphone and its LED.
+pub fn microphone_mute_report(muted: bool) -> [u8; USB_OUTPUT_LEN] {
+    let mut report = usb_report(0, 0x03, 0, None, None, None, None, false);
+    report[9] = u8::from(muted);
+    report[10] = if muted { 0x10 } else { 0 };
+    report
+}
+
 /// Select the built-in speaker for USB channels 1/2. The speaker uses channel 2.
 /// Audio control offsets follow Sony's Linux hid-playstation output report layout.
 pub fn speaker_route_report(enabled: bool) -> [u8; USB_OUTPUT_LEN] {
     let mut report = usb_report(
         0x80 | if enabled { 0x20 } else { 0 },
-        if enabled { 0x80 } else { 0 },
+        0x02 | if enabled { 0x80 } else { 0 },
         0,
         None,
         None,
@@ -480,6 +500,7 @@ pub fn speaker_route_report(enabled: bool) -> [u8; USB_OUTPUT_LEN] {
         report[8] = 3 << 4; // speaker-only output path
         report[38] = 0x02; // modest speaker preamp gain
     }
+    report[10] = 0; // clear speaker and haptic audio mute
     report
 }
 
@@ -526,6 +547,15 @@ pub fn crc32_seeded(seed: u8, data: &[u8]) -> u32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn microphone_mute_controls_the_hardware_and_its_light() {
+        let muted = microphone_mute_report(true);
+        assert_eq!((muted[2], muted[9], muted[10]), (0x03, 1, 0x10));
+        let live = microphone_mute_report(false);
+        assert_eq!((live[2], live[9], live[10]), (0x03, 0, 0));
+        assert_eq!(muted[10] & 0x40, 0);
+    }
+
     fn linear(mode: &str) -> TriggerSetting {
         TriggerSetting {
             mode: mode.into(),
@@ -566,13 +596,21 @@ mod tests {
 
     #[test]
     fn speaker_route_sets_audio_path_and_can_restore_headphones() {
+        let haptics = audio_haptics_enable_report();
+        assert_eq!(
+            [haptics[0], haptics[1], haptics[2], haptics[10]],
+            [0x02, 0, 0x02, 0]
+        );
         let on = speaker_route_report(true);
         assert_eq!(
-            [on[0], on[1], on[2], on[6], on[8], on[38]],
-            [0x02, 0xa0, 0x80, 0x64, 0x30, 0x02]
+            [on[0], on[1], on[2], on[6], on[8], on[10], on[38]],
+            [0x02, 0xa0, 0x82, 0x64, 0x30, 0, 0x02]
         );
         let off = speaker_route_report(false);
-        assert_eq!([off[0], off[1], off[2], off[8]], [0x02, 0x80, 0, 0]);
+        assert_eq!(
+            [off[0], off[1], off[2], off[8], off[10]],
+            [0x02, 0x80, 0x02, 0, 0]
+        );
     }
 
     #[test]

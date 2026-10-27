@@ -34,17 +34,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     let args: Vec<_> = std::env::args().collect();
-    if args
-        .iter()
-        .any(|arg| arg == "--smoke-silent" || arg == "--smoke-loopback")
-    {
+    let active_loopback = args.iter().any(|arg| arg == "--probe-loopback");
+    if args.iter().any(|arg| {
+        arg == "--smoke-silent" || arg == "--smoke-loopback" || arg == "--probe-loopback"
+    }) {
         let mut audio = audio_haptics::AudioEngine::default();
         println!("Opened: {}", audio.start_output()?);
-        if args.iter().any(|arg| arg == "--smoke-loopback") {
-            println!("{}", audio.set_bridge(true, 0.0, "gentle")?);
+        if args.iter().any(|arg| arg == "--smoke-loopback") || active_loopback {
+            println!(
+                "{}",
+                audio.set_bridge(true, if active_loopback { 1.0 } else { 0.0 }, "music")?
+            );
         }
-        thread::sleep(Duration::from_secs(2));
+        thread::sleep(Duration::from_secs(if active_loopback { 5 } else { 2 }));
         println!("Output callbacks: {}", audio.callbacks());
+        println!("Grip PCM frames: {}", audio.grip_frames());
         println!("Buffer glitches: {}", audio.glitches());
         if let Some(error) = audio.take_error() {
             return Err(error.into());

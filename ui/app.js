@@ -32,7 +32,7 @@
     {id:'arcade',name:'Arcade',description:'A firm break on both triggers.',tag:'ACTION',matchExe:'',autoApply:true,triggers:{left:{mode:'weapon',strength:57,curve:clone(presets.Break)},right:{mode:'weapon',strength:70,curve:clone(presets.Break)}},haptics:{shape:'square',frequency:180,attack:3,release:110,strength:39,pan:0},gyroAim:defaultGyro(),remap:defaultRemap(),inputEffects:defaultInputEffects()}
   ];
   const overwatchTemplates = {
-    hanzo:{name:'Hanzo · Storm Bow',description:'Bow resistance on R2. Release and Storm Arrows cues need game events.',left:{mode:'off',strength:0,curve:clone(presets.Linear)},right:{mode:'bow',strength:72,curve:clone(presets.Swell),startZone:0,endZone:8,snapStrength:62,zoneForces:[.12,.18,.25,.34,.44,.56,.69,.83,.94,.94]},haptics:{shape:'sine',frequency:50,attack:80,release:180,strength:45,pan:0},inputEffects:{enabled:false,threshold:.95,strength:45}},
+    hanzo:{name:'Hanzo · Storm Bow',description:'Heavy R2 draw. Release and Storm Arrows cues need game events.',left:{mode:'off',strength:0,curve:clone(presets.Linear)},right:{mode:'bow',strength:90,forceCap:8,curve:clone(presets.Swell),startZone:0,endZone:9,snapStrength:75,zoneForces:[.12,.18,.25,.34,.44,.56,.69,.83,.94,.94]},haptics:{shape:'sine',frequency:50,attack:80,release:180,strength:45,pan:0},inputEffects:{enabled:false,threshold:.95,strength:45}},
     genji:{name:'Genji · Shuriken',description:'Light R2, pulsing L2. Throw and dash cues need game events.',left:{mode:'vibration',strength:42,curve:clone(presets.Pulse),zoneForces:[0,.28,.48,.48,.48,.48,.48,.48,.48,.48]},right:{mode:'resistance',strength:28,curve:clone(presets.Linear),zoneForces:[0,0,.08,.12,.14,.16,.18,.2,.2,.2]},haptics:{shape:'square',frequency:120,attack:2,release:45,strength:42,pan:0},inputEffects:{enabled:true,threshold:.82,strength:32}},
     soldier:{name:'Soldier: 76 · Pulse Rifle',description:'R2 rifle recoil, L2 rocket break. Shot cues need game events.',left:{mode:'weapon',strength:78,curve:clone(presets.Break),startZone:4,endZone:6,snapStrength:55},right:{mode:'vibration',strength:66,curve:clone(presets.Pulse),zoneForces:[0,.42,.66,.66,.66,.66,.66,.66,.66,.66]},haptics:{shape:'square',frequency:95,attack:3,release:135,strength:65,pan:0},inputEffects:{enabled:true,threshold:.78,strength:48}}
   };
@@ -62,7 +62,7 @@
     currentView:'live',playUntil:0,playStart:0,playDuration:0,lastExternalExe:'',
     leaseUntil:0,leaseDuration:0,fullReport:false,manualScan:false,
     autoApply:true,coreStatus:'ready',foregroundExe:'',foregroundTitle:'',foregroundPath:'',lastExternalPath:'',autoMatchId:'',autoSuppressed:false,
-    sequenceGaps:0,invalidReports:0,stickTest:null,batteryHistory:[],audioBridge:false,audioRoute:'off',telemetryOn:false,telemetryLast:0,scriptEnabled:false,inputEffectsActive:false,gyroCalibration:null,lowBatteryAlert:false,timerUntil:0,platformDesktopInput:true
+    sequenceGaps:0,invalidReports:0,stickTest:null,batteryHistory:[],audioBridge:false,bridgeFrames:0,audioRoute:'off',telemetryOn:false,telemetryLast:0,scriptEnabled:false,inputEffectsActive:false,gyroCalibration:null,lowBatteryAlert:false,timerUntil:0,platformDesktopInput:true
   };
   const pcButtons=[0,1,2,3,4,5,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22];
   const defaultPcBindings=()=>[
@@ -991,7 +991,7 @@
   });
   $('#zone-cal-cancel').addEventListener('click',()=>stopZoneCalibration());
   $$('.side-tab').forEach(b=>b.addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration();state.side=b.dataset.side;renderTriggerControls();}));
-  $('#trigger-modes').addEventListener('click',async e=>{const b=e.target.closest('[data-mode]');if(!b)return;if(zoneRun)await stopZoneCalibration();trigger().mode=b.dataset.mode;renderTriggerControls();saveProfiles();});
+  $('#trigger-modes').addEventListener('click',async e=>{const b=e.target.closest('[data-mode]');if(!b)return;if(zoneRun)await stopZoneCalibration();const t=trigger(),was=t.mode;t.mode=b.dataset.mode;if(t.mode==='bow'&&was!=='bow'){t.strength=Math.max(85,t.strength);t.forceCap=8;t.startZone=0;t.endZone=9;t.snapStrength=35;if(state.side==='right')profile().inputEffects.enabled=false;}renderTriggerControls();saveProfiles();});
   $('#break-start').addEventListener('input',event=>{
     const t=trigger();t.startZone=+event.target.value;
     if(t.endZone<=t.startZone)t.endZone=t.startZone+1;
@@ -1059,7 +1059,7 @@
   $('#click-enabled').closest('.input-click-block').insertAdjacentHTML('afterbegin',`<div class="weapon-library"><h3>Weapon cues</h3><p>R2 creates a haptic recoil cue from your pull. Game events are needed for exact shot timing.</p><div class="weapon-preset-list"><button type="button" data-weapon-preset="pistol">Pistol</button><button type="button" data-weapon-preset="sniper">Sniper</button><button type="button" data-weapon-preset="burst">Burst</button><button type="button" data-weapon-preset="smg">SMG</button></div><label class="control-label" for="weapon-kind">Recoil pattern</label><select id="weapon-kind"><option value="click">Click</option><option value="pistol">Pistol</option><option value="sniper">Sniper</option><option value="burst">Three shot burst</option><option value="smg">Automatic</option></select><div id="weapon-rate-row" class="weapon-rate-row"><span>Rate</span><div class="weapon-rate-stepper"><button type="button" data-rate-step="-1" aria-label="Slower firing rate">−</button><b id="weapon-rate-value">10 shots/s</b><button type="button" data-rate-step="1" aria-label="Faster firing rate">+</button></div><small id="weapon-rate-gap">100 ms between shots</small></div></div>`);
   $('#click-enabled').closest('.input-click-block').querySelector(':scope > h3').textContent='R2 cue';
   $('#click-enabled').closest('.input-click-block').querySelector(':scope > p').textContent='The cue starts when R2 crosses the pull point. Release to rearm single shots.';
-  const weaponPresets={pistol:{kind:'pistol',threshold:.72,strength:62,rate:6,mode:'weapon',startZone:4,endZone:6},sniper:{kind:'sniper',threshold:.90,strength:100,rate:3,mode:'bow',startZone:3,endZone:7,snapStrength:100,forceCap:8},burst:{kind:'burst',threshold:.46,strength:78,rate:5,mode:'off',triggerStrength:0},smg:{kind:'smg',threshold:.40,strength:82,triggerStrength:40,rate:12,mode:'resistance',curve:[0,0,.1,.2,.25,.28,.3,.3,.3,.3,.3]}};
+  const weaponPresets={pistol:{kind:'pistol',threshold:.72,strength:62,rate:6,mode:'weapon',startZone:4,endZone:6},sniper:{kind:'sniper',threshold:.84,strength:100,triggerStrength:34,rate:3,mode:'weapon',forceCap:8,startZone:5,endZone:6},burst:{kind:'burst',threshold:.46,strength:100,rate:4,mode:'off',triggerStrength:0,forceCap:8},smg:{kind:'smg',threshold:.40,strength:82,triggerStrength:40,rate:12,mode:'resistance',curve:[0,0,.1,.2,.25,.28,.3,.3,.3,.3,.3]}};
   $('.weapon-preset-list').addEventListener('click',async e=>{const button=e.target.closest('[data-weapon-preset]');if(!button)return;if(zoneRun)await stopZoneCalibration();const spec=weaponPresets[button.dataset.weaponPreset];if(!spec)return;profile().inputEffects={enabled:true,threshold:spec.threshold,strength:spec.strength,kind:spec.kind,rate:spec.rate};const t=profile().triggers.right;t.mode=spec.mode;t.strength=spec.triggerStrength??spec.strength;t.startZone=spec.startZone;t.endZone=spec.endZone;t.snapStrength=spec.snapStrength??t.snapStrength;t.forceCap=spec.forceCap??6;t.curve=clone(spec.curve??presets.Break);t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);state.side='right';renderTriggerControls();saveProfiles();toast(`${button.textContent} loaded · Apply to feel it`);});
   $('#weapon-kind').addEventListener('change',e=>{profile().inputEffects.kind=e.target.value;renderTriggerControls();saveProfiles();});
   $('#weapon-rate-row').addEventListener('click',e=>{const button=e.target.closest('[data-rate-step]');if(!button)return;profile().inputEffects.rate=clamp((profile().inputEffects.rate??10)+Number(button.dataset.rateStep),3,20);renderTriggerControls();saveProfiles();});
@@ -1115,7 +1115,7 @@
     status.classList.toggle('is-live',state.audioBridge);
     if(!state.connected)status.textContent='Connect a controller to start the bridge.';
     else if(!available)status.textContent='USB is required for system audio haptics. Haptic previews use motor rumble over Bluetooth.';
-    else if(!state.audioBridge)status.textContent='Bridge off · USB voice-coil output available on first playback.';
+    else if(!state.audioBridge)status.textContent='Bridge off';
     $('#haptic-route').textContent=!state.connected?'Route: PC audio preview':state.audioRoute==='voiceCoil'?'Route: USB voice coils':state.audioRoute==='motor'?'Route: motor fallback':state.transport==='Bluetooth'?'Route: Bluetooth motors':'Route: USB voice coils if available';
   }
   $('#bridge-toggle').addEventListener('click',()=>send({action:'setAudioBridge',enabled:!state.audioBridge,gain:+$('#bridge-gain').value/100,preset:$('#bridge-preset').value}));
@@ -1135,8 +1135,14 @@
   $('#alert-ping').addEventListener('click',()=>send({action:'playHaptic',shape:'sine',frequency:125,attack:5,release:160,strength:26,pan:0}));
   $('#alert-ping').insertAdjacentHTML('afterend','<button id="speaker-chirp" class="quiet-action" type="button" disabled title="Play a test tone through the controller speaker over USB">Speaker test · USB</button>');
   $('.alert-body > div > p').textContent='Low battery and timer alerts tap the grips. Find my pad taps them now. Speaker chirp uses the controller speaker over USB. Reset, disconnect, or exit to stop alerts.';
-  $('#speaker-chirp').addEventListener('click',()=>send({action:'playSpeakerChirp'}));
-  let speakerSound=null,speakerDecoded=null,speakerTrackDuration=0,speakerClipDuration=0,speakerClipStart=0,speakerStartedAt=0,speakerPending=false;
+  let speakerSound=null,speakerDecoded=null,speakerTrackDuration=0,speakerClipDuration=0,speakerClipStart=0,speakerStartedAt=0,speakerPending=false,speakerNextChunkStart=0,speakerChunkPending=false,speakerRoute='speaker',speakerScale=1,speakerGeneration=0;
+  function stopSpeakerPlayback(){speakerGeneration++;speakerStartedAt=0;speakerPending=false;speakerChunkPending=false;$('#speaker-start').disabled=!speakerDecoded;$('#speaker-file-stop').disabled=true;send({action:'stopSpeakerSound'});}
+  async function testSpeaker(){stopSpeakerPlayback();$('#speaker-file-status').textContent='Playing speaker test';await send({action:'playSpeakerChirp'});}
+  $('#speaker-chirp').addEventListener('click',testSpeaker);
+  $('#speaker-panel-test').addEventListener('click',testSpeaker);
+  $('#speaker-panel-test').insertAdjacentHTML('afterend','<button id="controller-mic" class="quiet-action" type="button" disabled aria-pressed="false">Controller mic: live</button>');
+  let controllerMicMuted=false;
+  $('#controller-mic').addEventListener('click',()=>send({action:'setMicrophoneMute',enabled:!controllerMicMuted}));
   const soundTime=seconds=>`${Math.floor(seconds/60)}:${String(Math.floor(seconds%60)).padStart(2,'0')}`;
   function renderSpeakerProgress(now=performance.now()){
     const elapsed=speakerStartedAt?Math.min(speakerClipDuration,(now-speakerStartedAt)/1000):0;
@@ -1144,7 +1150,8 @@
     $('#speaker-time').textContent=`${soundTime(position)} / ${soundTime(speakerTrackDuration)}`;
     $('#speaker-progress').max=Math.max(speakerTrackDuration,1);
     $('#speaker-progress').value=position;
-    if(speakerStartedAt&&elapsed>=speakerClipDuration){speakerStartedAt=0;$('#speaker-start').disabled=+$('#speaker-start').max<=0;}
+    if(speakerStartedAt&&elapsed>=speakerClipDuration){speakerStartedAt=0;$('#speaker-start').disabled=+$('#speaker-start').max<=0;$('#speaker-file-stop').disabled=true;$('#speaker-file-status').textContent='Finished';}
+    else if(speakerStartedAt&&speakerNextChunkStart<speakerTrackDuration&&position>=speakerNextChunkStart-6)queueSpeakerChunk();
   }
   function prepareSpeakerSound(){
     if(!speakerDecoded)return;
@@ -1158,34 +1165,62 @@
       for(const data of channels)sample+=(data[index]||0)*(1-mix)+(data[index+1]||0)*mix;
       sample/=channels.length;mono[i]=sample;peak=Math.max(peak,Math.abs(sample));
     }
-    const scale=peak>0?Math.min(2,.9/peak):1;
+    const scale=.85;speakerScale=scale;
     const bytes=new Uint8Array(count*2),view=new DataView(bytes.buffer);
     for(let i=0;i<count;i++)view.setInt16(i*2,Math.round(clamp(mono[i]*scale,-1,1)*32767),true);
     let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
-    speakerSound=btoa(binary);speakerClipDuration=count/48_000;
-    $('#speaker-file-status').textContent=peak<.005?'This section is nearly silent. Move Clip start to a louder part.':`Ready · ${soundTime(speakerClipDuration)} clip from ${soundTime(speakerClipStart)}`;
+    speakerSound=btoa(binary);speakerClipDuration=speakerTrackDuration-speakerClipStart;speakerNextChunkStart=speakerClipStart+count/48_000;
+    $('#speaker-file-status').textContent=peak<.005?'This section starts quietly.':'Ready to play';
     $('#speaker-file-play').disabled=!state.connected||state.transport!=='USB';
     renderSpeakerProgress();
   }
+  function encodeSpeakerChunk(start){
+    const decoded=speakerDecoded,count=Math.min(144_000,Math.ceil((decoded.duration-start)*48_000));
+    if(count<=0)return null;
+    const channels=Array.from({length:Math.min(2,decoded.numberOfChannels)},(_,i)=>decoded.getChannelData(i));
+    const bytes=new Uint8Array(count*2),view=new DataView(bytes.buffer);
+    for(let i=0;i<count;i++){
+      const position=(start+i/48_000)*decoded.sampleRate,index=Math.floor(position),mix=position-index;
+      let sample=0;
+      for(const data of channels)sample+=(data[index]||0)*(1-mix)+(data[index+1]||0)*mix;
+      view.setInt16(i*2,Math.round(clamp(sample/channels.length*speakerScale,-1,1)*32767),true);
+    }
+    let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
+    return {sound:btoa(binary),duration:count/48_000};
+  }
+  async function queueSpeakerChunk(){
+    if(speakerChunkPending||!speakerStartedAt||speakerNextChunkStart>=speakerTrackDuration)return;
+    speakerChunkPending=true;
+    const generation=speakerGeneration;
+    const next=encodeSpeakerChunk(speakerNextChunkStart);
+    if(next&&await send({action:'playSpeakerSound',pcmBase64:next.sound,route:speakerRoute,append:true})){if(generation===speakerGeneration)speakerNextChunkStart+=next.duration;}
+    else {speakerStartedAt=0;$('#speaker-file-status').textContent='Playback stopped';}
+    speakerChunkPending=false;
+  }
   $('#speaker-file').addEventListener('change',async event=>{
+    if(speakerStartedAt||speakerPending)stopSpeakerPlayback();
     speakerSound=null;speakerDecoded=null;speakerStartedAt=0;$('#speaker-file-play').disabled=true;
     const file=event.target.files[0];if(!file)return;
-    if(file.size>6_000_000){$('#speaker-file-status').textContent='Choose a file under 6 MB.';return;}
+    if(file.size>64_000_000){$('#speaker-file-status').textContent='Choose a file under 64 MB.';return;}
     try{
       audioContext=audioContext||new(window.AudioContext||window.webkitAudioContext)();
       speakerDecoded=await audioContext.decodeAudioData(await file.arrayBuffer());
       speakerTrackDuration=speakerDecoded.duration;speakerClipStart=0;
       if(!speakerTrackDuration)throw Error('The file has no audio.');
+      if(speakerTrackDuration>600)throw Error('Choose a track under ten minutes.');
       $('#speaker-start').max=String(Math.max(0,speakerTrackDuration-.1));
-      $('#speaker-start').value='0';$('#speaker-start').disabled=speakerTrackDuration<=3;
+      $('#speaker-start').value='0';$('#speaker-start').disabled=speakerTrackDuration<=.1;
       $('#speaker-start-value').textContent='0:00';
       prepareSpeakerSound();
       $('#speaker-file-status').title=file.name;
     }catch(error){$('#speaker-file-status').textContent=`Could not read sound: ${error.message}`;}
   });
   $('#speaker-start').addEventListener('input',e=>{$('#speaker-start-value').textContent=soundTime(+e.target.value);});
-  $('#speaker-start').addEventListener('change',e=>{speakerClipStart=+e.target.value;prepareSpeakerSound();});
-  $('#speaker-file-play').addEventListener('click',async()=>{if(!speakerSound)return;speakerPending=true;if(!await send({action:'playSpeakerSound',pcmBase64:speakerSound,route:$('#speaker-route').value}))speakerPending=false;});
+  $('#speaker-start').addEventListener('change',e=>{if(speakerStartedAt)send({action:'stopSpeakerSound'});speakerStartedAt=0;speakerClipStart=+e.target.value;prepareSpeakerSound();});
+  $('#speaker-file-play').addEventListener('click',async()=>{if(!speakerDecoded)return;stopSpeakerPlayback();prepareSpeakerSound();speakerPending=true;speakerRoute=$('#speaker-route').value;$('#speaker-file-stop').disabled=false;if(!await send({action:'playSpeakerSound',pcmBase64:speakerSound,route:speakerRoute}))speakerPending=false;});
+  $('#speaker-file-stop').addEventListener('click',()=>{stopSpeakerPlayback();$('#speaker-file-status').textContent='Stopped';renderSpeakerProgress();});
+  $('#speaker-route').addEventListener('change',()=>{if(speakerStartedAt||speakerPending){stopSpeakerPlayback();$('#speaker-file-status').textContent='Output changed. Press Play.';}});
+  setInterval(()=>{if(speakerStartedAt)renderSpeakerProgress();},400);
   $('#alert-low-battery').addEventListener('click',()=>send({action:'setLowBatteryAlert',enabled:!state.lowBatteryAlert}));
   $('#alert-timer-start').addEventListener('click',()=>send({action:'setHapticTimer',seconds:Number($('#alert-timer-minutes').value)*60}));
   $('#alert-timer-cancel').addEventListener('click',()=>send({action:'setHapticTimer',seconds:0}));
@@ -1482,6 +1517,8 @@
     $('#owner-square').classList.toggle('is-live',connected);
     $$('#apply-triggers,#reset-effects,#touch-mouse-toggle,#gyro-aim-toggle,#xinput-toggle,#send-light,#set-player-leds,#release-light,#temperature-light,#screen-light,#diag-reset,#quick-reset,#apply-profile-now,#alert-ping,#alert-low-battery,#alert-timer-start').forEach(b=>b.disabled=!connected);
     $('#speaker-chirp').disabled=!connected||transport!=='USB';
+    $('#speaker-panel-test').disabled=!connected||transport!=='USB';
+    $('#controller-mic').disabled=!connected;
     $('#speaker-file-play').disabled=!connected||transport!=='USB'||!speakerSound;
     if(!connected){clearPadFocus();calibrationRun=null;if(state.gyroCalibration)clearTimeout(state.gyroCalibration.timer);state.gyroCalibration=null;state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.pcMode=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.temperatureLight=false;state.screenLight=false;state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderTemperatureLight();renderScreenLight();renderInput();}
     renderPcMode();
@@ -1684,12 +1721,20 @@
     }else if(event.type==='audioStatus'){
       state.audioRoute=event.route||'off';
       if(typeof event.bridge==='boolean')state.audioBridge=event.bridge;
+      const previousBridgeFrames=state.bridgeFrames;
+      if(!state.audioBridge)state.bridgeFrames=0;
+      else if(Number.isInteger(event.bridgeFrames))state.bridgeFrames=event.bridgeFrames;
       renderBridge();
       if(event.message)$('#bridge-status').textContent=event.message;
       else if(event.reason)$('#bridge-status').textContent=`Motor fallback · ${event.reason}`;
-      else if(event.bridge&&Number.isInteger(event.glitches))$('#bridge-status').textContent=event.glitches?`Bridge active · ${event.glitches} audio buffer glitch${event.glitches===1?'':'es'}`:'Bridge active · audio stream healthy';
+      else if(event.bridge)$('#bridge-status').textContent=event.glitches?`Bridge on · ${event.glitches} audio glitch${event.glitches===1?'':'es'}`:state.bridgeFrames>previousBridgeFrames?'PC audio detected · sending bass to grips':'Bridge on · play audio through your PC speakers';
+    }else if(event.type==='microphoneStatus'){
+      controllerMicMuted=!!event.muted;
+      $('#controller-mic').textContent=`Controller mic: ${controllerMicMuted?'muted':'live'}`;
+      $('#controller-mic').setAttribute('aria-pressed',String(controllerMicMuted));
     }else if(event.type==='speakerStatus'){
       log(event.message||'Controller speaker chirp playing');
+      if(event.source==='chirp'){$('#speaker-file-status').textContent='Speaker test playing';setTimeout(()=>{if(!speakerStartedAt)$('#speaker-file-status').textContent='Speaker test finished';},1000);}
       if(speakerPending&&event.source==='file'){speakerPending=false;speakerStartedAt=performance.now();$('#speaker-start').disabled=true;$('#speaker-file-status').textContent=event.message||'Playing';renderSpeakerProgress();}
     }else if(event.type==='inputEffects'){
       state.inputEffectsActive=!!event.enabled;
