@@ -6,9 +6,10 @@
   const clone = obj => JSON.parse(JSON.stringify(obj));
   const native = window.__TAURI__?.core && window.__TAURI__?.event;
   const invoke = native ? window.__TAURI__.core.invoke : null;
+  const platform=window.controllerPlatform;
   const names = ['CROSS', 'CIRCLE', 'SQUARE', 'TRIANGLE', 'L1', 'R1', 'L2', 'R2', 'CREATE', 'OPTIONS', 'L3', 'R3', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'PS', 'TOUCHPAD', 'MIC', 'EDGE FN1', 'EDGE FN2', 'LEFT PADDLE', 'RIGHT PADDLE'];
   const vkChoices = [
-    {vk: 0x11, label: 'Ctrl'}, {vk: 0x10, label: 'Shift'}, {vk: 0x12, label: 'Alt'},
+    {vk: 0x11, label: platform.keyLabel(17,'Ctrl')}, {vk: 0x10, label: 'Shift'}, {vk: 0x12, label: platform.keyLabel(18,'Alt')},
     {vk: 0x20, label: 'Space'}, {vk: 0x0D, label: 'Enter'}, {vk: 0x1B, label: 'Esc'}, {vk: 0x09, label: 'Tab'},
     {vk: 0x25, label: 'Left'}, {vk: 0x26, label: 'Up'}, {vk: 0x27, label: 'Right'}, {vk: 0x28, label: 'Down'},
     {vk: 0xAD, label: 'Volume mute'}, {vk: 0xAE, label: 'Volume down'}, {vk: 0xAF, label: 'Volume up'}, {vk: 0xB3, label: 'Play / pause'}, {vk: 0xB0, label: 'Next track'}, {vk: 0xB1, label: 'Previous track'},
@@ -18,7 +19,7 @@
   ];
   for(let vk=48;vk<=90;vk++)if((vk<=57||vk>=65)&&!vkChoices.some(k=>k.vk===vk))vkChoices.push({vk,label:String.fromCharCode(vk)});
   for(let i=0;i<24;i++)if(!vkChoices.some(k=>k.vk===112+i))vkChoices.push({vk:112+i,label:`F${i+1}`});
-  for(const [vk,label] of [[8,'Backspace'],[20,'Caps Lock'],[33,'Page Up'],[34,'Page Down'],[35,'End'],[36,'Home'],[45,'Insert'],[46,'Delete'],[91,'Super / Command'],[186,';'],[187,'='],[188,','],[189,'-'],[190,'.'],[191,'/'],[192,'`'],[219,'['],[220,'Backslash'],[221,']'],[222,"'"]])vkChoices.push({vk,label});
+  for(const [vk,label] of [[8,'Backspace'],[20,'Caps Lock'],[33,'Page Up'],[34,'Page Down'],[35,'End'],[36,'Home'],[45,'Insert'],[46,'Delete'],[91,platform.keyLabel(91,'Super')],[186,';'],[187,'='],[188,','],[189,'-'],[190,'.'],[191,'/'],[192,'`'],[219,'['],[220,'Backslash'],[221,']'],[222,"'"]])vkChoices.push({vk,label});
   const presets = {
     Linear: [0,.1,.2,.3,.4,.5,.6,.7,.8,.9,1],
     Wall: [0,0,.02,.04,.1,.84,.96,1,1,1,1],
@@ -66,7 +67,7 @@
     currentView:'live',playUntil:0,playStart:0,playDuration:0,lastExternalExe:'',
     leaseUntil:0,leaseDuration:0,fullReport:false,manualScan:false,
     autoApply:true,coreStatus:'ready',foregroundExe:'',foregroundTitle:'',foregroundPath:'',lastExternalPath:'',autoMatchId:'',autoSuppressed:false,
-    sequenceGaps:0,invalidReports:0,stickTest:null,batteryHistory:[],audioBridge:false,bridgeFrames:0,audioRoute:'off',telemetryOn:false,telemetryLast:0,scriptEnabled:false,inputEffectsActive:false,gyroCalibration:null,lowBatteryAlert:false,timerUntil:0,platformDesktopInput:true
+    sequenceGaps:0,invalidReports:0,stickTest:null,batteryHistory:[],audioBridge:false,bridgeFrames:0,audioRoute:'off',telemetryOn:false,telemetryLast:0,scriptEnabled:false,inputEffectsActive:false,gyroCalibration:null,lowBatteryAlert:false,timerUntil:0,platformDesktopInput:platform.desktopInput,platformOS:platform.os
   };
   const pcButtons=[0,1,2,3,4,5,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22];
   const defaultPcBindings=()=>[
@@ -156,7 +157,7 @@
     toastTimeout = setTimeout(() => node.classList.remove('is-visible'), 3400);
   }
   async function checkForUpdates(manual=false) {
-    if(!native || updateChecking || updateInstalling)return;
+    if(!native || !platform.updates || updateChecking || updateInstalling)return;
     updateChecking=true;
     $('#check-update').disabled=true;
     $('#install-update').disabled=true;
@@ -393,7 +394,7 @@
         savePcBindings();renderPcBindings();
       });behavior.setAttribute('aria-label',`${names[button]} action`);row.append(label,behavior);
       if(binding?.behavior==='launch'){
-        const launch=gameNode('input',{type:'text',maxLength:1024,value:binding.launchPath||'',placeholder:'Full application path'});launch.setAttribute('aria-label',`${names[button]} app path`);launch.addEventListener('change',()=>{binding.launchPath=launch.value.trim();savePcBindings();});row.append(launch);
+        const launch=gameNode('input',{type:'text',maxLength:1024,value:binding.launchPath||'',placeholder:platform.appPathPlaceholder});launch.setAttribute('aria-label',`${names[button]} app path`);launch.addEventListener('change',()=>{binding.launchPath=launch.value.trim();savePcBindings();});row.append(launch);
       }else if(binding?.behavior==='program'){
         const edit=gameNode('button',{type:'button',class:'quiet-action',text:`Edit ${binding.program?.steps?.length||0} steps`});edit.addEventListener('click',()=>window.studioHooks?.editMacro(binding));row.append(edit);
       }else if(binding){
@@ -480,12 +481,18 @@
     });
   }
   loadAppSettings();
-  if(native)invoke('platform_capabilities').then(cap=>{
-    if(!cap)return;
-    state.platformDesktopInput=!!cap.desktopInput;
-    $('#platform-support').textContent=cap.os==='windows'?'Windows: desktop controls, XInput, and system audio capture.':cap.os==='macos'?'macOS: controller features and desktop input. Allow Accessibility access for pointer and keyboard controls. XInput and system audio capture are Windows only.':'Linux: controller features and desktop input through X11 or the Wayland desktop portal. Pure Wayland may need manual profile selection. XInput and system audio capture are Windows only.';
-    if(!cap.desktopInput){renderPcMode();renderGyroControls();}
-  }).catch(()=>{});
+  function renderPlatform(){
+    state.platformDesktopInput=!!platform.desktopInput;state.platformOS=platform.os;
+    for(const k of vkChoices){if([17,18,91,92].includes(k.vk))k.label=platform.keyLabel(k.vk,k.vk===17?'Ctrl':k.vk===18?'Alt':'Super');}
+    $('#platform-support').textContent=platform.os==='windows'?'Windows: desktop controls, XInput, and system audio capture.':platform.os==='macos'?'macOS: allow Accessibility access for pointer and keyboard controls.':'Linux: desktop controls use X11 or the desktop portal. Some Wayland sessions need manual profile selection.';
+    $('#pc-permission-note').textContent=platform.os==='windows'?'Shortcuts stay on this computer. Windows may block input to administrator apps.':platform.os==='macos'?'Shortcuts stay on this Mac. Allow Accessibility access to use desktop controls.':'Shortcuts stay on this computer. Approve desktop control if your session asks for it.';
+    $('#profile-match').placeholder=platform.os==='windows'?'game.exe':'Game executable or app name';
+    $('#profile-match-path').placeholder=platform.appPathPlaceholder;
+    renderPcMode();renderGyroControls();renderPcBindings();renderRemapEditor();
+    platform.apply();window.studioHooks?.platform();
+  }
+  document.addEventListener('controller-platform',renderPlatform);
+  if(native)invoke('platform_capabilities').then(cap=>{if(!cap)return;platform.update(cap);if(Array.isArray(cap.supportedKeys))supportedKeys=new Set(cap.supportedKeys);renderPcBindings();}).catch(()=>{});
   let padNavPrev = null, padFocus = null;
   function renderPcMode(){
     const enabled=state.pcMode;
@@ -494,7 +501,7 @@
     button.setAttribute('aria-pressed',String(enabled));
     button.classList.toggle('is-active',enabled);
     $('strong',button).textContent=enabled?'PC control':'Game mode';
-    $('#input-mode-help').textContent=!state.platformDesktopInput?'Game mode is available. PC control is still Windows only.':enabled
+    $('#input-mode-help').textContent=!state.platformDesktopInput?'Desktop control is unavailable in this session.':enabled
       ?'Touchpad: pointer. Right stick: scroll. L2/R2: clicks. Edit shortcuts under PC controls.'
       :'Game mode: games receive input. PC control: pad controls this app and the desktop.';
     if(!enabled){padNavPrev=null;clearPadFocus();}
@@ -1463,7 +1470,7 @@
   });
   $('#send-light').addEventListener('click',()=>{const h=$('#light-color').value;send({action:'setLightbar',rgb:[1,3,5].map(i=>parseInt(h.slice(i,i+2),16))});});
   $('#battery-light').addEventListener('click',()=>send({action:'batteryLightbar',enabled:!state.batteryLight}));
-  $('#battery-light').insertAdjacentHTML('afterend','<button class="quiet-action" id="screen-light" type="button" aria-pressed="false" disabled>Follow screen color: off</button><small class="screen-light-status" id="screen-light-status" role="status">Samples the primary display locally only while enabled.</small>');
+  $('#battery-light').insertAdjacentHTML('afterend','<button class="quiet-action" data-feature="screenColor" id="screen-light" type="button" aria-pressed="false" disabled>Follow screen color: off</button><small class="screen-light-status" data-feature="screenColor" id="screen-light-status" role="status">Samples the primary display locally only while enabled.</small>');
   $('#battery-light').insertAdjacentHTML('afterend','<button class="quiet-action" id="temperature-light" type="button" aria-pressed="false" disabled>Sensor color: off</button><small class="screen-light-status" id="temperature-light-status" role="status">Maps an uncalibrated raw byte to color.</small>');
   $('#temperature-light').addEventListener('click',()=>send({action:'setTemperatureLightbar',enabled:!state.temperatureLight}));
   $('#screen-light').addEventListener('click',()=>send({action:'setScreenLightbar',enabled:!state.screenLight}));
@@ -2045,7 +2052,7 @@
   }
   let lastCanvas=0;function frame(now){if(!document.hidden&&now-lastCanvas>50){if(state.packet!==state.lastFramePacket){renderInput();if(state.currentView==='live')drawActivity();state.lastFramePacket=state.packet;}if(state.currentView==='haptics'||now<state.playUntil)drawWave(now);if(state.leaseUntil>now||state.lastLeaseDraw){renderSession();state.lastLeaseDraw=state.leaseUntil>now;}if(state.currentView==='haptics'&&state.timerUntil)renderAlerts();if(state.currentView==='haptics'&&speakerStartedAt)renderSpeakerProgress(now);updateStickTest(now);if(state.telemetryOn&&state.telemetryLast&&now-state.telemetryLast>1500)$('#telemetry-status').textContent='Listening · waiting for telemetry';lastCanvas=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
   const keyMap={j:2,k:0,l:1,i:3,q:4,e:5,z:6,c:7,ArrowUp:12,ArrowDown:13,ArrowLeft:14,ArrowRight:15};
-  const held=new Set();window.addEventListener('keydown',e=>{if(state.connected||e.target.matches('input,textarea,button,select'))return;if(!(e.key in keyMap))return;held.add(e.key);state.buttons[keyMap[e.key]]=1;renderInput();});
+  const held=new Set();window.addEventListener('keydown',e=>{if(state.connected||e.ctrlKey||e.metaKey||e.altKey||e.target.matches('input,textarea,button,select'))return;if(!(e.key in keyMap))return;held.add(e.key);state.buttons[keyMap[e.key]]=1;renderInput();});
   window.addEventListener('keyup',e=>{if(!(e.key in keyMap)||state.connected)return;held.delete(e.key);state.buttons[keyMap[e.key]]=0;renderInput();});
   window.addEventListener('blur',()=>{if(state.connected)return;held.clear();state.buttons.fill(0);renderInput();});
 
@@ -2066,5 +2073,6 @@
     archive:()=>({schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles),triggerPresets:clone(triggerPresets)}),
     async replaceArchive(data){if(!data?.profiles?.length||!data.profiles.every(validProfile)||!validLibrary(data.triggerPresets||[]))throw Error('Invalid archive');await send({action:'reset'});state.autoSuppressed=true;state.profiles=data.profiles.map(normalizeProfile);state.profileId=state.profiles.some(p=>p.id===data.activeId)?data.activeId:state.profiles[0].id;triggerPresets=data.triggerPresets||[];state.autoApply=data.autoApply!==false;renderAllProfileControls();return saveProfiles(true);}
   };
+  renderPlatform();
   start();
 })();

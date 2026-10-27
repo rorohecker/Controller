@@ -25,3 +25,5 @@ No installer can force its HID reports to win over Steam Input or a game's own o
 ## Build
 
 The preview workflow runs Rust tests, check, Clippy, and a Tauri bundle on Ubuntu 22.04 and macOS. Linux packages use `tauri.linux.conf.json`; macOS uses `tauri.macos.conf.json`. The macOS bundle includes Intel and Apple Silicon binaries; CI checks both targets and runs native tests on Apple Silicon. Neither preview has an updater feed yet. Use Diagnostics ? Check platform to inspect Linux hidraw access and desktop requirements. Native input errors are reported rather than ignored.
+
+The interface uses each platform's shortcut names and modifier keys: Ctrl/Windows key on Windows, Command/Option on macOS, and Ctrl/Super on Linux. Unsupported driver, XInput, screen-capture, system-audio-capture, and updater controls are hidden rather than shown as inactive options.

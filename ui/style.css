@@ -1120,3 +1120,6 @@ main{max-width:1900px;margin-inline:auto;padding-block:22px 30px}
 button:disabled{opacity:.62!important;cursor:not-allowed!important;filter:saturate(.5)}.studio-reduced-motion *,.studio-reduced-motion *::before,.studio-reduced-motion *::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
 @media(max-width:1100px){.pc-binding>.pc-launch-editor{grid-column:1/-1}.studio-shortcut-row{grid-template-columns:1fr 1fr}.studio-shortcut-row>button{justify-self:start}.steam-game-row{grid-template-columns:minmax(0,1fr) auto}.steam-game-row>strong{grid-column:1/-1}}
 @media(max-width:700px){.studio-body{padding:16px}.studio-dialog{padding:18px}.studio-status-grid{grid-template-columns:1fr;gap:4px}.studio-status-grid dd{margin-bottom:10px}.macro-step .game-field{display:grid;width:100%;margin-right:0}#command-palette-button{font-size:0;padding:8px;margin-left:6px}#command-palette-button::after{content:'⌘K';font-size:11px}.studio-shortcut-row{grid-template-columns:minmax(0,1fr)}.studio-list-row{flex-wrap:wrap}.trigger-tools{gap:6px}.trigger-tools button{flex:1 1 120px}}
+
+[data-feature][hidden],[data-platform-only][hidden]{display:none!important}
+body:not([data-platform="macos"]) #command-palette-button::after{content:"Ctrl K"}

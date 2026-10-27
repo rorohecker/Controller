@@ -1,6 +1,7 @@
 /* Profile tools, macro editor, and local integration diagnostics. */
 (() => {
   "use strict";
+  const platform = window.controllerPlatform;
   const app = window.controllerStudio;
   if (!app) return;
   const $ = (s, root = document) => root.querySelector(s),
@@ -769,7 +770,11 @@
       rows,
     );
     const defaults = {
-      chord: () => ({ type: "chord", keys: [17, 67], holdMs: 45 }),
+      chord: () => ({
+        type: "chord",
+        keys: [platform.os === "macos" ? 91 : 17, 67],
+        holdMs: 45,
+      }),
       wait: () => ({ type: "wait", ms: 100 }),
       click: () => ({ type: "click", button: "left", holdMs: 45 }),
       scroll: () => ({ type: "scroll", amount: 1 }),
@@ -850,7 +855,7 @@
             ) {
               keys.setCustomValidity("Enter distinct supported key names.");
               toast(
-                "Use distinct key names separated by +, such as Ctrl + Shift + K.",
+                `Use distinct key names separated by +, such as ${platform.primaryLabel} + Shift + K.`,
               );
               return;
             }
@@ -907,7 +912,7 @@
           const path = node("input", {
               value: step.path,
               maxLength: 1024,
-              placeholder: "Full application path",
+              placeholder: platform.appPathPlaceholder,
             }),
             args = node("input", {
               value: JSON.stringify(step.args),
@@ -1333,7 +1338,7 @@
       if (Number.isFinite(v)) scrollPositions.set(k, v);
   } catch {}
   const paletteButton = button(
-    "⌘ / Ctrl K",
+    platform.shortcutLabel,
     openPalette,
     "command-palette-button",
   );
@@ -1392,14 +1397,16 @@
   }
   window.addEventListener("keydown", (e) => {
     if (state.shortcutRecording) return;
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+    if (platform.primaryModifier(e) && e.key.toLowerCase() === "k") {
       e.preventDefault();
       openPalette();
     } else if (
-      (e.ctrlKey || e.metaKey) &&
+      platform.primaryModifier(e) &&
       state.currentView === "triggers" &&
       !e.target.matches("input,textarea,select") &&
-      ["z", "y"].includes(e.key.toLowerCase())
+      (platform.os === "macos" ? ["z"] : ["z", "y"]).includes(
+        e.key.toLowerCase(),
+      )
     ) {
       e.preventDefault();
       travel(e.key.toLowerCase() === "y" || e.shiftKey ? 1 : -1);
@@ -1475,12 +1482,13 @@
       renderProfile();
     },
     validProgram,
+    platform() {
+      paletteButton.textContent = platform.shortcutLabel;
+      paletteButton.title = `${platform.primaryLabel} + K: find a page, profile, or action`;
+    },
   };
   app.renderProfiles();
   renderProfile();
   app.renderPcBindings();
-  if (native)
-    invoke("platform_capabilities")
-      .then((c) => app.setSupportedKeys(c?.supportedKeys))
-      .catch(() => {});
+  window.studioHooks.platform();
 })();
