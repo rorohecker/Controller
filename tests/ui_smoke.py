@@ -409,6 +409,37 @@ def main():
         page.locator("#click-threshold").fill("78")
         page.locator("#apply-triggers").click()
         page.wait_for_function("window.sent.some(c=>c.action==='setInputEffects' && c.threshold===.78)")
+        page.locator('[data-weapon-preset="sniper"]').click()
+        assert page.locator("#break-preload-number").input_value() == "25"
+        assert page.locator("#trigger-force-step").input_value() == "8"
+        page.locator("#break-preload-number").fill("30")
+        page.locator("#break-preload-number").press("Tab")
+        page.locator("#break-start-number").fill("5")
+        page.locator("#break-start-number").press("Tab")
+        page.locator("#apply-triggers").click()
+        page.wait_for_function("window.sent.some(c=>c.action==='applyTriggers' && c.right.preloadStrength===30 && c.right.startZone===4)")
+        page.locator('[data-weapon-preset="burst"]').click()
+        assert page.locator("#click-threshold-number").input_value() == "77"
+        assert page.locator("#burst-spacing").input_value() == "251"
+        assert page.locator("#burst-kick").input_value() == "95"
+        assert not page.locator("#weapon-rate-row").is_visible()
+        page.locator("#burst-spacing").fill("252")
+        page.locator("#burst-spacing").press("Tab")
+        page.locator("#apply-triggers").click()
+        page.wait_for_function("window.sent.some(c=>c.action==='setInputEffects' && c.kind==='burst' && c.threshold===.77 && c.spacingMs===252 && c.kickMs===95)")
+        page.locator("#burst-spacing").fill("50")
+        page.locator("#burst-spacing").press("Tab")
+        assert page.locator("#burst-kick").input_value() == "30"
+        page.locator('[data-weapon-preset="smg"]').click()
+        assert page.locator("#weapon-rate-row").is_visible()
+        assert not page.locator("#burst-timing").is_visible()
+        page.locator('#trigger-modes [data-mode="vibration"]').click()
+        page.locator("#trigger-frequency").fill("17")
+        page.locator("#trigger-frequency").press("Tab")
+        page.locator("#trigger-strength-input").fill("75")
+        page.locator("#trigger-strength-input").press("Tab")
+        page.locator("#apply-triggers").click()
+        page.wait_for_function("window.sent.some(c=>c.action==='applyTriggers' && c.right.frequencyHz===17 && c.right.strength===75)")
         page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-trigger-new.png"), full_page=True)
         page.locator('[data-view="touch"]').click()
         assert "circle" in page.locator("#touch-gesture-toggle").locator("xpath=..//p").inner_text().lower()

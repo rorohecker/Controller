@@ -149,6 +149,10 @@ pub enum DeviceCommand {
         kind: String,
         #[serde(default = "default_weapon_rate")]
         rate: u8,
+        #[serde(rename = "spacingMs", default)]
+        spacing_ms: u16,
+        #[serde(rename = "kickMs", default)]
+        kick_ms: u16,
     },
     SetLowBatteryAlert {
         enabled: bool,
@@ -284,6 +288,9 @@ struct InputEffect {
     strength: u8,
     kind: WeaponKind,
     rate: u8,
+    spacing_ms: u16,
+    kick_ms: u16,
+    remaining: u8,
     armed: bool,
     next_pulse: Option<Instant>,
 }
@@ -325,6 +332,27 @@ impl BowReturn {
 
 fn encode_live_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str> {
     setting.validate()?;
+    if setting.mode == "weapon" && setting.preload_strength.unwrap_or(0.0) > 0.0 {
+        let start = usize::from(setting.start_zone.unwrap_or(5));
+        let end = usize::from(setting.end_zone.unwrap_or(6)).max(start + 1);
+        let mut loaded = setting.clone();
+        loaded.mode = "resistance".into();
+        let preload = setting.preload_strength.unwrap_or(0.0) / setting.strength.max(1.0);
+        loaded.zone_forces = Some(
+            (0..10)
+                .map(|zone| {
+                    if zone < start {
+                        (preload * (0.5 + 0.5 * zone as f32 / start.max(1) as f32)).min(1.0)
+                    } else if zone < end {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                })
+                .collect(),
+        );
+        return protocol::encode_trigger(&loaded);
+    }
     if setting.mode != "bow" {
         return protocol::encode_trigger(setting);
     }
@@ -349,8 +377,25 @@ fn encode_live_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static st
 }
 
 impl InputEffect {
+    fn burst_spacing_ms(&self) -> u16 {
+        if self.spacing_ms > 0 {
+            self.spacing_ms
+        } else {
+            1000 / u16::from(self.rate.max(1))
+        }
+    }
+
+    fn burst_kick_ms(&self) -> u16 {
+        let requested = if self.kick_ms == 0 { 95 } else { self.kick_ms };
+        requested.min(self.burst_spacing_ms().saturating_sub(20).max(20))
+    }
+
     fn advance(&mut self, now: Instant, right_pull: f32) -> bool {
-        let interval = Duration::from_secs_f64(1.0 / f64::from(self.rate.max(1)));
+        let interval = if self.kind == WeaponKind::Burst && self.spacing_ms > 0 {
+            Duration::from_millis(u64::from(self.spacing_ms))
+        } else {
+            Duration::from_secs_f64(1.0 / f64::from(self.rate.max(1)))
+        };
         let release_point = if matches!(self.kind, WeaponKind::Sniper | WeaponKind::Burst) {
             0.15
         } else {
@@ -358,20 +403,21 @@ impl InputEffect {
         };
         if right_pull < release_point {
             self.armed = true;
-            if self.kind == WeaponKind::Smg {
-                self.next_pulse = None;
-            }
+            self.next_pulse = None;
+            self.remaining = 0;
         }
         let first = self.armed && right_pull >= self.threshold;
         if first {
             self.armed = false;
+            self.remaining = if self.kind == WeaponKind::Burst { 2 } else { 0 };
             self.next_pulse = Some(now + interval);
             return true;
         }
         let repeat = self.next_pulse.is_some_and(|at| now >= at)
-            && self.kind == WeaponKind::Smg
-            && right_pull >= self.threshold;
+            && ((self.kind == WeaponKind::Smg && right_pull >= self.threshold)
+                || (self.kind == WeaponKind::Burst && self.remaining > 0));
         if repeat {
+            self.remaining = self.remaining.saturating_sub(1);
             self.next_pulse = Some(now + interval);
         }
         repeat
@@ -645,7 +691,7 @@ impl Connected {
         let kind = effect.kind;
         let threshold = effect.threshold;
         let strength = effect.strength;
-        let rate = effect.rate;
+        let kick_ms = effect.burst_kick_ms();
         if self.input_effect_until.is_some() {
             self.restore_input_effect()?;
         }
@@ -660,8 +706,8 @@ impl Connected {
             let zone = ((threshold * 10.0).round() as usize).clamp(2, 7);
             curve[zone + 1..].fill(1.0);
         }
-        let mut click = protocol::encode_trigger(&TriggerSetting {
-            mode: if matches!(kind, WeaponKind::Smg | WeaponKind::Burst) {
+        let click = protocol::encode_trigger(&TriggerSetting {
+            mode: if kind == WeaponKind::Smg {
                 "vibration"
             } else if full_travel {
                 "resistance"
@@ -677,10 +723,6 @@ impl Connected {
             ..TriggerSetting::default()
         })
         .map_err(str::to_string)?;
-        if kind == WeaponKind::Burst {
-            // 0x26 runs complete trigger strokes at this rate; keep one train alive for three periods.
-            click[9] = rate;
-        }
         self.write(protocol::usb_report(
             0x04,
             0,
@@ -696,7 +738,7 @@ impl Connected {
             Instant::now()
                 + Duration::from_millis(match kind {
                     WeaponKind::Sniper => 120,
-                    WeaponKind::Burst => 3000 / u64::from(rate.max(1)),
+                    WeaponKind::Burst => u64::from(kick_ms),
                     WeaponKind::Smg => 65,
                     _ => 65,
                 }),
@@ -1805,20 +1847,27 @@ fn handle_command(
             strength,
             kind,
             rate,
+            spacing_ms,
+            kick_ms,
         } => {
             if !threshold.is_finite()
                 || !(0.2..=0.95).contains(&threshold)
                 || strength > 100
                 || (enabled && strength == 0)
                 || !(3..=20).contains(&rate)
+                || (spacing_ms != 0 && !(50..=1000).contains(&spacing_ms))
+                || (kick_ms != 0 && !(20..=250).contains(&kick_ms))
+                || (kind == "burst" && kick_ms != 0
+                    && u32::from(kick_ms) + 20
+                        > if spacing_ms == 0 { 1000 / u32::from(rate.max(1)) } else { u32::from(spacing_ms) })
                 || WeaponKind::parse(&kind).is_none()
             {
                 Err("Weapon cue settings are out of range.".into())
             } else {
                 let enabled = enabled && device.bows[1].is_none();
                 device.restore_input_effect().map(|_| {
-                    device.input_effect = enabled.then_some(InputEffect {threshold,strength,kind:WeaponKind::parse(&kind).unwrap(),rate,armed:true,next_pulse:None});
-                    emit(proxy, json!({"type":"inputEffects","enabled":enabled,"threshold":threshold,"strength":strength,"kind":kind,"rate":rate}));
+                    device.input_effect = enabled.then_some(InputEffect {threshold,strength,kind:WeaponKind::parse(&kind).unwrap(),rate,spacing_ms,kick_ms,remaining:0,armed:true,next_pulse:None});
+                    emit(proxy, json!({"type":"inputEffects","enabled":enabled,"threshold":threshold,"strength":strength,"kind":kind,"rate":rate,"spacingMs":spacing_ms,"kickMs":kick_ms}));
                     if enabled {"Weapon cue armed"} else {"Weapon cue off"}
                 })
             }
@@ -2582,6 +2631,9 @@ mod tests {
             strength: 100,
             kind: WeaponKind::Sniper,
             rate: 3,
+            spacing_ms: 0,
+            kick_ms: 0,
+            remaining: 0,
             armed: true,
             next_pulse: None,
         };
@@ -2600,34 +2652,65 @@ mod tests {
     }
 
     #[test]
-    fn burst_does_not_restart_its_native_train_and_smg_stops_on_release() {
+    fn burst_fires_three_spaced_kicks_at_partial_pull_and_rearms_at_rest() {
         let now = Instant::now();
         let mut burst = InputEffect {
-            threshold: 0.6,
-            strength: 60,
+            threshold: 0.77,
+            strength: 100,
             kind: WeaponKind::Burst,
-            rate: 6,
+            rate: 4,
+            spacing_ms: 251,
+            kick_ms: 95,
+            remaining: 0,
             armed: true,
             next_pulse: None,
         };
-        assert!(burst.advance(now, 0.7));
-        let (_, _, attack, release, _, _) = WeaponKind::Burst.cue(78);
-        assert!(u64::from(attack + release) < 1000 / 6);
-        assert!(!burst.advance(now + Duration::from_millis(90), 0.7));
-        assert!(!burst.advance(now + Duration::from_millis(166), 0.7));
-        assert!(!burst.advance(now + Duration::from_millis(167), 0.7));
-        assert!(!burst.advance(now + Duration::from_millis(300), 0.7));
-        assert!(!burst.advance(now + Duration::from_millis(334), 0.7));
-        assert!(!burst.advance(now + Duration::from_millis(500), 0.7));
+        assert!(!burst.advance(now, 0.76));
+        assert!(burst.advance(now, 0.78));
+        assert_eq!(burst.burst_kick_ms(), 95);
+        assert!(!burst.advance(now + Duration::from_millis(250), 0.78));
+        // A motor kick can move the finger below the firing point without cancelling the train.
+        assert!(burst.advance(now + Duration::from_millis(251), 0.5));
+        assert!(!burst.advance(now + Duration::from_millis(501), 0.78));
+        assert!(burst.advance(now + Duration::from_millis(502), 0.78));
+        assert!(!burst.advance(now + Duration::from_millis(753), 0.78));
+        assert!(!burst.advance(now + Duration::from_millis(1004), 0.78));
+        assert!(!burst.advance(now + Duration::from_millis(1100), 0.0));
+        assert!(burst.advance(now + Duration::from_millis(1200), 0.78));
+        assert!(!burst.advance(now + Duration::from_millis(1250), 0.0));
+        assert!(!burst.advance(now + Duration::from_millis(1451), 0.0));
         let mut smg = InputEffect {
             kind: WeaponKind::Smg,
+            rate: 6,
             ..burst
         };
         smg.armed = true;
         smg.next_pulse = None;
-        assert!(smg.advance(now, 0.7));
-        assert!(smg.advance(now + Duration::from_millis(167), 0.7));
+        assert!(smg.advance(now, 0.8));
+        assert!(smg.advance(now + Duration::from_millis(167), 0.8));
         assert!(!smg.advance(now + Duration::from_millis(334), 0.0));
-        assert!(smg.advance(now + Duration::from_millis(500), 0.7));
+        assert!(smg.advance(now + Duration::from_millis(500), 0.8));
+    }
+
+    #[test]
+    fn sniper_load_keeps_a_light_ramp_full_stop_and_clear_release() {
+        let encoded = encode_live_trigger(&TriggerSetting {
+            mode: "weapon".into(),
+            strength: 100.0,
+            curve: vec![1.0; 11],
+            start_zone: Some(5),
+            end_zone: Some(6),
+            force_cap: Some(8),
+            preload_strength: Some(25.0),
+            ..TriggerSetting::default()
+        })
+        .unwrap();
+        assert_eq!(encoded[0], 0x21);
+        let mask = u16::from_le_bytes([encoded[1], encoded[2]]);
+        assert_eq!(mask & (1 << 5), 1 << 5);
+        assert_eq!(mask & (0b1111 << 6), 0);
+        let packed = u32::from_le_bytes(encoded[3..7].try_into().unwrap());
+        assert_eq!((packed >> 15) & 7, 7);
+        assert!((packed & 7) < 2);
     }
 }

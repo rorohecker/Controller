@@ -157,6 +157,10 @@ struct InputEffectSettings {
     kind: String,
     #[serde(default = "default_weapon_rate")]
     rate: u8,
+    #[serde(default)]
+    spacing_ms: u16,
+    #[serde(default)]
+    kick_ms: u16,
 }
 fn default_click_threshold() -> f32 {
     0.82
@@ -178,6 +182,8 @@ impl Default for InputEffectSettings {
             strength: default_click_strength(),
             kind: default_weapon_kind(),
             rate: default_weapon_rate(),
+            spacing_ms: 0,
+            kick_ms: 0,
         }
     }
 }
@@ -278,6 +284,17 @@ fn validate(data: Value) -> Result<Archive, String> {
         if !(0.2..=0.95).contains(&p.input_effects.threshold)
             || p.input_effects.strength > 100
             || !(3..=20).contains(&p.input_effects.rate)
+            || (p.input_effects.spacing_ms != 0
+                && !(50..=1000).contains(&p.input_effects.spacing_ms))
+            || (p.input_effects.kick_ms != 0 && !(20..=250).contains(&p.input_effects.kick_ms))
+            || (p.input_effects.kind == "burst"
+                && p.input_effects.kick_ms != 0
+                && u32::from(p.input_effects.kick_ms) + 20
+                    > if p.input_effects.spacing_ms == 0 {
+                        1000 / u32::from(p.input_effects.rate.max(1))
+                    } else {
+                        u32::from(p.input_effects.spacing_ms)
+                    })
             || !matches!(
                 p.input_effects.kind.as_str(),
                 "click" | "pistol" | "sniper" | "burst" | "smg"
@@ -435,6 +452,27 @@ mod tests {
     fn archive_rejects_out_of_range_trigger() {
         let mut value = sample_profile();
         value["profiles"][0]["triggers"]["left"]["strength"] = 101.into();
+        assert!(validate(value).is_err());
+    }
+
+    #[test]
+    fn custom_trigger_controls_roundtrip_and_reject_overlapping_kicks() {
+        let mut value = sample_profile();
+        value["profiles"][0]["inputEffects"] = serde_json::json!({
+            "enabled":true,"kind":"burst","threshold":0.77,"strength":100,
+            "rate":4,"spacingMs":251,"kickMs":95
+        });
+        value["profiles"][0]["triggers"]["left"]["preloadStrength"] = 25.into();
+        value["profiles"][0]["triggers"]["left"]["frequencyHz"] = 17.into();
+        let saved = serde_json::to_value(validate(value.clone()).unwrap()).unwrap();
+        assert_eq!(saved["profiles"][0]["inputEffects"]["spacingMs"], 251);
+        assert_eq!(saved["profiles"][0]["inputEffects"]["kickMs"], 95);
+        assert_eq!(
+            saved["profiles"][0]["triggers"]["left"]["preloadStrength"],
+            25.0
+        );
+        assert_eq!(saved["profiles"][0]["triggers"]["left"]["frequencyHz"], 17);
+        value["profiles"][0]["inputEffects"]["spacingMs"] = 100.into();
         assert!(validate(value).is_err());
     }
 

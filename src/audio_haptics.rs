@@ -20,6 +20,7 @@ const RATE: u32 = 48_000;
 const QUEUE_FRAMES: usize = 960; // at most 20 ms buffered at 48 kHz
 const MAX_AMPLITUDE: f32 = 0.32;
 const SPEAKER_CHIRP_SECONDS: f32 = 0.8;
+const SPEAKER_FILE_GAIN: f32 = 0.42;
 const MAX_SPEAKER_SAMPLES: usize = RATE as usize * 3;
 
 #[derive(Clone)]
@@ -730,7 +731,7 @@ fn fill_frames(
                         .checked_sub(sound.start_frame)
                         .and_then(|at| sound.samples.get(at as usize))
                 })
-                .map(|sample| *sample as f32 / i16::MAX as f32 * 0.35)
+                .map(|sample| *sample as f32 / i16::MAX as f32 * SPEAKER_FILE_GAIN)
                 .unwrap_or(0.0);
         speaker_frames += u64::from(chirp.abs() > 0.005);
         grip_frames += u64::from(l.abs() > 0.005 || r.abs() > 0.005);
@@ -1025,7 +1026,7 @@ mod tests {
                 .as_chunks::<4>()
                 .0
                 .iter()
-                .all(|frame| frame[0].abs() <= 0.35
+                .all(|frame| frame[0].abs() <= SPEAKER_FILE_GAIN
                     && frame[1] == frame[0]
                     && frame[2] == 0.0
                     && frame[3] == 0.0)
@@ -1052,7 +1053,7 @@ mod tests {
         assert_eq!(paused.position, resumed.position);
         let mut output = [0.0f32; 64];
         render_output(&mut output, &engine.shared, &mut 2100, &mut 0.0);
-        assert!((output[0] - 100.0 / i16::MAX as f32 * 0.35).abs() < 0.000001);
+        assert!((output[0] - 100.0 / i16::MAX as f32 * SPEAKER_FILE_GAIN).abs() < 0.000001);
     }
     #[test]
     fn grip_audio_maps_high_notes_into_the_tactile_band() {

@@ -25,7 +25,7 @@
   };
   const defaultGyro = () => ({enabled:false,sensitivity:1,yawScale:1,pitchScale:1,invertY:false,activation:'always',bias:[0,0,0],deadzone:90,smoothing:.18});
   const defaultRemap = () => ({enabled:false,bindings:[]});
-  const defaultInputEffects = () => ({enabled:false,threshold:.82,strength:55,kind:'click',rate:10});
+  const defaultInputEffects = () => ({enabled:false,threshold:.82,strength:55,kind:'click',rate:10,spacingMs:0,kickMs:0});
   const defaultProfiles = [
     {id:'standard',name:'Standard',description:'L2 stays even. R2 gets firmer as you pull.',tag:'GENERAL',matchExe:'',autoApply:true,triggers:{left:{mode:'resistance',strength:40,curve:clone(presets.Linear)},right:{mode:'resistance',strength:55,curve:clone(presets.Swell)}},haptics:{shape:'sine',frequency:90,attack:12,release:220,strength:44,pan:0},gyroAim:defaultGyro(),remap:defaultRemap(),inputEffects:defaultInputEffects()},
     {id:'rally',name:'Rally',description:'L2 brakes hard. R2 pulses for throttle.',tag:'RACING',matchExe:'',autoApply:true,triggers:{left:{mode:'resistance',strength:73,curve:clone(presets.Wall)},right:{mode:'vibration',strength:54,curve:clone(presets.Pulse)}},haptics:{shape:'saw',frequency:65,attack:8,release:240,strength:55,pan:-10},gyroAim:defaultGyro(),remap:defaultRemap(),inputEffects:defaultInputEffects()},
@@ -575,7 +575,9 @@
         && (t.startZone==null || Number.isInteger(t.startZone)&&t.startZone>=0&&t.startZone<=7)
         && (t.endZone==null || Number.isInteger(t.endZone)&&t.endZone>=1&&t.endZone<=9)
         && (t.startZone==null||t.endZone==null||t.endZone>t.startZone)
-        && (t.snapStrength==null||Number.isFinite(t.snapStrength)&&t.snapStrength>=0&&t.snapStrength<=100);
+        && (t.snapStrength==null||Number.isFinite(t.snapStrength)&&t.snapStrength>=0&&t.snapStrength<=100)
+        && (t.preloadStrength==null||Number.isFinite(t.preloadStrength)&&t.preloadStrength>=0&&t.preloadStrength<=100)
+        && (t.frequencyHz==null||Number.isInteger(t.frequencyHz)&&t.frequencyHz>=1&&t.frequencyHz<=255);
     }) && p.haptics && ['sine','square','saw','noise'].includes(p.haptics.shape)
       && hapticFields.every(f=>Number.isInteger(p.haptics[f.key]) && p.haptics[f.key]>=f.min && p.haptics[f.key]<=f.max)
       && Number.isFinite(g.sensitivity) && g.sensitivity>=.05 && g.sensitivity<=8
@@ -589,6 +591,9 @@
       && Number.isInteger(c.strength) && c.strength>=0 && c.strength<=100
       && ['click','pistol','sniper','burst','smg'].includes(c.kind||'click')
       && Number.isInteger(c.rate??10) && (c.rate??10)>=3 && (c.rate??10)<=20
+      && Number.isInteger(c.spacingMs??0) && ((c.spacingMs??0)===0 || c.spacingMs>=50&&c.spacingMs<=1000)
+      && Number.isInteger(c.kickMs??0) && ((c.kickMs??0)===0 || c.kickMs>=20&&c.kickMs<=250)
+      && (c.kind!=='burst'||!c.kickMs||c.kickMs+20<=(c.spacingMs||Math.floor(1000/(c.rate??10))))
       && bindings.length<=46 && bindings.every(b=>Number.isInteger(b.button)&&b.button>=0&&b.button<23&&Number.isInteger(b.vk)&&b.vk>=1&&b.vk<=255
         && (b.modifier==null||(Number.isInteger(b.modifier)&&b.modifier>=0&&b.modifier<23&&b.modifier!==b.button))
         && ['hold','tap','macro'].includes(b.behavior||'hold') && Array.isArray(b.sequence||[])
@@ -631,7 +636,7 @@
     }
     const ok = await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right});
     if (!ok) return false;
-    if (!await send({action:'setInputEffects',enabled:!!p.inputEffects?.enabled,threshold:p.inputEffects?.threshold??.82,strength:p.inputEffects?.strength??55,kind:p.inputEffects?.kind||'click',rate:p.inputEffects?.rate??10})) return false;
+    if (!await send({action:'setInputEffects',enabled:!!p.inputEffects?.enabled,threshold:p.inputEffects?.threshold??.82,strength:p.inputEffects?.strength??55,kind:p.inputEffects?.kind||'click',rate:p.inputEffects?.rate??10,spacingMs:p.inputEffects?.spacingMs??0,kickMs:p.inputEffects?.kickMs??0})) return false;
     if (p.gyroAim) {
       if (!await send({
         action:'setGyroAim',
@@ -874,13 +879,20 @@
     $('#weapon-kind').value=c.kind||'click';
     $('#weapon-rate-value').textContent=`${c.rate??10} shots/s`;
     $('#weapon-rate-gap').textContent=`${Math.round(1000/(c.rate??10))} ms between shots`;
-    $('#weapon-rate-row').hidden=!['burst','smg'].includes(c.kind);
+    $('#weapon-rate-row').hidden=c.kind!=='smg';
+    $('#burst-timing').hidden=c.kind!=='burst';
+    const spacing=c.spacingMs||Math.round(1000/(c.rate??10));
+    $('#burst-spacing').value=spacing;$('#burst-kick').value=c.kickMs||Math.min(95,spacing-20);
+    $('#click-threshold-number').value=Math.round(c.threshold*100);$('#click-strength-number').value=c.strength;
     $('#click-threshold').value=Math.round(c.threshold*100);$('#click-threshold-value').textContent=`${Math.round(c.threshold*100)}%`;
     $('#click-strength').value=c.strength;$('#click-strength-value').textContent=`${c.strength}%`;
     fillRange($('#click-threshold'));fillRange($('#click-strength'));
   }
   function renderTriggerStrength(t){
     const cap=t.forceCap===8?8:6;
+    $('#trigger-strength-input').value=t.strength;
+    $('#trigger-force-step').max=cap;$('#trigger-force-step').value=t.strength?Math.max(1,Math.round(t.strength*cap/100)):0;
+    $('#trigger-frequency-control').hidden=t.mode!=='vibration';$('#trigger-frequency').value=t.frequencyHz??45;
     $('#trigger-strength-label').textContent=t.mode==='bow'?'Draw force':'Strength';
     $('#trigger-strength-number').textContent=t.mode==='bow'||t.mode==='weapon'
       ?`${t.strength}% · ${t.strength?Math.max(1,Math.round(t.strength*cap/100)):0} / ${cap}`
@@ -903,7 +915,7 @@
     const snapLevel=clamp(Math.round((t.snapStrength??50)*cap/100),1,cap);
     $('#break-snap').max=cap;
     $('#break-force-cap').value=String(cap);
-    $('#break-force-cap').disabled=!positioned;
+    $('#break-force-cap').disabled=t.mode==='off';
     $('#break-start').value=t.startZone;$('#break-end').value=t.endZone;$('#break-snap').value=snapLevel;
     $('#break-start-value').textContent=`Zone ${t.startZone+1}`;
     $('#break-end-value').textContent=`Zone ${t.endZone+1}`;
@@ -911,6 +923,10 @@
     $$('#break-start,#break-end').forEach(input=>input.disabled=!positioned);
     $('#break-snap').disabled=t.mode!=='bow';
     $('#break-snap-control').hidden=true;
+    $('#break-preload-control').hidden=t.mode!=='weapon';
+    $('#break-preload').value=t.preloadStrength??0;$('#break-preload-number').value=t.preloadStrength??0;
+    $('#break-preload-value').textContent=`${t.preloadStrength??0}%`;fillRange($('#break-preload'));
+    for(const key of ['start','end']){const range=$(`#break-${key}`),number=$(`#break-${key}-number`);number.min=+range.min+1;number.max=+range.max+1;number.value=+range.value+1;number.disabled=!positioned;}
     $('label[for="break-end"]').firstChild.textContent=t.mode==='bow'?'Tension clears at ':'Break point ';
     $('#break-title').textContent=t.mode==='bow'?'Bow draw':'Trigger break';
     $('#break-guide').textContent=positioned
@@ -1019,6 +1035,17 @@
   });
   function fillRange(el){const f=(+el.value-(+el.min||0))/((+el.max||100)-(+el.min||0))*100;el.style.setProperty('--fill',`${f}%`);}
   $('#trigger-strength').addEventListener('input',e=>{trigger().strength=+e.target.value;renderTriggerStrength(trigger());fillRange(e.target);saveProfiles();});
+  function bindRangeNumber(rangeId,numberId,offset=0){
+    const range=$(rangeId),number=$(numberId);
+    number.addEventListener('change',()=>{if(!number.value||!Number.isFinite(number.valueAsNumber)){number.value=+range.value+offset;return;}range.value=clamp(Math.round(number.valueAsNumber)-offset,+range.min,+range.max);range.dispatchEvent(new Event('input',{bubbles:true}));number.value=+range.value+offset;});
+    range.addEventListener('input',()=>number.value=+range.value+offset);
+  }
+  bindRangeNumber('#trigger-strength','#trigger-strength-input');
+  bindRangeNumber('#break-start','#break-start-number',1);bindRangeNumber('#break-end','#break-end-number',1);
+  $('#trigger-force-step').addEventListener('change',e=>{if(!e.target.value)return;const step=clamp(Math.round(+e.target.value),0,trigger().forceCap===8?8:6);$('#trigger-strength').value=Math.round(step*100/(trigger().forceCap===8?8:6));$('#trigger-strength').dispatchEvent(new Event('input',{bubbles:true}));});
+  $('#break-preload').addEventListener('input',e=>{trigger().preloadStrength=+e.target.value;renderBreakControls(trigger());saveProfiles();});
+  bindRangeNumber('#break-preload','#break-preload-number');
+  $('#trigger-frequency').addEventListener('change',e=>{trigger().frequencyHz=clamp(Math.round(+e.target.value||45),1,255);e.target.value=trigger().frequencyHz;saveProfiles();});
   $('#curve-presets').innerHTML=Object.keys(presets).map(n=>`<button type="button" data-preset="${n}">${n}</button>`).join('');
   $('#curve-presets').addEventListener('click',e=>{const b=e.target.closest('[data-preset]');if(!b||b.disabled)return;trigger().curve=clone(presets[b.dataset.preset]);trigger().zoneForces=Array.from({length:10},(_,i)=>(trigger().curve[i]+trigger().curve[i+1])/2);renderCurve();saveProfiles();toast(`${state.side==='left'?'L2':'R2'} ${b.dataset.preset}`);});
   function renderCurve(){
@@ -1059,17 +1086,20 @@
     svg.addEventListener('pointerup',finishCurve);svg.addEventListener('pointercancel',finishCurve);
     svg.addEventListener('keydown',e=>{const p=e.target.closest('[data-point]');if(!p||!['ArrowUp','ArrowDown'].includes(e.key))return;e.preventDefault();const side=svg.dataset.curveSide,i=+p.dataset.point,t=profile().triggers[side];if(!['resistance','vibration'].includes(t.mode))return;state.side=side;t.zoneForces[i]=Math.round(clamp(t.zoneForces[i]+(e.key==='ArrowUp'?.02:-.02))*100)/100;renderTriggerControls();svg.querySelector(`[data-point="${i}"]`).focus();saveProfiles();});
   });
-  $('#click-enabled').closest('.input-click-block').insertAdjacentHTML('afterbegin',`<div class="weapon-library"><h3>Weapon cues</h3><p>R2 creates a haptic recoil cue from your pull. Game events are needed for exact shot timing.</p><div class="weapon-preset-list"><button type="button" data-weapon-preset="pistol">Pistol</button><button type="button" data-weapon-preset="sniper">Sniper</button><button type="button" data-weapon-preset="burst">Burst</button><button type="button" data-weapon-preset="smg">SMG</button></div><label class="control-label" for="weapon-kind">Recoil pattern</label><select id="weapon-kind"><option value="click">Click</option><option value="pistol">Pistol</option><option value="sniper">Sniper</option><option value="burst">Three shot burst</option><option value="smg">Automatic</option></select><div id="weapon-rate-row" class="weapon-rate-row"><span>Rate</span><div class="weapon-rate-stepper"><button type="button" data-rate-step="-1" aria-label="Slower firing rate">−</button><b id="weapon-rate-value">10 shots/s</b><button type="button" data-rate-step="1" aria-label="Faster firing rate">+</button></div><small id="weapon-rate-gap">100 ms between shots</small></div></div>`);
+  $('#click-enabled').closest('.input-click-block').insertAdjacentHTML('afterbegin',`<div class="weapon-library"><h3>Weapon cues</h3><p>R2 creates a haptic recoil cue from your pull. Game events are needed for exact shot timing.</p><div class="weapon-preset-list"><button type="button" data-weapon-preset="pistol">Pistol</button><button type="button" data-weapon-preset="sniper">Sniper</button><button type="button" data-weapon-preset="burst">Burst</button><button type="button" data-weapon-preset="smg">SMG</button></div><label class="control-label" for="weapon-kind">Recoil pattern</label><select id="weapon-kind"><option value="click">Click</option><option value="pistol">Pistol</option><option value="sniper">Sniper</option><option value="burst">Three shot burst</option><option value="smg">Automatic</option></select><div id="weapon-rate-row" class="weapon-rate-row"><span>Rate</span><div class="weapon-rate-stepper"><button type="button" data-rate-step="-1" aria-label="Slower firing rate">−</button><b id="weapon-rate-value">10 shots/s</b><button type="button" data-rate-step="1" aria-label="Faster firing rate">+</button></div><small id="weapon-rate-gap">100 ms between shots</small></div><div id="burst-timing" class="burst-timing" hidden><label class="number-control">Spacing <span><input id="burst-spacing" type="number" min="50" max="1000" step="1" value="251"> ms</span></label><label class="number-control">Kick duration <span><input id="burst-kick" type="number" min="20" max="250" step="1" value="95"> ms</span></label><small>Three matching kicks. Leave a gap so the motor can reset.</small></div></div>`);
   $('#click-enabled').closest('.input-click-block').querySelector(':scope > h3').textContent='R2 cue';
   $('#click-enabled').closest('.input-click-block').querySelector(':scope > p').textContent='The cue starts when R2 crosses the pull point. Release to rearm single shots.';
-  const weaponPresets={pistol:{kind:'pistol',threshold:.72,strength:62,rate:6,mode:'weapon',startZone:4,endZone:6},sniper:{kind:'sniper',threshold:.84,strength:100,triggerStrength:100,inputEnabled:false,rate:3,mode:'weapon',forceCap:8,startZone:5,endZone:6},burst:{kind:'burst',threshold:.46,strength:100,rate:4,mode:'off',triggerStrength:0,forceCap:8},smg:{kind:'smg',threshold:.40,strength:82,triggerStrength:40,rate:12,mode:'resistance',curve:[0,0,.1,.2,.25,.28,.3,.3,.3,.3,.3]}};
-  $('.weapon-preset-list').addEventListener('click',async e=>{const button=e.target.closest('[data-weapon-preset]');if(!button)return;if(zoneRun)await stopZoneCalibration();const spec=weaponPresets[button.dataset.weaponPreset];if(!spec)return;profile().inputEffects={enabled:spec.inputEnabled??true,threshold:spec.threshold,strength:spec.strength,kind:spec.kind,rate:spec.rate};const t=profile().triggers.right;t.mode=spec.mode;t.strength=spec.triggerStrength??spec.strength;t.startZone=spec.startZone;t.endZone=spec.endZone;t.snapStrength=spec.snapStrength??t.snapStrength;t.forceCap=spec.forceCap??6;t.curve=clone(spec.curve??presets.Break);t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);state.side='right';renderTriggerControls();saveProfiles();toast(`${button.textContent} loaded · Apply to feel it`);});
+  const weaponPresets={pistol:{kind:'pistol',threshold:.72,strength:62,rate:6,mode:'weapon',startZone:4,endZone:6},sniper:{kind:'sniper',threshold:.84,strength:100,triggerStrength:100,preloadStrength:25,inputEnabled:false,rate:3,mode:'weapon',forceCap:8,startZone:5,endZone:6},burst:{kind:'burst',threshold:.77,strength:100,rate:4,spacingMs:251,kickMs:95,mode:'off',triggerStrength:0,forceCap:8},smg:{kind:'smg',threshold:.40,strength:82,triggerStrength:40,rate:12,mode:'resistance',curve:[0,0,.1,.2,.25,.28,.3,.3,.3,.3,.3]}};
+  $('.weapon-preset-list').addEventListener('click',async e=>{const button=e.target.closest('[data-weapon-preset]');if(!button)return;if(zoneRun)await stopZoneCalibration();const spec=weaponPresets[button.dataset.weaponPreset];if(!spec)return;profile().inputEffects={enabled:spec.inputEnabled??true,threshold:spec.threshold,strength:spec.strength,kind:spec.kind,rate:spec.rate,spacingMs:spec.spacingMs??0,kickMs:spec.kickMs??0};const t=profile().triggers.right;t.mode=spec.mode;t.preloadStrength=spec.preloadStrength??0;t.strength=spec.triggerStrength??spec.strength;t.startZone=spec.startZone;t.endZone=spec.endZone;t.snapStrength=spec.snapStrength??t.snapStrength;t.forceCap=spec.forceCap??6;t.curve=clone(spec.curve??presets.Break);t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);state.side='right';renderTriggerControls();saveProfiles();toast(`${button.textContent} loaded · Apply to feel it`);});
   $('#weapon-kind').addEventListener('change',e=>{profile().inputEffects.kind=e.target.value;renderTriggerControls();saveProfiles();});
   $('#weapon-rate-row').addEventListener('click',e=>{const button=e.target.closest('[data-rate-step]');if(!button)return;profile().inputEffects.rate=clamp((profile().inputEffects.rate??10)+Number(button.dataset.rateStep),3,20);renderTriggerControls();saveProfiles();});
+  $('#burst-spacing').addEventListener('change',e=>{const c=profile().inputEffects;c.spacingMs=clamp(Math.round(+e.target.value||251),50,1000);c.kickMs=Math.min(c.kickMs||95,c.spacingMs-20);renderTriggerControls();saveProfiles();});
+  $('#burst-kick').addEventListener('change',e=>{const c=profile().inputEffects;c.kickMs=clamp(Math.round(+e.target.value||95),20,250);c.spacingMs=Math.max(c.spacingMs||Math.round(1000/(c.rate??10)),c.kickMs+20);renderTriggerControls();saveProfiles();});
+  bindRangeNumber('#click-threshold','#click-threshold-number');bindRangeNumber('#click-strength','#click-strength-number');
   $('#click-enabled').addEventListener('change',e=>{profile().inputEffects.enabled=e.target.checked;saveProfiles();});
   $('#click-threshold').addEventListener('input',e=>{profile().inputEffects.threshold=+e.target.value/100;$('#click-threshold-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
   $('#click-strength').addEventListener('input',e=>{profile().inputEffects.strength=+e.target.value;$('#click-strength-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
-  $('#apply-triggers').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration();const p=profile();for(const side of ['left','right']){const t=p.triggers[side],map=motorZones[side];if(t.mode==='bow')t.releasePoint=validMotorZones(map)?map[t.endZone??9]:clamp((t.endZone??9)/10,.2,.97);}if(await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right}))send({action:'setInputEffects',enabled:!!p.inputEffects.enabled,threshold:p.inputEffects.threshold,strength:p.inputEffects.strength,kind:p.inputEffects.kind||'click',rate:p.inputEffects.rate??10});});
+  $('#apply-triggers').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration();const p=profile();for(const side of ['left','right']){const t=p.triggers[side],map=motorZones[side];if(t.mode==='bow')t.releasePoint=validMotorZones(map)?map[t.endZone??9]:clamp((t.endZone??9)/10,.2,.97);}if(await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right}))send({action:'setInputEffects',enabled:!!p.inputEffects.enabled,threshold:p.inputEffects.threshold,strength:p.inputEffects.strength,kind:p.inputEffects.kind||'click',rate:p.inputEffects.rate??10,spacingMs:p.inputEffects.spacingMs??0,kickMs:p.inputEffects.kickMs??0});});
   $('#reset-effects').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration(false);send({action:'reset'});});
 
   function renderHapticControls(){
@@ -1138,7 +1168,7 @@
   $('#alert-ping').addEventListener('click',()=>send({action:'playHaptic',shape:'sine',frequency:125,attack:5,release:160,strength:26,pan:0}));
   $('#alert-ping').insertAdjacentHTML('afterend','<button id="speaker-chirp" class="quiet-action" type="button" disabled title="Play a test tone through the controller speaker over USB">Speaker test · USB</button>');
   $('.alert-body > div > p').textContent='Low battery and timer alerts tap the grips. Find my pad taps them now. Speaker chirp uses the controller speaker over USB. Reset, disconnect, or exit to stop alerts.';
-  let speakerSound=null,speakerDecoded=null,speakerTrackDuration=0,speakerClipDuration=0,speakerClipStart=0,speakerStartedAt=0,speakerPending=false,speakerNextChunkStart=0,speakerChunkPending=false,speakerRoute='speaker',speakerScale=1,speakerGeneration=0,speakerPaused=false,speakerElapsed=0;
+  let speakerSound=null,speakerDecoded=null,speakerTrackDuration=0,speakerClipDuration=0,speakerClipStart=0,speakerStartedAt=0,speakerPending=false,speakerNextChunkStart=0,speakerChunkPending=false,speakerRoute='speaker',speakerScale=1,speakerGeneration=0,speakerPaused=false,speakerElapsed=0,speakerScrubbing=false;
   function renderSpeakerTransport(){const button=$('#speaker-file-play');button.textContent=speakerPending?'Starting…':speakerStartedAt?'Pause':speakerPaused?'Resume':'Play';button.disabled=speakerPending||!speakerDecoded||!state.connected||state.transport!=='USB';}
   function stopSpeakerPlayback(){speakerGeneration++;speakerStartedAt=0;speakerPending=false;speakerChunkPending=false;speakerPaused=false;speakerElapsed=0;$('#speaker-start').disabled=!speakerDecoded;$('#speaker-file-stop').disabled=true;renderSpeakerTransport();send({action:'stopSpeakerSound'});}
   async function testSpeaker(){stopSpeakerPlayback();$('#speaker-file-status').textContent='Playing speaker test';await send({action:'playSpeakerChirp'});}
@@ -1154,7 +1184,7 @@
     $('#speaker-time').textContent=`${soundTime(position)} / ${soundTime(speakerTrackDuration)}`;
     $('#speaker-progress').max=Math.max(speakerTrackDuration,1);
     $('#speaker-progress').value=position;
-    if(document.activeElement!==$('#speaker-start')){$('#speaker-start').value=String(position);$('#speaker-start-value').textContent=soundTime(position);}
+    if(!speakerScrubbing){$('#speaker-start').value=String(position);$('#speaker-start-value').textContent=soundTime(position);}
     if(speakerStartedAt&&elapsed>=speakerClipDuration){speakerStartedAt=0;$('#speaker-start').disabled=+$('#speaker-start').max<=0;$('#speaker-file-stop').disabled=true;$('#speaker-file-status').textContent='Finished';}
     else if(speakerStartedAt&&speakerNextChunkStart<speakerTrackDuration&&position>=speakerNextChunkStart-6)queueSpeakerChunk();
     renderSpeakerTransport();
@@ -1221,8 +1251,12 @@
       $('#speaker-file-status').title=file.name;
     }catch(error){$('#speaker-file-status').textContent=`Could not read sound: ${error.message}`;}
   });
+  $('#speaker-start').addEventListener('pointerdown',()=>speakerScrubbing=true);
+  $('#speaker-start').addEventListener('keydown',()=>speakerScrubbing=true);
+  $('#speaker-start').addEventListener('blur',()=>speakerScrubbing=false);
+  window.addEventListener('pointerup',()=>speakerScrubbing=false);
   $('#speaker-start').addEventListener('input',e=>{$('#speaker-start-value').textContent=soundTime(+e.target.value);});
-  $('#speaker-start').addEventListener('change',e=>{const playing=!!speakerStartedAt,position=+e.target.value;stopSpeakerPlayback();speakerClipStart=position;prepareSpeakerSound();if(playing)$('#speaker-file-play').click();});
+  $('#speaker-start').addEventListener('change',e=>{speakerScrubbing=false;const playing=!!speakerStartedAt,position=+e.target.value;stopSpeakerPlayback();speakerClipStart=position;prepareSpeakerSound();if(playing)$('#speaker-file-play').click();});
   $('#speaker-file-play').addEventListener('click',async()=>{if(!speakerDecoded)return;if(speakerStartedAt||speakerPaused){await send({action:'setSpeakerPaused',paused:!speakerPaused});return;}stopSpeakerPlayback();prepareSpeakerSound();speakerPending=true;speakerRoute=$('#speaker-route').value;$('#speaker-file-stop').disabled=false;renderSpeakerTransport();if(!await send({action:'playSpeakerSound',pcmBase64:speakerSound,route:speakerRoute}))speakerPending=false;renderSpeakerTransport();});
   $('#speaker-file-stop').addEventListener('click',()=>{stopSpeakerPlayback();$('#speaker-file-status').textContent='Stopped';renderSpeakerProgress();});
   $('#speaker-route').addEventListener('change',()=>{if(speakerStartedAt||speakerPaused||speakerPending){stopSpeakerPlayback();$('#speaker-file-status').textContent='Output changed. Press Play.';}});

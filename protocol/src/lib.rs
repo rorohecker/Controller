@@ -38,10 +38,23 @@ pub struct TriggerSetting {
     pub force_cap: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub release_point: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preload_strength: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frequency_hz: Option<u8>,
 }
 
 impl TriggerSetting {
     pub fn validate(&self) -> Result<(), &'static str> {
+        if self
+            .preload_strength
+            .is_some_and(|value| !value.is_finite() || !(0.0..=100.0).contains(&value))
+        {
+            return Err("Load tension must be between 0 and 100 percent");
+        }
+        if self.frequency_hz == Some(0) {
+            return Err("Trigger pulse rate must be at least 1 Hz");
+        }
         if self
             .release_point
             .is_some_and(|point| !point.is_finite() || !(0.1..=1.0).contains(&point))
@@ -374,7 +387,7 @@ pub fn encode_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str
             block[1..3].copy_from_slice(&active.to_le_bytes());
             block[3..7].copy_from_slice(&packed.to_le_bytes());
             if setting.mode == "vibration" {
-                block[9] = 45;
+                block[9] = setting.frequency_hz.unwrap_or(45);
             }
         }
         "weapon" => {
@@ -686,6 +699,22 @@ mod tests {
         assert_eq!(rumble_flags(Some(0x0214), false), (0x03, 0));
         assert_eq!(rumble_flags(Some(0x0215), false), (0x02, 0x04));
         assert_eq!(rumble_flags(None, true), (0x02, 0x04));
+    }
+
+    #[test]
+    fn vibration_preserves_custom_frequency_and_rejects_zero() {
+        let mut setting = TriggerSetting {
+            mode: "vibration".into(),
+            strength: 100.0,
+            curve: vec![1.0; 11],
+            frequency_hz: Some(17),
+            ..TriggerSetting::default()
+        };
+        let block = encode_trigger(&setting).unwrap();
+        assert_eq!(block[0], 0x26);
+        assert_eq!(block[9], 17);
+        setting.frequency_hz = Some(0);
+        assert!(encode_trigger(&setting).is_err());
     }
 
     #[test]
