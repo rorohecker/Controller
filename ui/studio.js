@@ -152,7 +152,7 @@
 
   // Native saves snapshot the previous archive. Browser previews keep the same bounded history.
   const backupCard = card("Profile recovery", "profile-recovery");
-  $("#profiles").append(backupCard.box);
+  $(".profile-library-column").append(backupCard.box);
   const backupList = node("div", { id: "backup-list", class: "studio-list" }),
     backupStatus = text(
       "Backups stay on this computer. The newest 20 are kept.",
@@ -454,7 +454,7 @@
   triggerToolbar.after(guide);
   // Reset a single control to its saved profile value, without touching other settings.
   const resetControl = button(
-    "Reset focused control",
+    "Reset value",
     () => {
       const target = lastTriggerControl;
       if (!target || !target.isConnected) return;
@@ -477,7 +477,7 @@
   triggerToolbar.append(resetControl);
 
   const steamCard = card("Installed Steam games", "steam-games");
-  $("#profiles").append(steamCard.box);
+  $(".profile-library-column").append(steamCard.box);
   const steamStatus = text(
       "Find games installed through Steam and choose the executable for this profile.",
     ),
@@ -1413,7 +1413,7 @@
     }
   });
   const prefs = card("Display", "display-preferences");
-  $("#settings").append(prefs.box);
+  $(".settings-grid").append(prefs.box);
   for (const [key, name, cls] of [
     ["reducedMotion", "Reduce decorative motion", "studio-reduced-motion"],
   ]) {

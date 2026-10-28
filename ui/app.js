@@ -239,7 +239,7 @@
   const calibrationStages=[
     {label:'1. Capture rest',instruction:'Release both triggers and leave the sticks centered. Capture when the values settle.',action:'Capture rest'},
     {label:'2. Rotate both sticks',instruction:'Rotate each stick around its full rim until left, right, up, and down are all captured.',action:'Continue to triggers'},
-    {label:'3. Press and release both triggers',instruction:'Pull L2 and R2 fully, then release each one. The highest reported byte is recorded on release.',action:'Continue to touchpad'},
+    {label:'3. Press and release both triggers',instruction:'Pull each trigger fully, then release it to record the peak.',action:'Continue to touchpad'},
     {label:'4. Trace the touchpad',instruction:'Touch each marked corner, then slide along the edges. Each corner turns green when captured.',action:'Save calibration'}
   ];
   function restValues(run){
@@ -270,7 +270,7 @@
       const ranges=axes.map((name,i)=>`${name} ${Math.round(run.axisMins[i]*100)} to ${Math.round(run.axisMaxs[i]*100)}%`).join(' · ');
       return `${ranges}. ${missing.length?`Still waiting for full travel: ${missing.join(', ')}.`:'All four stick directions captured. Continue when ready.'}`;
     }
-    if(run.stage===2)return `Peak report bytes: L2 ${Math.round(run.triggerFulls[0]*255)}/255, R2 ${Math.round(run.triggerFulls[1]*255)}/255. ${calibrationReady(run)?'Ready to continue.':'Pull and release both triggers.'}`;
+    if(run.stage===2)return `Recorded peaks: L2 ${Math.round(run.triggerFulls[0]*255)}/255, R2 ${Math.round(run.triggerFulls[1]*255)}/255. ${calibrationReady(run)?'Ready to continue.':'Pull and release both triggers.'}`;
     const x=run.touchMaxs[0]-run.touchMins[0],y=run.touchMaxs[1]-run.touchMins[1];
     const corners=Object.values(run.touchCorners).filter(Boolean).length;
     return `Touch corners ${corners}/4 · horizontal ${Math.max(0,Math.round(x*100))}% · vertical ${Math.max(0,Math.round(y*100))}%. ${calibrationReady(run)?'Ready to save.':'Touch each remaining corner.'}`;
@@ -289,9 +289,16 @@
       $('#next-calibration').textContent=step.action;
       $('#calibration-fill').style.width=`${run.stage*25}%`;
       $('#cal-range-feedback').textContent=calibrationFeedback(run);
-      $('#calibration-status').textContent=`Step ${run.stage+1} of 4. You choose when to continue.`;
+      $('#calibration-status').textContent=`Step ${run.stage+1} of 4`;
     }
     $('.calibration-work').dataset.stage=run?String(run.stage):'idle';
+    const saved=!run&&$('#calibration-fill').style.width==='100%';
+    $$('[data-cal-step]').forEach(el=>{
+      const step=Number(el.dataset.calStep),active=!!run&&step===run.stage;
+      el.classList.toggle('is-current',active);
+      el.classList.toggle('is-complete',saved||!!run&&step<run.stage);
+      if(active)el.setAttribute('aria-current','step');else el.removeAttribute('aria-current');
+    });
   }
   function sampleCalibration(input){
     const axes=input.axes||[0,0,0,0],buttons=input.buttons||Array(23).fill(0),point=input.touch?.find(Boolean);
@@ -346,9 +353,9 @@
     try{localStorage.setItem('aftertouch.inputCalibration',JSON.stringify(candidate));}catch{}
     $('#calibration-fill').style.width='100%';
     $('#calibration-step').textContent='Calibration saved';
-    $('#calibration-instruction').textContent='Measured ranges now shape live input, pointer control, and trigger percentages.';
+    $('#calibration-instruction').textContent='Your ranges are applied to input and pointer controls.';
     $('#cal-range-feedback').textContent=`Sticks, both triggers, and touchpad ranges captured.`;
-    $('#calibration-status').textContent='Custom calibration saved locally and applied to this controller.';
+    $('#calibration-status').textContent='Calibration saved on this computer.';
     renderCalibrationStatus();
   }
   $('#start-calibration').addEventListener('click',async()=>{
@@ -365,14 +372,14 @@
   });
   $('#cancel-calibration').addEventListener('click',()=>{
     calibrationRun=null;sendCalibration();$('#calibration-step').textContent='Calibration canceled';
-    $('#calibration-instruction').textContent='Previous ranges restored. Start again whenever you are ready.';
+    $('#calibration-instruction').textContent='Previous ranges restored. Start again to retry.';
     $('#cal-range-feedback').textContent='No new ranges were saved.';
     $('#calibration-status').textContent='Previous ranges restored.';renderCalibrationStatus();
   });
   $('#reset-calibration').addEventListener('click',()=>{
     inputCalibration=null;try{localStorage.removeItem('aftertouch.inputCalibration');}catch{}
     sendCalibration();$('#calibration-step').textContent='Default ranges restored';
-    $('#calibration-status').textContent='No custom calibration saved.';$('#calibration-fill').style.width='0%';renderCalibrationStatus();
+    $('#calibration-status').textContent='Using default ranges.';$('#calibration-fill').style.width='0%';renderCalibrationStatus();
   });
   function savePcBindings(){
     try{
@@ -503,7 +510,7 @@
     $('strong',button).textContent=enabled?'PC control':'Game mode';
     $('#input-mode-help').textContent=!state.platformDesktopInput?'Desktop control is unavailable in this session.':enabled
       ?'Touchpad: pointer. Right stick: scroll. L2/R2: clicks. Edit shortcuts under PC controls.'
-      :'Game mode: games receive input. PC control: pad controls this app and the desktop.';
+      :'Game mode sends input to games. Switch to PC control for desktop shortcuts.';
     if(!enabled){padNavPrev=null;clearPadFocus();}
   }
   $('#input-mode-toggle').addEventListener('click',()=>send({action:'setPcMode',enabled:!state.pcMode}));
@@ -1169,7 +1176,19 @@
     input.value=clamp(+input.value+Number(direction),+input.min,+input.max);
     input.dispatchEvent(new Event('input',{bubbles:true}));
   });
-  function fillRange(el){const f=(+el.value-(+el.min||0))/((+el.max||100)-(+el.min||0))*100;el.style.setProperty('--fill',`${f}%`);}
+  const rangeFills=new WeakMap();
+  function fillRange(el){
+    const min=el.min===''?0:Number(el.min),max=el.max===''?100:Number(el.max);
+    const ratio=max>min?clamp((Number(el.value)-min)/(max-min)):0;
+    if(rangeFills.get(el)===ratio)return;
+    rangeFills.set(el,ratio);
+    el.style.setProperty('--range-ratio',String(ratio));
+    el.style.setProperty('--fill',`${ratio*100}%`);
+  }
+  function syncRangeFills(){
+    $$('.screen.is-current input[type="range"]').forEach(fillRange);
+  }
+  document.addEventListener('input',event=>{if(event.target.matches('input[type="range"]'))fillRange(event.target);});
   $('#trigger-strength').addEventListener('input',e=>{trigger().strength=+e.target.value;renderTriggerStrength(trigger());fillRange(e.target);saveProfiles();});
   function bindRangeNumber(rangeId,numberId,offset=0){
     const range=$(rangeId),number=$(numberId);
@@ -1710,7 +1729,7 @@
     renderZoneCalibration();
     if(!connected&&wasCalibrating){
       $('#calibration-step').textContent='Controller disconnected';
-      $('#calibration-instruction').textContent='Reconnect and start the guide again. No incomplete ranges were saved.';
+      $('#calibration-instruction').textContent='Reconnect to start again. Previous ranges are unchanged.';
       $('#calibration-status').textContent='Calibration stopped.';
       $('#calibration-fill').style.width='0%';
     }
@@ -2050,7 +2069,7 @@
       toast(event.message);log(event.message);
     }
   }
-  let lastCanvas=0;function frame(now){if(!document.hidden&&now-lastCanvas>50){if(state.packet!==state.lastFramePacket){renderInput();if(state.currentView==='live')drawActivity();state.lastFramePacket=state.packet;}if(state.currentView==='haptics'||now<state.playUntil)drawWave(now);if(state.leaseUntil>now||state.lastLeaseDraw){renderSession();state.lastLeaseDraw=state.leaseUntil>now;}if(state.currentView==='haptics'&&state.timerUntil)renderAlerts();if(state.currentView==='haptics'&&speakerStartedAt)renderSpeakerProgress(now);updateStickTest(now);if(state.telemetryOn&&state.telemetryLast&&now-state.telemetryLast>1500)$('#telemetry-status').textContent='Listening · waiting for telemetry';lastCanvas=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
+  let lastCanvas=0;function frame(now){if(!document.hidden&&now-lastCanvas>50){syncRangeFills();if(state.packet!==state.lastFramePacket){renderInput();if(state.currentView==='live')drawActivity();state.lastFramePacket=state.packet;}if(state.currentView==='haptics'||now<state.playUntil)drawWave(now);if(state.leaseUntil>now||state.lastLeaseDraw){renderSession();state.lastLeaseDraw=state.leaseUntil>now;}if(state.currentView==='haptics'&&state.timerUntil)renderAlerts();if(state.currentView==='haptics'&&speakerStartedAt)renderSpeakerProgress(now);updateStickTest(now);if(state.telemetryOn&&state.telemetryLast&&now-state.telemetryLast>1500)$('#telemetry-status').textContent='Listening · waiting for telemetry';lastCanvas=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
   const keyMap={j:2,k:0,l:1,i:3,q:4,e:5,z:6,c:7,ArrowUp:12,ArrowDown:13,ArrowLeft:14,ArrowRight:15};
   const held=new Set();window.addEventListener('keydown',e=>{if(state.connected||e.ctrlKey||e.metaKey||e.altKey||e.target.matches('input,textarea,button,select'))return;if(!(e.key in keyMap))return;held.add(e.key);state.buttons[keyMap[e.key]]=1;renderInput();});
   window.addEventListener('keyup',e=>{if(!(e.key in keyMap)||state.connected)return;held.delete(e.key);state.buttons[keyMap[e.key]]=0;renderInput();});

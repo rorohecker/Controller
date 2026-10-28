@@ -1,0 +1,313 @@
+/* Shared card surfaces. Artwork stays in the trim, clear of controls. */
+.screen {
+  --scene-position: 60% 44%;
+  --card-ink: #293d43;
+}
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+#triggers { --scene-position: 23% 64%; --slider-color: #b66b4a; }
+#haptics { --scene-position: 68% 32%; --slider-color: #8c659f; }
+#touch { --scene-position: 2% 65%; --slider-color: #237d70; }
+#pc-controls { --scene-position: 85% 46%; --slider-color: #626c9c; }
+#lights { --scene-position: 52% 68%; --slider-color: #9a692d; }
+#profiles { --scene-position: 22% 50%; --slider-color: #617b44; }
+#calibration { --scene-position: 80% 46%; --slider-color: #956080; }
+#settings { --scene-position: 34% 68%; }
+#diagnostics { --scene-position: 75% 28%; }
+
+.workspace {
+  background-image: linear-gradient(180deg, #e6eeebd9, #dce7e3e0), url('./assets/observatory-pixel.png');
+}
+.screen:not(#live) > .page-heading {
+  padding: 4px 0 16px;
+  margin-bottom: 18px;
+  grid-template-columns: minmax(0, 1fr) minmax(200px, 310px);
+  gap: 16px;
+}
+.screen:not(#live) .page-heading h1 { font-size: clamp(28px, 3vw, 40px); }
+.page-heading p { font-size: 13px; line-height: 1.5; }
+.framed { box-shadow: 3px 4px 0 #20323828, 0 10px 24px #1e30362b, 0 0 16px color-mix(in srgb, var(--panel-accent) 24%, transparent); }
+.framed::before { opacity: .45; }
+.work-panel {
+  color-scheme: light;
+  color: var(--card-ink);
+  background: linear-gradient(115deg, #fffcf5 10%, color-mix(in srgb, var(--panel-tint, #eadcc9) 55%, #f9f7ef));
+}
+.controls-panel { color-scheme: dark; }
+.framed > .panel-cap,
+.framed > .module-topline {
+  min-height: 44px;
+  gap: 12px;
+  color: #fff1da;
+  background-image: linear-gradient(90deg, #292c32ed, #353139d6 48%, #282c3866), url('./assets/observatory-pixel.png');
+  background-size: cover, 760px auto;
+  background-position: center, var(--scene-position, 60% 42%);
+  border-bottom: 1px solid color-mix(in srgb, var(--panel-accent) 60%, #39454b);
+  text-shadow: 0 1px 3px #10141e;
+  letter-spacing: .07em;
+  font-size: 10px;
+}
+.framed > .panel-cap > span:last-child,
+.framed > .module-topline > span:last-child { color: #f4dfba; }
+.panel-cap.sub { background: #e4e8dc; color: #455c58; letter-spacing: .06em; }
+.work-panel .control-label,
+.work-panel .check-row { color: #40525b; }
+.work-panel .control-label b { color: #785037; }
+.work-panel .quiet-action,
+.preset-library .quiet-action {
+  color: #3e454e;
+  background: #e9e6dc;
+  border-color: #929a9d;
+}
+.work-panel .quiet-action:hover:not(:disabled),
+.preset-library .quiet-action:hover:not(:disabled) { background: #ead8b9; border-color: #91704e; }
+.work-panel button:disabled,
+.preset-library button:disabled {
+  opacity: 1 !important;
+  color: #737779;
+  background: #e2e2dc;
+  border-color: #bdc3bf;
+  box-shadow: none;
+}
+.controls-panel .control-label { color: #e2dcd0; }
+.controls-panel .control-label b { color: #ffe0ad; }
+.controls-panel p { color: #dedbd0; }
+.controls-panel .quiet-action { color: #f1e9db; border-color: #b5b5a280; }
+
+/* A 16px thumb travels inside the track. The fill ends at its center. */
+input[type='range']:not(#speaker-start) {
+  --slider-color: #6fada3;
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0;
+  margin: 4px 0 10px;
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.work-panel input[type='range']:not(#speaker-start) { --slider-color: inherit; }
+input[type='range']:not(#speaker-start)::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, var(--slider-color, #626c9c) 0 calc(8px + (100% - 16px) * var(--range-ratio, 0)), #8a939377 calc(8px + (100% - 16px) * var(--range-ratio, 0)) 100%);
+  box-shadow: inset 0 1px 2px #24363724;
+}
+input[type='range']:not(#speaker-start)::-webkit-slider-thumb {
+  appearance: none;
+  width: 16px;
+  height: 20px;
+  margin-top: -7px;
+  border-radius: 4px;
+  background: #ffe2ae;
+  border: 2px solid #35454e;
+  box-shadow: 0 2px 3px #26323926;
+}
+input[type='range']:not(#speaker-start)::-moz-range-track { height: 6px; background: #8a939377; border-radius: 6px; }
+input[type='range']:not(#speaker-start)::-moz-range-progress { height: 6px; background: var(--slider-color, #626c9c); border-radius: 6px; }
+input[type='range']:not(#speaker-start)::-moz-range-thumb { width: 12px; height: 16px; border: 2px solid #35454e; border-radius: 4px; background: #ffe2ae; }
+input[type='range']:disabled { cursor: not-allowed; opacity: .65; }
+
+/* Presets: group the selection and save actions instead of wrapping one button. */
+.preset-library { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; padding: 16px; }
+.preset-library > div { grid-column: 1 / -1; }
+.preset-library > div p { margin: 4px 0 2px; }
+.preset-library > label { align-self: center; font-size: 12px; }
+.preset-library input { width: 100%; }
+#trigger-preset-name { grid-column: 1; }
+.studio-guide { padding: 12px 16px; }
+.trigger-tools { gap: 7px; }
+.curve-paper { margin: 12px 12px 0; }
+.curve-card-heading { padding-top: 8px; }
+.curve-card-heading span { font-size: 11px; }
+
+/* Compose an effect without scrolling past an oversized waveform. */
+.haptic-composer { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 16px; align-items: start; }
+.haptic-preview-column { grid-column: 1; grid-row: 1; min-width: 0; align-self: stretch; display: flex; flex-direction: column; }
+.haptic-preview-column > .waveform-panel { flex: 1; margin-bottom: 10px; display: grid; grid-template-rows: 44px minmax(180px, 1fr) auto; }
+.haptic-preview-column > .haptic-pc-audio { margin: 0; }
+.haptic-composer > .haptic-grid { display: contents; }
+.haptic-grid > .work-panel:first-child { grid-column: 2; grid-row: 1; }
+.haptic-grid > .work-panel:last-child { grid-column: 1 / -1; grid-row: 2; margin-top: 14px; }
+.wave-stage { min-height: 180px; height: auto; }
+.texture-list { display: flex; flex-wrap: wrap; }
+.texture-list button { flex: 1 1 130px; min-width: 0; min-height: 90px; padding: 12px; background: #494253; }
+.texture-list button:nth-child(3n+2) { background: #38514b; }
+.texture-list button:nth-child(3n) { background: #544638; }
+.texture-list button:hover { background: #6c6476; }
+.texture-list strong { font-size: 17px; margin-bottom: 4px; }
+.speaker-content { grid-template-columns: minmax(0, 1fr) minmax(240px, .75fr); gap: 20px; padding: 20px; }
+.speaker-progress { max-width: none; margin-top: 22px; }
+.speaker-timeline progress { left: 8.5px; width: calc(100% - 17px); }
+.speaker-content input[type='file'] { font-size: 12px; }
+.bridge-body, .alert-body { padding: 20px; gap: 20px; }
+.bridge-body h2, .alert-body h2 { font-size: 25px; }
+.alert-controls .check-row { color: #40525b; }
+
+/* Touch space matches the physical pad; settings share the row below. */
+#touch > .split-layout { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+#touch .touch-work { grid-column: 1 / -1; grid-row: 1; }
+#touch .touch-plane { aspect-ratio: auto; height: clamp(180px, 18vw, 260px); background: #dbe6dc; }
+#touch .touch-pointer-settings { grid-column: 1; grid-row: 2; }
+#touch > .split-layout > aside { grid-column: 2; grid-row: 2; }
+#touch .touch-compatibility { grid-column: 1 / -1; grid-row: 3; }
+#touch .motion-inner { padding: 18px; }
+
+.pc-overview { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.pc-overview .pc-work { margin-bottom: 16px; }
+.pc-mouse-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-bottom: 12px; }
+.pc-mouse-summary > div { padding: 9px 10px; background: #ffffff61; }
+.pc-binding { padding: 10px; border: 1px solid #9bada85c; border-left: 3px solid #ad9eb9; border-radius: 5px; background: #fffcf572; grid-template-columns: 90px minmax(150px, .7fr) minmax(0, 1.5fr); gap: 10px; }
+.pc-binding:nth-child(3n+2) { border-left-color: #83ada0; }
+.pc-binding:nth-child(3n) { border-left-color: #c4a878; }
+.pc-binding .quiet-action { min-height: 34px; }
+.pc-key-editor .pc-record { flex-basis: 120px; }
+.pc-key-editor select { flex-basis: 100px; }
+.pc-work > p { line-height: 1.6; }
+
+/* Give the profile editor room; put library tools beside it. */
+.profile-layout { grid-template-columns: minmax(250px, .65fr) minmax(0, 1.35fr); }
+.profile-library-column { display: grid; gap: 16px; min-width: 0; }
+.profile-library-column .studio-card { margin: 0; }
+.profile-library-column .studio-body { padding: 16px; }
+.profile-list { min-height: 0; max-height: 460px; overflow-y: auto; }
+.profile-row { grid-template-columns: 22px minmax(0, 1fr) 16px; padding: 12px; }
+.profile-row strong { font-size: 17px; overflow-wrap: anywhere; }
+.profile-editor { padding: 18px; }
+.profile-stamp { font-size: 23px; padding: 0 0 12px; border-top: 0; }
+.profile-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px 16px; }
+.profile-field { min-width: 0; }
+.profile-field:has(#profile-match), .profile-auto, .detected-app, .learn-process { grid-column: 1 / -1; }
+.profile-field:has(#profile-match) { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 14px; }
+.profile-field:has(#profile-match) label { margin-top: 12px; }
+.profile-field label[for='profile-match'] { grid-column: 1; grid-row: 1; }
+#profile-match { grid-column: 1; grid-row: 2; }
+.profile-field label[for='profile-match-title'] { grid-column: 2; grid-row: 1; }
+#profile-match-title { grid-column: 2; grid-row: 2; }
+.profile-field label[for='profile-match-path'], #profile-match-path { grid-column: 1 / -1; }
+#learn-process-path { grid-column: 1 / -1; margin-top: 8px; }
+.profile-fields .control-label { font-size: 10px; line-height: 1.5; }
+.profile-fields > .detected-app { margin: 0; }
+.profile-editor .profile-auto { margin: 0; }
+.profile-editor textarea { min-height: 82px; }
+.profile-library-column .steam-game-row { grid-template-columns: minmax(0, 1fr); }
+.profile-library-column .studio-list-row { flex-wrap: wrap; }
+.game-section-head p { max-width: 78ch; }
+.game-content h2 { font-size: 21px; }
+.game-templates { background: linear-gradient(100deg, #fcf5ddf5, #dfebd6f5); }
+
+/* Calibration: a persistent guide beside live measurements. */
+.calibration-work { max-width: none; padding: 0; }
+.calibration-work > .panel-cap { margin: 0; }
+.calibration-layout { display: grid; grid-template-columns: minmax(250px, .72fr) minmax(0, 1.5fr); }
+.calibration-guide { padding: 24px; background: linear-gradient(180deg, #f4e9dc, #e7dcdf); border-right: 1px solid #bcaeb980; }
+.calibration-guide h2 { font-size: 25px; line-height: 1.2; }
+.calibration-guide p { font-size: 13px; line-height: 1.6; color: #4b5b63; }
+.calibration-steps { list-style: none; padding: 0; margin: 22px 0; display: grid; gap: 8px; }
+.calibration-steps li { display: flex; align-items: center; gap: 12px; padding: 10px; border: 1px solid #aa9bb45c; border-radius: 5px; }
+.calibration-steps li > span { font: 14px var(--pixel); color: #805e7e; }
+.calibration-steps strong { display: block; font-size: 13px; }
+.calibration-steps small { display: block; font-size: 11px; color: #56616b; margin-top: 2px; }
+.calibration-steps .is-current { background: #fff6df; border-color: #a37d45; box-shadow: 3px 0 0 #e5b769 inset; }
+.calibration-steps .is-complete { background: #dce7dc; border-color: #9eb5a0; }
+.calibration-steps .is-complete > span { color: #386954; }
+.calibration-progress { margin: 18px 0; background: #c7bdc6; }
+.calibration-progress i { background: linear-gradient(90deg, #a6799b, #e2ad6d); }
+.calibration-actions { gap: 8px; }
+.calibration-actions .main-action { flex: 1 1 100%; }
+.calibration-actions .quiet-action { flex: 1 1 90px; min-width: 0; }
+.calibration-guide .cal-range-feedback { min-height: 0; font-size: 12px; color: #714b63; }
+.calibration-help { margin-top: 20px; padding-top: 12px; border-top: 1px solid #aa9bb45c; font-size: 12px; color: #4e5761; }
+.calibration-help summary { cursor: pointer; font-weight: 650; }
+.calibration-help p { font-size: 12px; }
+.calibration-measurements { padding: 22px; min-width: 0; }
+.calibration-visual { grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0 0 16px; gap: 12px; }
+.calibration-visual > div { padding: 14px; background: #e4ebe4; border-color: #9fb5ad; }
+.calibration-visual > div:nth-child(n+3) { background: #ece2d7; border-color: #b8a591; }
+.calibration-visual span { color: #405b59; font-size: 11px; }
+.cal-stick-target { width: min(100%, 156px); height: auto; aspect-ratio: 1; margin: 12px auto 2px; }
+.cal-adc-card { min-height: 124px; }
+.cal-adc-track { margin: 18px 0 10px; }
+.cal-adc-card strong { font: 600 19px var(--mono); }
+.calibration-live { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; margin: 0 0 18px; }
+.calibration-live > div { padding: 10px 8px; background: #fffaf0; border-color: #b9bcad; }
+.calibration-live span { color: #59635f; font-size: 10px; }
+.calibration-live strong { font-size: 15px; }
+.calibration-touch-field { height: auto; aspect-ratio: 3 / 1; margin-top: 8px; background-color: #dfe8df; }
+
+.settings-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.settings-card { min-height: 0; }
+.settings-content { padding: 20px; position: relative; }
+.settings-content h2 { font-size: 22px; }
+.settings-content p { line-height: 1.6; font-size: 13px; }
+.settings-grid .studio-card { margin: 0; }
+.settings-grid .studio-body { padding: 20px; }
+.settings-status { font-size: 12px; margin: 12px 0; }
+.settings-content::after { content: ''; display: block; height: 48px; margin: 20px -20px -20px; background: linear-gradient(0deg, #3c3c4c10, #f5e7dd38), url('./assets/observatory-pixel.png') var(--scene-position)/600px auto; border-top: 1px solid #b8ab9766; opacity: .85; }
+#display-preferences .studio-body::before { content: ''; display: block; height: 72px; margin: -20px -20px 20px; background: url('./assets/observatory-pixel.png') 55% 30%/650px auto; border-bottom: 1px solid #d3b794; }
+.diag-device { padding: 16px; }
+.diag-readouts b { font-size: 19px; }
+.diag-readouts > div { padding: 12px; }
+.diag-side .diag-explainer { color: #dadbd1; }
+.event-log { min-height: 80px; }
+.diag-side .quiet-action { margin-top: 8px; }
+.studio-status-grid dt { color: #d6cdbf; }
+
+@media (max-width: 1200px) {
+  .settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settings-grid #display-preferences { grid-column: 1 / -1; }
+  #display-preferences .studio-body::before { height: 40px; }
+  .calibration-layout { grid-template-columns: minmax(230px, .7fr) minmax(0, 1.3fr); }
+  .calibration-guide, .calibration-measurements { padding: 18px; }
+  .calibration-live { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 1000px) {
+  .haptic-composer { grid-template-columns: minmax(0, 1fr); }
+  .haptic-grid > .work-panel:first-child { grid-column: 1; grid-row: 2; margin-top: 14px; }
+  .haptic-grid > .work-panel:last-child { grid-column: 1; grid-row: 3; }
+  .wave-stage { height: 180px; }
+  .profile-layout { grid-template-columns: minmax(220px, .65fr) minmax(0, 1.35fr); }
+  .profile-fields { grid-template-columns: minmax(0, 1fr); }
+  .pc-overview { grid-template-columns: minmax(0, 1fr); }
+  .pc-mouse-summary { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .pc-binding { grid-template-columns: 75px minmax(0, 1fr); }
+  .pc-binding > .pc-key-editor, .pc-binding > .pc-launch-editor, .pc-binding > input { grid-column: 1 / -1; }
+  .preset-library { grid-template-columns: minmax(0, 1fr) auto auto; }
+}
+@media (max-width: 740px) {
+  .screen:not(#live) > .page-heading { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .page-heading p { max-width: none; }
+  .calibration-layout, .profile-layout, .settings-grid { grid-template-columns: minmax(0, 1fr); }
+  .calibration-guide { border-right: 0; border-bottom: 1px solid #bcaeb980; }
+  .calibration-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .calibration-steps li { gap: 8px; padding: 8px; }
+  .calibration-steps small { display: none; }
+  .calibration-live { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .calibration-actions .main-action { flex-basis: 150px; }
+  .calibration-guide .cal-range-feedback { font-size: 12px; }
+  #touch > .split-layout { grid-template-columns: minmax(0, 1fr); }
+  #touch .touch-work, #touch .touch-pointer-settings, #touch > .split-layout > aside, #touch .touch-compatibility { grid-column: 1; grid-row: auto; }
+  #touch .touch-plane { aspect-ratio: 2 / 1; height: auto; }
+  .speaker-content, .bridge-body, .alert-body { grid-template-columns: minmax(0, 1fr); }
+  .haptic-composer > .haptic-grid { grid-template-columns: minmax(0, 1fr); }
+  .settings-grid #display-preferences { grid-column: 1; }
+  .settings-content::after { height: 36px; }
+}
+@media (max-width: 480px) {
+  .preset-library { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .preset-library > label, .preset-library > select, #trigger-preset-name { grid-column: 1 / -1; }
+  .preset-library input { width: 100%; }
+  .pc-mouse-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .calibration-guide, .calibration-measurements { padding: 14px; }
+  .calibration-visual { gap: 8px; }
+  .calibration-visual > div { padding: 10px; }
+  .calibration-live { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .profile-field:has(#profile-match) { display: block; }
+  .framed > .panel-cap { flex-wrap: wrap; padding-block: 10px; }
+  .framed > .panel-cap > span:last-child { font-size: 9px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .framed::before { animation: none; }
+}

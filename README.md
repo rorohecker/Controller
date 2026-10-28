@@ -100,6 +100,7 @@ PC controls support recorded keyboard combinations and direct application launch
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 python tests/ui_smoke.py
+python tests/layout_smoke.py
 python tests/update_manifest_smoke.py
 cargo build --bin controller
 python tests/script_smoke.py

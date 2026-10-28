@@ -1,5 +1,11 @@
 # Compatibility and test record
 
+## 0.15.2 interface checks
+
+The UI now uses pixel-art card headers, compact page layouts, and separate label colors for light and dark panels. Calibration uses the full page width, with a four-step guide beside live readings. The Profiles page places recovery and Steam tools beside the editor; Haptics groups its waveform, controls, and presets. Slider fills use each control's current range and meet the thumb center, including after loading a preset. The duplicate command shortcut label is removed.
+
+Browser checks cover all ten tabs at 390, 640, 900, 1280, and 1600 pixels, control text clipping, Calibration width, and rendered slider fill alignment. Existing UI, profile, macro, and platform visibility checks also pass. This pass changes presentation; it does not establish new controller or game compatibility.
+
 Last checked: 26 October 2026 on Windows 11. This page records observed results rather than expected support. A protocol unit test verifies report construction; it cannot prove that a particular controller firmware or game accepts an effect.
 
 | Setup | Input | Triggers and lightbar | Haptic audio | Game bridge |
