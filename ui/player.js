@@ -5,7 +5,8 @@
   const $ = id => document.getElementById(id);
   const format = n => `${Math.floor(n / 60)}:${String(Math.floor(n % 60)).padStart(2, '0')}`;
   class ControllerPlayer {
-    constructor(send, connected) {
+    constructor(send, connected, invoke = null) {
+      this.invoke = invoke; this.nativeFile = null;
       this.send = send; this.connected = connected; this.trackId = Date.now() * 1000;
       this.mode = 'stopped'; this.position = 0; this.base = 0; this.next = 0;
       this.duration = 0; this.decoded = null; this.chain = Promise.resolve();
@@ -14,6 +15,10 @@
       $('speaker-file-stop').addEventListener('click', () => this.stop());
       $('speaker-file').addEventListener('change', e => this.load(e.target.files[0]));
       $('speaker-route').addEventListener('change', () => this.stop());
+      $('speaker-content-kind').addEventListener('change', () => this.stop('Content changed. Press Play.'));
+      $('speaker-native-file').addEventListener('click', () => this.chooseNative());
+      const updatePicker=()=>{ $('speaker-file').hidden=!!window.controllerPlatform.nativeAudioFiles; };
+      document.addEventListener('controller-platform',updatePicker);updatePicker();
       const seek = $('speaker-start');
       seek.addEventListener('pointerdown', () => this.scrubbing = true);
       seek.addEventListener('keydown', () => this.scrubbing = true);
@@ -46,7 +51,7 @@
       const loadId = this.trackId;
       await pendingStop;
       if (loadId !== this.trackId) return;
-      this.decoded = null; this.duration = 0; this.render();
+      this.decoded = null; this.nativeFile = null; this.duration = 0; $('speaker-file-format').textContent=''; this.render();
       $('speaker-track-name').textContent = file?.name || 'Choose a track';
       $('speaker-track-name').title = file?.name || '';
       if (!file) return;
@@ -66,6 +71,19 @@
       } catch (error) {
         if (id === this.trackId) { this.mode = 'stopped'; $('speaker-file-status').textContent = `Could not read sound: ${error.message}`; }
       } finally { if (context) await context.close(); this.render(); }
+    }
+    async chooseNative() {
+      if(!this.invoke)return;
+      const button=$('speaker-native-file');button.disabled=true;
+      try {
+        const info=await this.invoke('choose_audio_file');if(!info)return;
+        await this.stop();
+        this.nativeFile=info;this.decoded={native:true};this.duration=info.duration;this.mode='stopped';
+        $('speaker-track-name').textContent=info.name;$('speaker-track-name').title=info.name;
+        $('speaker-file-format').textContent=`${info.channels===1?'Mono':'Stereo'} / ${(info.sampleRate/1000).toLocaleString(undefined,{maximumFractionDigits:3})} kHz`;
+        $('speaker-file-status').textContent='Ready';
+      } catch(error) { $('speaker-file-status').textContent=String(error); }
+      finally {button.disabled=false;this.render();}
     }
     encode(start) {
       const count = Math.min(144_000, Math.ceil((this.duration - start) * 48_000));
@@ -87,6 +105,13 @@
       this.route = $('speaker-route').value; this.base = position; this.position = position;
       this.mode = 'starting'; this.next = position; this.hasStream = false;
       $('speaker-file-status').textContent = 'Opening controller audio…'; this.render();
+      if(this.nativeFile){
+        const ok=await this.command({action:'playAudioFile',path:this.nativeFile.path,position,duration:this.duration,kind:$('speaker-content-kind').value,route:this.route,trackId:id},id);
+        if(id!==this.trackId)return;
+        if(!ok)this.stop('Could not start playback. Check Diagnostics.');
+        else this.hasStream=true;
+        return;
+      }
       const chunk = this.encode(position);
       if (!chunk) { this.stop('Finished'); return; }
       const ok = await this.command({action: 'playSpeakerSound', pcmBase64: chunk.pcmBase64, route: this.route, trackId: id}, id);
@@ -96,7 +121,7 @@
     }
     async toggle() {
       if (!this.decoded || !this.connected()) return;
-      if (this.mode === 'playing') {
+      if (['playing','buffering'].includes(this.mode)) {
         this.position = this.current(); this.mode = 'paused';
         $('speaker-file-status').textContent = 'Paused'; this.render();
         const id = this.trackId;
@@ -110,13 +135,13 @@
       }
     }
     seek(position) {
-      const playing = ['playing','starting'].includes(this.mode), paused = this.mode === 'paused';
+      const playing = ['playing','starting','buffering'].includes(this.mode), paused = this.mode === 'paused';
       this.stop(); this.position = Math.max(0, Math.min(this.duration, position)); this.scrubbing = false;
       if (playing && this.position < this.duration) this.startAt(this.position);
       else { this.mode = paused ? 'paused' : 'stopped'; $('speaker-file-status').textContent = paused ? 'Paused' : 'Ready'; this.render(); }
     }
     async pump() {
-      if (this.mode !== 'playing' || !this.hasStream || this.chunkPending || this.next >= this.duration || this.next - this.current() > 6) return;
+      if (this.nativeFile || this.mode !== 'playing' || !this.hasStream || this.chunkPending || this.next >= this.duration || this.next - this.current() > 6) return;
       const id = this.trackId, chunk = this.encode(this.next);
       if (!chunk) return;
       this.chunkPending = true;
@@ -127,6 +152,18 @@
       else this.stop('Playback stopped. Check Diagnostics.');
     }
     event(event) {
+      if(event.type==='audioMeters'){
+        const file=event.file;
+        if(!this.nativeFile||!file||file.trackId!==this.trackId)return;
+        if(file.mode==='finished'){
+          this.duration=this.base+file.duration;this.stop('Finished');this.position=this.duration;this.render();return;
+        }
+        if(!['starting','playing','buffering','paused'].includes(this.mode))return;
+        if((file.mode==='paused')!==(this.mode==='paused'))return;
+        this.position=Math.min(this.duration,this.base+file.position);this.started=performance.now();
+        this.mode=file.mode;$('speaker-file-status').textContent={playing:'Playing',paused:'Paused',starting:'Opening controller audio...',buffering:'Buffering...'}[file.mode]||'Playing';
+        this.render();return;
+      }
       if (event.trackId != null && event.trackId !== this.trackId) return;
       if (event.source === 'error') {
         const message = event.message || 'Playback failed. Check Diagnostics.';
@@ -147,12 +184,12 @@
     }
     render() {
       const current = this.current(), ready = !!this.decoded && this.connected();
-      if (this.mode === 'playing' && current >= this.duration) {
+      if (!this.nativeFile && this.mode === 'playing' && current >= this.duration) {
         this.stop('Finished'); this.position = this.duration;
       }
       const button = $('speaker-file-play');
-      button.textContent = this.mode === 'loading' ? 'Loading…' : this.mode === 'starting' ? 'Starting…' : this.mode === 'playing' ? 'Pause' : this.mode === 'paused' ? 'Resume' : 'Play';
-      button.setAttribute('aria-label', this.mode === 'playing' ? 'Pause music' : 'Play music');
+      button.textContent = this.mode === 'loading' ? 'Loading…' : this.mode === 'starting' ? 'Starting…' : ['playing','buffering'].includes(this.mode) ? 'Pause' : this.mode === 'paused' ? 'Resume' : 'Play';
+      button.setAttribute('aria-label', ['playing','buffering'].includes(this.mode) ? 'Pause music' : 'Play music');
       button.disabled = !ready || ['loading','starting'].includes(this.mode);
       $('speaker-file-stop').disabled = !this.decoded || (this.mode === 'stopped' && this.position === 0);
       $('speaker-start').disabled = !this.decoded || this.mode === 'loading';

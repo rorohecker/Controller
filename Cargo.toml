@@ -1,6 +1,6 @@
 [package]
 name = "controller"
-version = "0.15.3"
+version = "0.15.4"
 edition = "2024"
 autobins = false
 autoexamples = false
@@ -21,6 +21,11 @@ tauri-plugin-updater = "2.13.3"
 tauri-plugin-autostart = "2.5.1"
 cpal = "0.18.2"
 tauri-plugin-single-instance = "2"
+arc-swap = "1.9"
+crossbeam-queue = "0.3"
+rubato = "0.16"
+tauri-plugin-dialog = "2"
+symphonia = { version = "0.5.5", features = ["aac", "mp3", "isomp4", "alac", "flac", "ogg", "pcm", "vorbis", "wav", "aiff"] }
 
 [target.'cfg(windows)'.dependencies]
 hidapi = { version = "2.6.7", default-features = false, features = ["windows-native"] }

@@ -124,6 +124,18 @@ pub enum DeviceCommand {
     SetMicrophoneMute {
         enabled: bool,
     },
+    PlayAudioFile {
+        path: String,
+        position: f64,
+        duration: f64,
+        route: String,
+        kind: String,
+        #[serde(rename = "trackId")]
+        track_id: u64,
+    },
+    SetAudioMixer {
+        settings: crate::audio_haptics::MixerSettings,
+    },
     PlaySpeakerSound {
         #[serde(default, rename = "trackId")]
         track_id: u64,
@@ -1840,7 +1852,8 @@ fn handle_command(
     };
 
     let audio_request = match &command {
-        DeviceCommand::PlaySpeakerSound { track_id, .. }
+        DeviceCommand::PlayAudioFile { track_id, .. }
+        | DeviceCommand::PlaySpeakerSound { track_id, .. }
         | DeviceCommand::SetSpeakerPaused { track_id, .. }
         | DeviceCommand::StopSpeakerSound { track_id } => Some(*track_id),
         _ => None,
@@ -2132,6 +2145,20 @@ fn handle_command(
                 })
             }
         }
+        DeviceCommand::SetAudioMixer {settings} => device.audio.set_mixer(settings).map(|_|"Audio mixer saved"),
+        DeviceCommand::PlayAudioFile {path,position,duration,route,kind,track_id} => {
+            if !matches!(device.transport,BusType::Usb) {Err("Controller audio requires USB.".into())}
+            else {
+                device.audio.start_output().map(|_|()).and_then(|_|device.enable_pcm())
+                    .and_then(|_|device.set_speaker_route(route!="grips"))
+                    .and_then(|_|device.audio.play_file(path,(position,duration),&route,&kind,track_id))
+                    .map(|_|{
+                        device.speaker_track_id=track_id;
+                        device.speaker_route_until=(route!="grips").then(||Instant::now()+Duration::from_secs(2));
+                        "Opening controller audio"
+                    })
+            }
+        }
         DeviceCommand::PlaySpeakerSound {
             track_id,
             pcm_base64,
@@ -2392,6 +2419,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     let mut sequence_gaps = 0u32;
     let mut invalid_reports = 0u32;
     let mut next_rate = Instant::now() + Duration::from_secs(1);
+    let mut next_audio_status = Instant::now();
     let mut telemetry_stale_latched = false;
     loop {
         #[cfg(windows)]
@@ -2404,6 +2432,36 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 remap.set_suspended(focused || connected.desktop.enabled());
             }
             next_focus_check = Instant::now() + Duration::from_millis(60);
+        }
+        if Instant::now() >= next_audio_status {
+            if let Some(connected) = device.as_mut() {
+                if let Some((track_id, error)) = connected.audio.take_file_error() {
+                    connected.audio.stop_speaker_pcm();
+                    let _ = connected.set_speaker_route(false);
+                    emit(
+                        &proxy,
+                        json!({"type":"speakerStatus","source":"error","trackId":track_id,"message":error}),
+                    );
+                }
+                if let Some(status) = connected.audio.file_status()
+                    && status["native"] == true
+                    && status["speaker"] == true
+                {
+                    if matches!(
+                        status["mode"].as_str(),
+                        Some("playing" | "starting" | "buffering")
+                    ) {
+                        connected.speaker_route_until =
+                            Some(Instant::now() + Duration::from_secs(2));
+                    } else if status["mode"] == "finished"
+                        && connected.speaker_route_until.is_some()
+                    {
+                        let _ = connected.set_speaker_route(false);
+                    }
+                }
+                emit(&proxy, connected.audio.diagnostics());
+            }
+            next_audio_status = Instant::now() + Duration::from_millis(250);
         }
         if Instant::now() >= next_rate {
             if let Some(message) = crate::input_map::take_input_error() {
@@ -2424,6 +2482,12 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
             }
             if let Some(connected) = device.as_mut() {
                 if let Some(error) = connected.audio.take_error() {
+                    if let Some(status) = connected.audio.file_status() {
+                        emit(
+                            &proxy,
+                            json!({"type":"speakerStatus","source":"error","trackId":status["trackId"],"message":error}),
+                        );
+                    }
                     connected.audio.stop();
                     emit(
                         &proxy,

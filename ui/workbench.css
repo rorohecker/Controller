@@ -322,3 +322,23 @@ input[type='range']:disabled { cursor: not-allowed; opacity: .65; }
 .pc-shortcut-help { flex-basis:100%; font-size:12px; color:var(--ink-soft); }
 .desktop-access { display:flex; gap:10px; flex-wrap:wrap; padding-top:12px; }
 .desktop-access p { flex-basis:100%; margin:0; }
+
+.audio-mixer-panel { margin:18px 0; --panel-accent:#cba2ba; }
+.audio-mixer-body { display:grid; grid-template-columns:minmax(0,1fr) minmax(240px,.85fr); gap:28px; padding:22px; }
+.audio-output-meters { display:grid; gap:14px; margin:4px 0 20px; }
+.audio-output-meters label { display:grid; grid-template-columns:90px minmax(0,1fr); align-items:center; gap:12px; font-weight:650; }
+.audio-output-meters meter { width:100%; height:18px; accent-color:#8a68a1; }
+.audio-output-meters meter::-webkit-meter-bar { background:#b9b2b1; border:0; border-radius:4px; }
+.audio-output-meters meter::-webkit-meter-optimum-value { background:linear-gradient(90deg,#77b7a0,#bd91ad,#e3bc74); border-radius:4px; }
+.audio-mixer-body p,.audio-format { color:var(--ink-soft); font-size:13px; overflow-wrap:anywhere; }
+.audio-mix-control { margin-bottom:18px; }
+.audio-mix-control input { width:100%; }
+#audio-mixer-controls { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); column-gap:20px; }
+#audio-mixer-controls .audio-mix-control:last-child { grid-column:1/-1; }
+.audio-mixer-body label[for='grip-audition'] { display:block; margin:18px 0 8px; font-weight:650; }
+.audio-mixer-body select { display:block; width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:6px; color:var(--ink); background:#f4eff5; font:inherit; }
+@media(min-width:901px) and (max-width:1100px) { #audio-mixer-controls { grid-template-columns:minmax(0,1fr); } }
+.audio-details { margin-top:22px; border-top:1px solid var(--line); padding-top:14px; }
+.audio-details summary { cursor:pointer; font-weight:650; }
+.speaker-content .audio-format { margin-top:4px; line-height:1.5; }
+@media(max-width:900px) { .audio-mixer-body { grid-template-columns:minmax(0,1fr); gap:20px; padding:18px; } }

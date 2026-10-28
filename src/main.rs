@@ -114,7 +114,7 @@ fn set_start_on_login(enabled: bool, app: tauri::AppHandle) -> Result<(), String
 
 #[tauri::command]
 fn platform_capabilities() -> Value {
-    json!({"os": std::env::consts::OS, "desktopInput":true, "supportedKeys":(1..=254u16).filter(|k|input_map::supported_key(*k)).collect::<Vec<_>>(), "xinput": cfg!(windows), "screenColor": cfg!(windows), "systemAudioBridge": cfg!(windows), "updates": cfg!(windows)})
+    json!({"os": std::env::consts::OS, "desktopInput":true, "nativeAudioFiles":true, "supportedKeys":(1..=254u16).filter(|k|input_map::supported_key(*k)).collect::<Vec<_>>(), "xinput": cfg!(windows), "screenColor": cfg!(windows), "systemAudioBridge": cfg!(windows), "updates": cfg!(windows)})
 }
 
 #[cfg(windows)]
@@ -303,6 +303,31 @@ fn send_command(command: Value, bridge: State<'_, Arc<Bridge>>) -> Result<(), St
         return Err("Shutdown is reserved for the desktop shell".into());
     }
     bridge.send(&command)
+}
+
+#[tauri::command]
+async fn choose_audio_file(
+    app: tauri::AppHandle,
+) -> Result<Option<audio_haptics::file::AudioFileInfo>, String> {
+    use tauri_plugin_dialog::DialogExt;
+    tauri::async_runtime::spawn_blocking(move || {
+        let selected = app
+            .dialog()
+            .file()
+            .set_title("Choose audio")
+            .add_filter(
+                "Audio",
+                &["wav", "mp3", "flac", "ogg", "m4a", "aiff", "aif"],
+            )
+            .blocking_pick_file();
+        let Some(selected) = selected else {
+            return Ok(None);
+        };
+        let path = selected.into_path().map_err(|e| e.to_string())?;
+        audio_haptics::file::inspect_file(&path).map(Some)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg(windows)]
@@ -494,6 +519,7 @@ fn main() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
@@ -543,6 +569,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             send_command,
+            choose_audio_file,
             open_driver_setup,
             load_profiles,
             save_profiles,

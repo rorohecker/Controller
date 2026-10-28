@@ -57,6 +57,7 @@ def main():
             assert page.locator('.touch-compatibility').is_visible()==(os=='windows')
             page.locator('[data-view="haptics"]').click()
             assert page.locator('.bridge-panel').is_visible()==(os=='windows')
+            assert page.locator('#audio-mix-bridgeGain').is_visible()==(os=='windows')
             page.locator('[data-view="lights"]').click()
             assert page.locator('#screen-light').is_visible()==(os=='windows')
             page.locator('[data-view="diagnostics"]').click()

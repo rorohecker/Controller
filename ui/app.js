@@ -1422,7 +1422,8 @@
   $('#alert-ping').addEventListener('click',()=>send({action:'playHaptic',shape:'sine',frequency:125,attack:5,release:160,strength:26,pan:0}));
   $('#alert-ping').insertAdjacentHTML('afterend','<button id="speaker-chirp" class="quiet-action" type="button" disabled title="Play a test tone through the controller speaker over USB">Speaker test · USB</button>');
   $('.alert-body > div > p').textContent='Low battery and timer alerts tap the grips. Find my pad taps them now. Speaker chirp uses the controller speaker over USB. Reset, disconnect, or exit to stop alerts.';
-  const musicPlayer=new window.ControllerPlayer(send,()=>state.connected&&state.transport==='USB');
+  const musicPlayer=new window.ControllerPlayer(send,()=>state.connected&&state.transport==='USB',invoke);
+  const audioMixer=new window.ControllerAudioMixer(send,()=>state.connected);
   async function testSpeaker(){await musicPlayer.stop('Playing speaker test');await send({action:'playSpeakerChirp'});}
   $('#speaker-chirp').addEventListener('click',testSpeaker);
   $('#speaker-panel-test').addEventListener('click',testSpeaker);
@@ -1729,6 +1730,7 @@
     $('#controller-mic').disabled=!connected;
     if(!connected)musicPlayer.stop('Controller disconnected');
     musicPlayer.render();
+    if(!connected)audioMixer.clear();
     if(!connected){clearPadFocus();calibrationRun=null;if(state.gyroCalibration)clearTimeout(state.gyroCalibration.timer);state.gyroCalibration=null;state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.pcMode=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.temperatureLight=false;state.screenLight=false;state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderTemperatureLight();renderScreenLight();renderInput();}
     renderPcMode();
     if(!connected){state.lowBatteryAlert=false;state.timerUntil=0;}
@@ -1899,7 +1901,7 @@
       if(changed)padNavPrev=null;
       if(changed&&event.connected)selectControllerCalibration(event);
       setConnected(!!event.connected,event.name||'',event.transport||'',event.firmware||'',event.path||'');
-      if(changed && event.connected){sendPcBindings();sendCalibration();applyGameRules();}
+      if(changed && event.connected){sendPcBindings();sendCalibration();audioMixer.apply();applyGameRules();}
       if(event.path) state.selectedPath = event.path;
       if(changed||state.manualScan){const msg=event.connected?`${event.name} · ${event.transport}`:(event.message||'Disconnected');log(msg);toast(msg);}
       if(state.manualScan)finishScan();
@@ -1930,6 +1932,8 @@
       state.xinputStatus=event.status||'disabled';
       state.xinputMessage=event.message||event.error||'ViGEm not connected';
       renderXinput();
+    }else if(event.type==='audioMeters'){
+      musicPlayer.event(event);audioMixer.event(event);
     }else if(event.type==='audioStatus'){
       state.audioRoute=event.route||'off';
       if(typeof event.bridge==='boolean')state.audioBridge=event.bridge;

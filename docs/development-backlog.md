@@ -12,11 +12,11 @@ Work in batches of five. Each batch includes regression checks, wording/layout r
 
 ## Batch 2 — Audio quality and performance
 
-6. Pending — Bounded native audio streaming; move decoding/resampling out of the UI thread.
-7. Pending — Remove callback lock contention; expose underruns, queue depth and stream recovery.
-8. Pending — Preserve stereo grip assets and support independent left/right audition.
-9. Pending — Feedback mixer with source levels, priorities, headroom and ducking.
-10. Pending — Speaker/grip meters, limiter activity and clear endpoint/routing inspection.
+6. Complete — Bounded native audio streaming; move decoding/resampling out of the UI thread.
+7. Complete — Remove callback lock contention; expose underruns, queue depth and stream recovery.
+8. Complete — Preserve stereo grip assets and support independent left/right audition.
+9. Complete — Feedback mixer with source levels, priorities, headroom and ducking.
+10. Complete — Speaker/grip meters, limiter activity and clear endpoint/routing inspection.
 
 ## Batch 3 — Game compatibility
 
@@ -80,6 +80,8 @@ Work in batches of five. Each batch includes regression checks, wording/layout r
 
 ## Verification log
 
-Batch 1 implementation is complete (0.15.3). Automated verification covers playback stop/append races, stale acknowledgements, pause/seek/resume, disconnected playback, shortcut modifier editing, native recording results, macOS permission UI, platform-specific labels, per-controller calibration isolation, and layout across ten tabs at five window widths. Rust tests, Cargo check, and strict Clippy pass locally on Windows. macOS native permission prompts and physical controller behavior remain unverified until tested on a Mac; portable CI is required before release. The native single-instance plugin is registered before other plugins and before core startup. A general regression pass also found and fixed a packet-replay file-read race: Reset now cancels loads and in-flight replay continuations.
+Batch 1 implementation is complete (0.15.3). Automated verification covers playback stop/append races, stale acknowledgements, pause/seek/resume, disconnected playback, shortcut modifier editing, native recording results, macOS permission UI, platform-specific labels, per-controller calibration isolation, and layout across ten tabs at five window widths. Rust tests, Cargo check, and strict Clippy pass locally on Windows. Windows, Linux, and Intel/Apple Silicon macOS passed release CI for 0.15.3. macOS native permission prompts and physical controller behavior remain unverified until tested on a Mac. The native single-instance plugin is registered before other plugins and before core startup. A general regression pass also found and fixed a packet-replay file-read race: Reset now cancels loads and in-flight replay continuations.
 
-Batch 2 is next. Driver/output calibration is item 46. Research claims and implementation status are tracked separately; experimental items must not be presented as supported features.
+Batch 2 implementation is complete (0.15.4): native file picking/probing and worker decoding; band-limited resampling; one-second native queues; callback mutex removal; pause/underrun playhead preservation; decoder cancellation; stereo music/haptic assets; source levels, solo and ducking; output meters and routing/buffer details. Regression tests cover resampling at 22.05/44.1/48/96 kHz, exact remaining duration after seek, stereo isolation, bounded paused workers, dropped capture frames, underrun recovery, end-of-track device drain, muting, meter reset and source ducking. Browser tests exercise the native command path without webview decoding, transport state, stale events, saved mixer controls and responsive layouts. Physical speaker/grip quality still needs a USB check; the audio backend's peak limits remain bounded.
+
+Batch 3 is next. Driver/output calibration is item 46. Research claims and implementation status are tracked separately; experimental items must not be presented as supported features.
