@@ -1,6 +1,6 @@
 # Compatibility and test record
 
-## 0.15.4 audio streaming batch
+## 0.15.5 audio streaming batch
 
 Native file playback decodes and resamples on Rust workers with a one-second queue. Tests cover 22.05/44.1/48/96 kHz WAV sources, stereo isolation, seek duration, queue bounds, cancellation, underrun recovery, sample-position pause, output muting, ducking and meter reset. The callback does not acquire PCM/source/capture mutexes. Browser tests cover native file commands, output routes, mixer persistence and responsive layout. The new physical sound and grip feel have not been checked by the user yet; macOS/Linux audio hardware remains unverified. Supported compressed formats use Symphonia; they have not all been physically tested in this app.
 

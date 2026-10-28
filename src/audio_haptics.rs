@@ -852,11 +852,20 @@ fn fill_frames(
         sound.consumed.fetch_add(consumed, Ordering::Relaxed);
         if sound.eof.load(Ordering::Acquire) && sound.queue.is_empty() {
             let silence = (frames as u64).saturating_sub(consumed);
-            let _ = sound
-                .tail_frames
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                    Some(n.saturating_sub(silence))
-                });
+            // CAS keeps this compatible with Rust versions on either side of
+            // the fetch_update -> try_update API transition.
+            let mut tail = sound.tail_frames.load(Ordering::Relaxed);
+            loop {
+                match sound.tail_frames.compare_exchange_weak(
+                    tail,
+                    tail.saturating_sub(silence),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(current) => tail = current,
+                }
+            }
         }
     }
     shared.file_underruns.fetch_add(missing, Ordering::Relaxed);

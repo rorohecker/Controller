@@ -1,6 +1,6 @@
 [package]
 name = "controller"
-version = "0.15.4"
+version = "0.15.5"
 edition = "2024"
 autobins = false
 autoexamples = false
