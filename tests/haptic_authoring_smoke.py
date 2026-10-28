@@ -47,6 +47,9 @@ def main():
         play_id=page.evaluate("window.sent.findLast(c=>c.action==='playEffectClip').playId")
         page.evaluate("id=>window.coreHandler({type:'effectTimeline',playId:id,playing:true,positionMs:75,durationMs:200,name:'Dash hit'})",play_id)
         assert page.locator('#tactile-progress').evaluate('e=>e.value')==75
+        page.evaluate("window.coreHandler({type:'audioMeters',active:true,timelineActive:true,peaks:[0,.3,.4]})")
+        assert 'Timeline' in page.locator('#audio-source-summary').inner_text()
+        assert 'both grips' in page.locator('#audio-route-summary').inner_text()
         page.locator('#tactile-stop').click()
         page.evaluate("id=>window.coreHandler({type:'effectTimeline',playId:id,playing:true,positionMs:120,durationMs:200})",play_id)
         assert page.locator('#tactile-progress').evaluate('e=>e.value')==0

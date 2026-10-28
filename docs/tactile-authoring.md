@@ -1,4 +1,4 @@
-# Tactile authoring (0.16.0)
+# Tactile authoring (0.16.1)
 
 ## Timeline and library
 

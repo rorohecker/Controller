@@ -648,6 +648,7 @@ impl AudioEngine {
             .collect();
         serde_json::json!({"type":"audioMeters","endpoint":self.endpoint,"sampleRate":RATE,
             "active":self.output.is_some(),"bridge":self.bridge_on(),"file":self.file_status(),"cueActive":cue_active,
+            "timelineActive":self.shared.timeline.load().as_ref().is_some_and(|t|now.saturating_sub(t.start_frame)<u64::from(t.clip.duration_ms())*48),
             "gameActive":self.shared.game.load().as_ref().is_some_and(|g| now.saturating_sub(g.start_frame) < 10 * u64::from(RATE)),
             "peaks":peaks,"reduction":f32::from_bits(self.shared.reduction.swap(0,Ordering::Relaxed)),
             "fileUnderruns":self.shared.file_underruns.load(Ordering::Relaxed),
@@ -1297,8 +1298,10 @@ mod tests {
             && f[1] == 0.0
             && f[2].abs() <= MAX_AMPLITUDE * 0.25
             && f[3].abs() <= MAX_AMPLITUDE * 0.5));
+        assert_eq!(engine.diagnostics()["timelineActive"], true);
         engine.cancel_cue();
         assert!(engine.shared.timeline.load().is_none());
+        assert_eq!(engine.diagnostics()["timelineActive"], false);
         let mut voice = VoiceClip::new("sine", 90, 10, 180, 100, -100);
         voice.raw_test = true;
         engine.shared.clip.store(Some(Arc::new(voice)));

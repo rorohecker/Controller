@@ -47,9 +47,9 @@
       $('audio-output-state').textContent=status.active?'USB ready':'Not playing';
       $('audio-endpoint').textContent=status.endpoint||'No audio endpoint open';
       const file=status.file,active=file&&['playing','starting','buffering'].includes(file.mode);
-      const sources=[];if(active)sources.push('Track');if(status.bridge)sources.push('System audio');if(status.cueActive)sources.push('Haptic cue');if(status.gameActive)sources.push('Xbox rumble');
+      const sources=[];if(active)sources.push('Track');if(status.bridge)sources.push('System audio');if(status.cueActive)sources.push('Haptic cue');if(status.timelineActive)sources.push('Timeline');if(status.gameActive)sources.push('Xbox rumble');
       $('audio-source-summary').textContent=sources.length?`Sources: ${sources.join(' + ')}`:file?.mode==='paused'?'Track paused':'No active sources';
-      const routes=[];if(active&&file.speaker)routes.push('speaker');if((active&&file.grips)||status.bridge||status.cueActive||status.gameActive)routes.push(this.settings.solo==='stereo'?'both grips':this.settings.solo+' grip');
+      const routes=[];if(active&&file.speaker)routes.push('speaker');if((active&&file.grips)||status.bridge||status.cueActive||status.timelineActive||status.gameActive)routes.push(this.settings.solo==='stereo'?'both grips':this.settings.solo+' grip');
       $('audio-route-summary').textContent=routes.length?`Output: ${routes.join(' + ')}`:status.active?'Ready for playback':'Connect by USB and start playback';
       $('audio-limiter-status').textContent=(status.reduction||0)>.15?'Peak control active':'Levels within range';
       $('audio-buffer-status').textContent=`File queue: ${Math.round(file?.queueMs||0)} ms / system audio: ${Math.round(status.bridgeQueueMs||0)} ms`;
