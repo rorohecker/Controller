@@ -19,6 +19,16 @@ pub struct ActionRule {
     pub window_ms: u16,
     #[serde(default = "default_cooldown")]
     pub cooldown_ms: u16,
+    #[serde(default)]
+    pub condition_button: Option<u8>,
+    #[serde(default = "default_threshold")]
+    pub condition_threshold: f32,
+    #[serde(default)]
+    pub cancel_on_release: bool,
+    #[serde(default)]
+    pub cancel_event: String,
+    #[serde(default = "default_retrigger")]
+    pub retrigger: String,
     pub duration_ms: u16,
     #[serde(default)]
     pub haptic: Option<ActionHaptic>,
@@ -32,6 +42,12 @@ fn default_window() -> u16 {
 }
 fn default_cooldown() -> u16 {
     180
+}
+fn default_threshold() -> f32 {
+    0.5
+}
+fn default_retrigger() -> String {
+    "restart".into()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -53,6 +69,11 @@ impl ActionRule {
             || self.button >= 23
             || !(80..=1000).contains(&self.window_ms)
             || self.cooldown_ms > 10_000
+            || self.condition_button.is_some_and(|b| b >= 23)
+            || !self.condition_threshold.is_finite()
+            || !(0.0..=1.0).contains(&self.condition_threshold)
+            || self.cancel_event.len() > 80
+            || !matches!(self.retrigger.as_str(), "restart" | "ignore")
             || !(20..=2000).contains(&self.duration_ms)
             || self.event.len() > 80
             || (self.source == "event" && self.event.trim().is_empty())
@@ -89,6 +110,9 @@ pub struct ActionMapper {
     pending: Vec<(String, u8, Instant)>,
     held: HashSet<String>,
     fired: HashMap<String, Instant>,
+    active: HashMap<String, Instant>,
+    cancelled: Vec<String>,
+    values: [f32; 23],
 }
 
 impl ActionMapper {
@@ -111,16 +135,39 @@ impl ActionMapper {
     }
     fn fire(&mut self, index: usize, now: Instant, output: &mut Vec<ActionRule>) {
         let rule = &self.rules[index];
+        if rule
+            .condition_button
+            .is_some_and(|b| self.values[usize::from(b)] < rule.condition_threshold)
+            || (rule.cancel_on_release
+                && rule.source != "event"
+                && self.values[usize::from(rule.button)] <= 0.5)
+            || (rule.retrigger == "ignore"
+                && self.active.get(&rule.id).is_some_and(|until| now < *until))
+        {
+            return;
+        }
         if self.fired.get(&rule.id).is_none_or(|last| {
             now.saturating_duration_since(*last)
                 >= Duration::from_millis(u64::from(rule.cooldown_ms))
         }) {
             self.fired.insert(rule.id.clone(), now);
+            self.active.insert(
+                rule.id.clone(),
+                now + Duration::from_millis(u64::from(rule.duration_ms)),
+            );
             output.push(rule.clone());
         }
     }
     pub fn event(&mut self, event: &str, now: Instant) -> Vec<ActionRule> {
         let mut output = Vec::new();
+        for rule in &self.rules {
+            if !rule.cancel_event.is_empty()
+                && rule.cancel_event.eq_ignore_ascii_case(event)
+                && self.active.remove(&rule.id).is_some()
+            {
+                self.cancelled.push(rule.id.clone());
+            }
+        }
         for i in 0..self.rules.len() {
             if self.rules[i].source == "event" && self.rules[i].event.eq_ignore_ascii_case(event) {
                 self.fire(i, now, &mut output);
@@ -129,6 +176,20 @@ impl ActionMapper {
         output
     }
     pub fn update(&mut self, buttons: &[f32; 23], now: Instant) -> Vec<ActionRule> {
+        self.values = *buttons;
+        self.active.retain(|_, until| now < *until);
+        for rule in &self.rules {
+            let released = rule.cancel_on_release
+                && rule.source != "event"
+                && self.down[usize::from(rule.button)]
+                && buttons[usize::from(rule.button)] <= 0.5;
+            let blocked = rule
+                .condition_button
+                .is_some_and(|b| buttons[usize::from(b)] < rule.condition_threshold);
+            if (released || blocked) && self.active.remove(&rule.id).is_some() {
+                self.cancelled.push(rule.id.clone());
+            }
+        }
         let mut output = Vec::new();
         for (button, value) in buttons.iter().enumerate() {
             let button = button as u8;
@@ -215,6 +276,9 @@ impl ActionMapper {
         }
         output
     }
+    pub fn take_cancelled(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.cancelled)
+    }
 }
 
 #[cfg(test)]
@@ -229,6 +293,11 @@ mod tests {
             event: "dash".into(),
             window_ms: 280,
             cooldown_ms: 0,
+            condition_button: None,
+            condition_threshold: 0.5,
+            cancel_on_release: false,
+            cancel_event: String::new(),
+            retrigger: default_retrigger(),
             duration_ms: 120,
             haptic: Some(ActionHaptic {
                 shape: "sine".into(),
@@ -239,6 +308,67 @@ mod tests {
             left_trigger: None,
             right_trigger: None,
         }
+    }
+    #[test]
+    fn conditions_cancellation_and_retrigger_respect_live_input() {
+        let now = Instant::now();
+        let mut r = rule("aimed", "event");
+        r.condition_button = Some(6);
+        r.condition_threshold = 0.75;
+        r.retrigger = "ignore".into();
+        r.cancel_event = "cancel".into();
+        let mut mapper = ActionMapper::default();
+        mapper.set(vec![r]).unwrap();
+        assert!(mapper.event("dash", now).is_empty());
+        let mut buttons = [0.; 23];
+        buttons[6] = 0.8;
+        mapper.update(&buttons, now);
+        assert_eq!(mapper.event("dash", now).len(), 1);
+        assert!(
+            mapper
+                .event("dash", now + Duration::from_millis(10))
+                .is_empty()
+        );
+        assert_eq!(
+            mapper.event("dash", now + Duration::from_millis(121)).len(),
+            1
+        );
+        mapper.event("cancel", now + Duration::from_millis(122));
+        assert_eq!(mapper.take_cancelled(), vec!["aimed"]);
+        mapper.event("dash", now + Duration::from_millis(123));
+        buttons[6] = 0.7;
+        mapper.update(&buttons, now + Duration::from_millis(124));
+        assert_eq!(mapper.take_cancelled(), vec!["aimed"]);
+    }
+    #[test]
+    fn release_cancels_effect_and_delayed_press_does_not_fire_after_release() {
+        let now = Instant::now();
+        let mut press = rule("press", "press");
+        press.cancel_on_release = true;
+        let mut mapper = ActionMapper::default();
+        mapper.set(vec![press.clone()]).unwrap();
+        let mut buttons = [0.; 23];
+        buttons[1] = 1.;
+        assert_eq!(mapper.update(&buttons, now).len(), 1);
+        buttons[1] = 0.;
+        mapper.update(&buttons, now + Duration::from_millis(10));
+        assert_eq!(mapper.take_cancelled(), vec!["press"]);
+        mapper.set(vec![press, rule("double", "double")]).unwrap();
+        buttons[1] = 1.;
+        mapper.update(&buttons, now);
+        buttons[1] = 0.;
+        mapper.update(&buttons, now + Duration::from_millis(10));
+        assert!(
+            mapper
+                .update(&buttons, now + Duration::from_millis(300))
+                .is_empty()
+        );
+        let mut bad = rule("bad", "event");
+        bad.condition_threshold = f32::NAN;
+        assert!(bad.validate().is_err());
+        bad.condition_threshold = 0.5;
+        bad.retrigger = "queue_forever".into();
+        assert!(bad.validate().is_err());
     }
     #[test]
     fn action_names_count_characters_instead_of_utf8_bytes() {

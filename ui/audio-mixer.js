@@ -2,17 +2,18 @@
 (() => {
   'use strict';
   const $=id=>document.getElementById(id);
-  const defaults=()=>({fileGain:1,cueGain:1,bridgeGain:1,speakerGain:1,ducking:.65,solo:'stereo'});
-  const fields=[['fileGain','Music to grips'],['cueGain','Haptic cues'],['bridgeGain','System audio to grips'],['speakerGain','Speaker volume'],['ducking','Lower background during cues']];
+  const defaults=()=>({fileGain:1,cueGain:1,gameGain:1,bridgeGain:1,speakerGain:1,ducking:.65,solo:'stereo'});
+  const fields=[['fileGain','Music to grips'],['cueGain','Haptic cues'],['gameGain','Xbox game rumble'],['bridgeGain','System audio to grips'],['speakerGain','Speaker volume'],['ducking','Lower background during cues']];
   class ControllerAudioMixer {
     constructor(send,connected){
       this.send=send;this.connected=connected;this.settings=defaults();
       try{
         const saved=JSON.parse(localStorage.getItem('controller.audioMixer'));
-        if(saved&&fields.every(([key])=>Number.isFinite(saved[key])&&saved[key]>=0&&saved[key]<=1)&&['stereo','left','right'].includes(saved.solo))this.settings={...this.settings,...saved};
+        if(saved&&fields.every(([key])=>(saved[key]===undefined&&key==='gameGain'||Number.isFinite(saved[key])&&saved[key]>=0&&saved[key]<=1))&&['stereo','left','right'].includes(saved.solo))this.settings={...this.settings,...saved};
       }catch{}
       for(const [key,label] of fields){
         const row=document.createElement('div');row.className='audio-mix-control';
+        if(key==='gameGain'){row.dataset.feature='xinput';row.hidden=!window.controllerPlatform.xinput;}
         if(key==='bridgeGain'){row.dataset.feature='systemAudioBridge';row.hidden=!window.controllerPlatform.systemAudioBridge;}
         const text=document.createElement('label');text.htmlFor=`audio-mix-${key}`;text.className='control-label';
         const name=document.createElement('span');name.textContent=label;
@@ -46,9 +47,9 @@
       $('audio-output-state').textContent=status.active?'USB ready':'Not playing';
       $('audio-endpoint').textContent=status.endpoint||'No audio endpoint open';
       const file=status.file,active=file&&['playing','starting','buffering'].includes(file.mode);
-      const sources=[];if(active)sources.push('Track');if(status.bridge)sources.push('System audio');if(status.cueActive)sources.push('Haptic cue');
+      const sources=[];if(active)sources.push('Track');if(status.bridge)sources.push('System audio');if(status.cueActive)sources.push('Haptic cue');if(status.gameActive)sources.push('Xbox rumble');
       $('audio-source-summary').textContent=sources.length?`Sources: ${sources.join(' + ')}`:file?.mode==='paused'?'Track paused':'No active sources';
-      const routes=[];if(active&&file.speaker)routes.push('speaker');if((active&&file.grips)||status.bridge||status.cueActive)routes.push(this.settings.solo==='stereo'?'both grips':this.settings.solo+' grip');
+      const routes=[];if(active&&file.speaker)routes.push('speaker');if((active&&file.grips)||status.bridge||status.cueActive||status.gameActive)routes.push(this.settings.solo==='stereo'?'both grips':this.settings.solo+' grip');
       $('audio-route-summary').textContent=routes.length?`Output: ${routes.join(' + ')}`:status.active?'Ready for playback':'Connect by USB and start playback';
       $('audio-limiter-status').textContent=(status.reduction||0)>.15?'Peak control active':'Levels within range';
       $('audio-buffer-status').textContent=`File queue: ${Math.round(file?.queueMs||0)} ms / system audio: ${Math.round(status.bridgeQueueMs||0)} ms`;

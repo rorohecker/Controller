@@ -20,11 +20,11 @@ Work in batches of five. Each batch includes regression checks, wording/layout r
 
 ## Batch 3 — Game compatibility
 
-11. Pending — Receive real XInput game vibration and translate it to DualSense feedback.
-12. Pending — Game setup assistant showing input route, feedback source, profile and last event.
-13. Pending — Session profiles coordinate routing/audio/gyro/hiding and restore previous settings.
-14. Pending — Action cooldowns, conditions, cancellation and retrigger behavior.
-15. Pending — Community profile metadata, compatibility confirmations, versions and maintenance.
+11. Complete — Receive real XInput game vibration and translate it to DualSense feedback.
+12. Complete — Game setup assistant showing input route, feedback source, profile and last event.
+13. Complete — Session profiles coordinate routing/audio/gyro/hiding and restore previous settings.
+14. Complete — Action cooldowns, conditions, cancellation and retrigger behavior.
+15. Complete — Community profile metadata, compatibility confirmations, versions and maintenance.
 
 ## Batch 4 — Trigger and haptic authoring
 
@@ -86,4 +86,4 @@ Batch 2 implementation is complete (0.15.5): native file picking/probing and wor
 
 The unpublished 0.15.4 candidate exposed an atomic API deprecation on CI's newer Rust toolchain. The counter now uses a compare/exchange loop compatible with both toolchains.
 
-Batch 3 is next. Driver/output calibration is item 46. Research claims and implementation status are tracked separately; experimental items must not be presented as supported features.
+Batch 3 is complete (0.15.6). Windows XInput notifications feed low/high grip waveforms over USB and motor rumble over Bluetooth, with explicit stops and a ten-second stale-command cutoff. The setup card shows actual route/receiver status and last received feedback. Opt-in game sessions restore routing, system-audio, gyro, remap, trigger and action settings while preserving manual overrides; HidHide remains manual. Rules add analog/digital input conditions, restart/ignore behavior, release cancellation and named cancel events. Exported profiles now retain author, version, source, reuse terms, maintenance date and up to 20 self-reported compatibility records. Old archives receive disabled session defaults. Regression coverage includes session exits/reset/manual overrides, platform visibility, conditional action timing, import validation and bounded/muted game-rumble mixing. Physical game vibration still needs validation with ViGEmBus and a game. Batch 4 is next. Driver/output calibration is item 46. Research claims and implementation status are tracked separately; experimental items must not be presented as supported features.

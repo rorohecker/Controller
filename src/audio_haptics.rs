@@ -138,7 +138,29 @@ impl VoiceClip {
     }
 }
 
+/// XInput exposes two motor envelopes, not authored DualSense waveforms.
+/// Keep their low/high character and stereo separation within the output limiter.
+struct GameRumble {
+    motors: [u8; 2],
+    start_frame: u64,
+}
+impl GameRumble {
+    fn sample(&self, frame: u64) -> [f32; 2] {
+        let elapsed = frame.saturating_sub(self.start_frame);
+        // Lost clients must not leave the controller vibrating indefinitely.
+        if elapsed >= 10 * u64::from(RATE) {
+            return [0.0; 2];
+        }
+        let seconds = (frame % u64::from(RATE)) as f32 / RATE as f32;
+        std::array::from_fn(|i| {
+            (seconds * [70.0, 150.0][i] * std::f32::consts::TAU).sin() * f32::from(self.motors[i])
+                / 255.0
+        })
+    }
+}
+
 struct Shared {
+    game: ArcSwapOption<GameRumble>,
     clip: ArcSwapOption<VoiceClip>,
     speaker: ArcSwapOption<SpeakerChirp>,
     speaker_pcm: ArcSwapOption<PcmStream>,
@@ -164,6 +186,7 @@ struct Shared {
 impl Default for Shared {
     fn default() -> Self {
         Self {
+            game: ArcSwapOption::from(None),
             clip: ArcSwapOption::from(None),
             speaker: ArcSwapOption::from(None),
             speaker_pcm: ArcSwapOption::from(None),
@@ -234,6 +257,52 @@ impl Drop for ExclusiveOutput {
 }
 
 impl AudioEngine {
+    pub fn cancel_cue(&self) {
+        self.shared.clip.store(None);
+    }
+
+    fn sources_idle(&self) -> bool {
+        let frame = self.shared.rendered_frames.load(Ordering::Relaxed);
+        !self.bridge_on()
+            && self.shared.game.load().is_none()
+            && self.shared.clip.load().as_ref().is_none_or(|c| {
+                c.sample(frame.saturating_sub(c.start_frame) as f32 / RATE as f32)
+                    .is_none()
+            })
+            && self.shared.speaker.load().as_ref().is_none_or(|c| {
+                c.sample(frame.saturating_sub(c.start_frame) as f32 / RATE as f32)
+                    .is_none()
+            })
+            && self
+                .shared
+                .speaker_pcm
+                .load()
+                .as_ref()
+                .is_none_or(|s| matches!(s.mode(), "finished" | "stopped"))
+    }
+
+    /// Give native games their exclusive endpoint back after app feedback ends.
+    /// Keep paused tracks and live bridges intact.
+    pub fn release_idle_output(&mut self) {
+        if self.output.is_some() && self.sources_idle() {
+            self.output = None;
+            self.endpoint = None;
+            self.shared.clip.store(None);
+            self.shared.speaker.store(None);
+        }
+    }
+    pub fn set_game_rumble(&mut self, motors: [u8; 2]) -> Result<(), String> {
+        if motors == [0, 0] {
+            self.shared.game.store(None);
+        } else {
+            self.start_output()?;
+            self.shared.game.store(Some(Arc::new(GameRumble {
+                motors,
+                start_frame: self.shared.rendered_frames.load(Ordering::Relaxed),
+            })));
+        }
+        Ok(())
+    }
     pub fn endpoint(&self) -> Option<&str> {
         self.endpoint.as_deref()
     }
@@ -539,6 +608,7 @@ impl AudioEngine {
             .collect();
         serde_json::json!({"type":"audioMeters","endpoint":self.endpoint,"sampleRate":RATE,
             "active":self.output.is_some(),"bridge":self.bridge_on(),"file":self.file_status(),"cueActive":cue_active,
+            "gameActive":self.shared.game.load().as_ref().is_some_and(|g| now.saturating_sub(g.start_frame) < 10 * u64::from(RATE)),
             "peaks":peaks,"reduction":f32::from_bits(self.shared.reduction.swap(0,Ordering::Relaxed)),
             "fileUnderruns":self.shared.file_underruns.load(Ordering::Relaxed),
             "bridgeUnderruns":self.shared.bridge_underruns.load(Ordering::Relaxed),
@@ -582,6 +652,7 @@ impl AudioEngine {
     }
 
     pub fn stop(&mut self) {
+        self.shared.game.store(None);
         self.shared.bridge_on.store(false, Ordering::Relaxed);
         self.capture = None;
         self.output = None;
@@ -760,6 +831,7 @@ fn fill_frames(
     state: &mut RenderState,
 ) {
     let clip_guard = shared.clip.load();
+    let game_guard = shared.game.load();
     let speaker_guard = shared.speaker.load();
     let pcm_guard = shared.speaker_pcm.load();
     let mixer = shared.mixer.load();
@@ -815,9 +887,10 @@ fn fill_frames(
                 }
             })
             .unwrap_or([0.0; 4]);
+        let game = game_guard.as_ref().map_or([0.0; 2], |g| g.sample(frame));
         let background = [
-            audio[0] * mixer.bridge_gain + file[2] * mixer.file_gain,
-            audio[1] * mixer.bridge_gain + file[3] * mixer.file_gain,
+            audio[0] * mixer.bridge_gain + file[2] * mixer.file_gain + game[0] * mixer.game_gain,
+            audio[1] * mixer.bridge_gain + file[3] * mixer.file_gain + game[1] * mixer.game_gain,
         ];
         let mixed = state.mix_grips(
             tone.unwrap_or([0.0; 2]),
@@ -1085,6 +1158,90 @@ fn build_loopback(shared: Arc<Shared>) -> Result<Stream, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn game_rumble_keeps_motor_channels_and_expires_without_new_commands() {
+        let rumble = GameRumble {
+            motors: [255, 0],
+            start_frame: 12,
+        };
+        assert!(rumble.sample(100)[0].abs() > 0.1);
+        assert_eq!(rumble.sample(100)[1], 0.0);
+        assert_eq!(rumble.sample(12 + 10 * u64::from(RATE)), [0.0; 2]);
+        let rumble = GameRumble {
+            motors: [0, 128],
+            start_frame: 0,
+        };
+        assert_eq!(rumble.sample(100)[0], 0.0);
+        assert!(rumble.sample(100)[1].abs() <= 128.0 / 255.0);
+    }
+    #[test]
+    fn game_rumble_is_mixed_limited_muted_and_stopped() {
+        let mut engine = AudioEngine::default();
+        engine.shared.game.store(Some(Arc::new(GameRumble {
+            motors: [255, 255],
+            start_frame: 0,
+        })));
+        let mut output = [0.0; 4096];
+        render_output(
+            &mut output,
+            &engine.shared,
+            &mut 0,
+            &mut RenderState::default(),
+        );
+        assert!(
+            output
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|f| f[0] == 0.0 && f[1] == 0.0)
+        );
+        assert!(output.iter().any(|x| x.abs() > 0.05));
+        assert!(output.iter().all(|x| x.abs() <= MAX_AMPLITUDE));
+        engine
+            .set_mixer(MixerSettings {
+                game_gain: 0.0,
+                ..Default::default()
+            })
+            .unwrap();
+        render_output(
+            &mut output,
+            &engine.shared,
+            &mut 0,
+            &mut RenderState::default(),
+        );
+        assert!(output.iter().all(|x| *x == 0.0));
+        engine.set_game_rumble([0, 0]).unwrap();
+        assert!(engine.shared.game.load().is_none());
+        engine.shared.game.store(Some(Arc::new(GameRumble {
+            motors: [255, 255],
+            start_frame: 0,
+        })));
+        engine.stop();
+        assert!(engine.shared.game.load().is_none());
+    }
+    #[test]
+    fn idle_endpoint_detection_keeps_paused_music_and_live_sources() {
+        let engine = AudioEngine::default();
+        assert!(engine.sources_idle());
+        engine
+            .shared
+            .clip
+            .store(Some(Arc::new(VoiceClip::new("sine", 90, 2, 100, 50, 0))));
+        assert!(!engine.sources_idle());
+        engine
+            .shared
+            .rendered_frames
+            .store(u64::from(RATE), Ordering::Relaxed);
+        assert!(engine.sources_idle());
+        let stream = Arc::new(PcmStream::new(9, "grips", true, 1000));
+        stream.paused.store(true, Ordering::Release);
+        engine.shared.speaker_pcm.store(Some(stream.clone()));
+        assert!(!engine.sources_idle());
+        stream.canceled.store(true, Ordering::Release);
+        assert!(engine.sources_idle());
+        engine.shared.bridge_on.store(true, Ordering::Relaxed);
+        assert!(!engine.sources_idle());
+    }
     #[test]
     fn buffer_glitch_does_not_stop_a_running_stream() {
         let shared = Shared::default();

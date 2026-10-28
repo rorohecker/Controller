@@ -331,11 +331,14 @@ struct Connected {
     screen_light: bool,
     screen_color: Option<[u8; 3]>,
     last_rumble: Option<[u8; 2]>,
+    game_rumble: [u8; 2],
+    game_audio_retry_at: Option<Instant>,
     input_effect: Option<InputEffect>,
     input_effect_until: Option<Instant>,
     bows: [Option<BowReturn>; 2],
     game_actions: ActionMapper,
     action_until: Option<Instant>,
+    action_id: Option<String>,
     low_battery_alert: bool,
     low_battery_latched: bool,
     last_battery: Option<u8>,
@@ -682,6 +685,7 @@ impl Connected {
     }
 
     fn play_action(&mut self, rule: &ActionRule) -> Result<(), String> {
+        self.stop_action();
         if let Some(h) = &rule.haptic {
             self.play_feedback(
                 &h.shape,
@@ -737,7 +741,30 @@ impl Connected {
             self.action_until =
                 Some(Instant::now() + Duration::from_millis(u64::from(rule.duration_ms)));
         }
+        self.action_id = Some(rule.id.clone());
+        self.action_until =
+            Some(Instant::now() + Duration::from_millis(u64::from(rule.duration_ms)));
         Ok(())
+    }
+    fn cancel_actions(&mut self) {
+        let cancelled = self.game_actions.take_cancelled();
+        if self
+            .action_id
+            .as_ref()
+            .is_some_and(|id| cancelled.contains(id))
+        {
+            self.stop_action();
+        }
+    }
+    fn stop_action(&mut self) {
+        if self.action_id.is_some() {
+            self.audio.cancel_cue();
+            self.haptic = None;
+            if self.rumble_active {
+                let _ = self.write_rumble([0, 0]);
+            }
+            let _ = self.restore_action();
+        }
     }
     fn restore_action(&mut self) -> Result<(), String> {
         if self.action_until.is_none() {
@@ -761,6 +788,7 @@ impl Connected {
             false,
         ))?;
         self.action_until = None;
+        self.action_id = None;
         self.trigger_active = left[0] != 0x05 || right[0] != 0x05;
         Ok(())
     }
@@ -845,6 +873,8 @@ impl Connected {
         self.desktop.set_enabled(false);
         self.haptic = None;
         self.audio.stop();
+        self.game_rumble = [0, 0];
+        self.game_audio_retry_at = None;
         let restore_speaker = self.speaker_route_until.is_some();
         self.speaker_route_until = None;
         if restore_speaker {
@@ -861,6 +891,7 @@ impl Connected {
         self.sensor_light = false;
         self.game_actions = ActionMapper::default();
         self.action_until = None;
+        self.action_id = None;
         self.last_sensor = None;
         if !(self.trigger_active
             || self.light_active
@@ -1201,6 +1232,7 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     last_trigger: None,
                     game_actions: ActionMapper::default(),
                     action_until: None,
+                    action_id: None,
                     last_light: None,
                     battery_light: false,
                     sensor_light: false,
@@ -1208,6 +1240,8 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     screen_light: false,
                     screen_color: None,
                     last_rumble: None,
+                    game_rumble: [0, 0],
+                    game_audio_retry_at: None,
                     input_effect: None,
                     input_effect_until: None,
                     bows: [None, None],
@@ -1324,9 +1358,13 @@ fn handle_command(
         }
         DeviceCommand::SetGameActions { enabled, rules } => {
             if let Some(d) = device.as_mut() {
-                let _ = d.restore_action();
-                if let Err(message) = d.game_actions.set(if enabled { rules } else { Vec::new() }) {
+                let mut mapper = ActionMapper::default();
+                if let Err(message) = mapper.set(if enabled { rules } else { Vec::new() }) {
                     emit(proxy, json!({"type":"error","message":message}));
+                } else {
+                    d.stop_action();
+                    d.game_actions = mapper;
+                    emit(proxy, json!({"type":"gameActionsStatus","enabled":enabled}));
                 }
             }
             return true;
@@ -2614,6 +2652,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                                 event: "dsx".into(),
                                 window_ms: 280,
                                 cooldown_ms: 0,
+                                condition_button: None,
+                                condition_threshold: 0.5,
+                                cancel_on_release: false,
+                                cancel_event: String::new(),
+                                retrigger: "restart".into(),
                                 duration_ms: 15000,
                                 haptic: None,
                                 left_trigger: update.triggers[0].clone(),
@@ -2635,7 +2678,9 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                             d.light_active = true;
                         }
                         for event in &update.events {
-                            for rule in d.game_actions.event(event, Instant::now()) {
+                            let rules = d.game_actions.event(event, Instant::now());
+                            d.cancel_actions();
+                            for rule in rules {
                                 let _ = d.play_action(&rule);
                             }
                         }
@@ -2831,7 +2876,69 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
         }
         remap.tick();
         if let Some(connected) = device.as_mut() {
+            let feedback = if xinput.active() {
+                match xinput.take_feedback() {
+                    Ok(motors) => motors,
+                    Err(message) => {
+                        xinput.shutdown();
+                        emit(&proxy, xinput.status_event());
+                        emit(&proxy, json!({"type":"error","message":message}));
+                        Some([0, 0])
+                    }
+                }
+            } else if connected.game_rumble != [0, 0] {
+                Some([0, 0])
+            } else {
+                None
+            };
+            if let Some(motors) = feedback {
+                let usb = matches!(connected.transport, BusType::Usb);
+                let recovering = usb
+                    && motors != [0, 0]
+                    && connected
+                        .game_audio_retry_at
+                        .is_some_and(|at| Instant::now() < at);
+                let suppressed = !usb && connected.haptic.is_some();
+                let result = if recovering {
+                    Err("USB game feedback is waiting to retry".into())
+                } else if usb {
+                    if motors != [0, 0]
+                        && (connected.game_rumble == [0, 0] || connected.audio.endpoint().is_none())
+                    {
+                        connected
+                            .enable_pcm()
+                            .and_then(|_| connected.audio.set_game_rumble(motors))
+                    } else {
+                        connected.audio.set_game_rumble(motors)
+                    }
+                } else if connected.haptic.is_none() {
+                    connected.write_rumble(motors).map(|_| {
+                        connected.rumble_until = Some(Instant::now() + Duration::from_secs(10));
+                    })
+                } else {
+                    Ok(())
+                };
+                connected.game_rumble = motors;
+                emit(
+                    &proxy,
+                    json!({"type":"gameFeedback","motors":motors,"delivered":result.is_ok() && !suppressed,"suppressed":suppressed}),
+                );
+                if let Err(message) = result
+                    && !recovering
+                {
+                    if usb {
+                        connected.game_audio_retry_at =
+                            Some(Instant::now() + Duration::from_secs(10));
+                    }
+                    emit(&proxy, json!({"type":"error","message":message}));
+                } else if !recovering && motors != [0, 0] {
+                    connected.game_audio_retry_at = None;
+                }
+            }
             connected.desktop.tick();
+            if !xinput.active() {
+                connected.audio.release_idle_output();
+            }
         }
         if let Some(connected) = device.as_mut() {
             if connected
@@ -3022,10 +3129,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                             emit(&proxy, json!({"type":"error","message":message}));
                         }
                         if !connected.desktop.enabled() && !input.panic_combo {
-                            for rule in connected
+                            let rules = connected
                                 .game_actions
-                                .update(&input.buttons, Instant::now())
-                            {
+                                .update(&input.buttons, Instant::now());
+                            connected.cancel_actions();
+                            for rule in rules {
                                 match connected.play_action(&rule) {
                                     Ok(()) => {
                                         emit(&proxy, json!({"type":"gameAction","name":rule.name}))

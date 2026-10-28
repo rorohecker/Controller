@@ -87,6 +87,7 @@ impl PcmStream {
 pub struct MixerSettings {
     pub file_gain: f32,
     pub cue_gain: f32,
+    pub game_gain: f32,
     pub bridge_gain: f32,
     pub speaker_gain: f32,
     pub ducking: f32,
@@ -97,6 +98,7 @@ impl Default for MixerSettings {
         Self {
             file_gain: 1.0,
             cue_gain: 1.0,
+            game_gain: 1.0,
             bridge_gain: 1.0,
             speaker_gain: 1.0,
             ducking: 0.65,
@@ -109,6 +111,7 @@ impl MixerSettings {
         if ![
             self.file_gain,
             self.cue_gain,
+            self.game_gain,
             self.bridge_gain,
             self.speaker_gain,
             self.ducking,

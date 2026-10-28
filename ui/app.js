@@ -167,6 +167,8 @@
     n.inputEffects = Object.assign(defaultInputEffects(), n.inputEffects || {});
     n.actionsEnabled=!!n.actionsEnabled;
     n.actions=Array.isArray(n.actions)?n.actions:[];
+    n.actions.forEach(r=>Object.assign(r,{conditionButton:r.conditionButton??null,conditionThreshold:r.conditionThreshold??.5,cancelOnRelease:r.cancelOnRelease??false,cancelEvent:r.cancelEvent??'',retrigger:r.retrigger??'restart'}));
+    window.ControllerGameSessions.normalize(n);
     n.gameLink=Object.assign({enabled:false,port:6969,format:'json'},n.gameLink||{});
     n.weaponBindings=Array.isArray(n.weaponBindings)?n.weaponBindings:[];
     for(const side of ['left','right']){
@@ -250,13 +252,15 @@
     item.append(time, detail); list.prepend(item);
     while (list.children.length > 11) list.lastChild.remove();
   }
-  async function send(command) {
+  async function send(command, sessionOwned=false) {
     if (!native) { toast('Open the desktop app for hardware.'); return false; }
+    const commandEpoch=window.gameSessions?.epoch;
     try { await invoke('send_command',{command});
+      if(command.action!=='reset'&&commandEpoch!==window.gameSessions?.epoch)return false;
       if(command.action==='applyTriggers')appliedTriggerState={profileId:state.profileId,triggers:clone({left:command.left,right:command.right}),inputEffects:clone(appliedTriggerState?.inputEffects||profile().inputEffects)};
       if(command.action==='setInputEffects'&&appliedTriggerState)appliedTriggerState.inputEffects=clone(command);
       if(command.action==='reset')appliedTriggerState=null;
-      window.studioHooks?.command(command); return true; }
+      window.gameSessions?.command(command,sessionOwned); window.studioHooks?.command(command); return true; }
     catch (error) { toast(String(error)); log(`CORE ERROR / ${error}`); return false; }
   }
   function sendPcBindings(){
@@ -590,7 +594,7 @@
     $('#profile-match').placeholder=platform.os==='windows'?'game.exe':'Game executable or app name';
     $('#profile-match-path').placeholder=platform.appPathPlaceholder;
     renderPcMode();renderGyroControls();renderPcBindings();renderRemapEditor();
-    platform.apply();window.studioHooks?.platform();
+    platform.apply();window.gameSessions?.renderProfile();window.studioHooks?.platform();
   }
   document.addEventListener('controller-platform',renderPlatform);
   if(native)invoke('platform_capabilities').then(cap=>{if(!cap)return;platform.update(cap);if(Array.isArray(cap.supportedKeys))supportedKeys=new Set(cap.supportedKeys);renderPcBindings();}).catch(()=>{});
@@ -693,6 +697,7 @@
     if(p.favorite!=null&&typeof p.favorite!=='boolean')return false;
     if(!Array.isArray(shortcuts)||shortcuts.length>12||shortcuts.some(s=>!s||!integer(s.button,0,22)||[6,7,16,18].includes(s.button)||s.modifier!=null&&(!integer(s.modifier,0,22)||s.modifier===s.button||[6,7,16,18].includes(s.modifier))||!['nextProfile','previousProfile','nextWeapon','previousWeapon'].includes(s.action))||new Set(shortcuts.map(s=>`${s.button}:${s.modifier??'none'}`)).size!==shortcuts.length)return false;
     if(rules.some(r=>!r||!text(r.id,80)||!text(r.name,40)||!['press','double','hold','event'].includes(r.source)||!integer(r.button??0,0,22)||!integer(r.windowMs??280,80,1000)||!integer(r.durationMs,20,2000)||!integer(r.cooldownMs??180,0,10000)||r.source==='event'&&!text(r.event,80)||!r.haptic&&!r.leftTrigger&&!r.rightTrigger||r.haptic&&(!['sine','square','saw','noise'].includes(r.haptic.shape)||!integer(r.haptic.frequency,20,300)||!integer(r.haptic.strength,0,100)||!integer(r.haptic.pan??0,-100,100))))return false;
+    if(rules.some(r=>(r.conditionButton!=null&&!integer(r.conditionButton,0,22))||!Number.isFinite(r.conditionThreshold??.5)||(r.conditionThreshold??.5)<0||(r.conditionThreshold??.5)>1||typeof(r.cancelOnRelease??false)!=='boolean'||typeof(r.cancelEvent??'')!=='string'||(r.cancelEvent??'').length>80||!['restart','ignore'].includes(r.retrigger??'restart')))return false;
     if(new Set(rules.map(r=>r.id)).size!==rules.length||weapons.some(b=>!b||!text(b.weapon,80)||!text(b.presetId,80))||new Set(weapons.map(b=>b.weapon.toLowerCase())).size!==weapons.length)return false;
     const link=p.gameLink;if(link&&(!['json','dsx'].includes(link.format??'json')||!integer(link.port??6969,1024,65535)||typeof(link.enabled??false)!=='boolean'))return false;
     return true;
@@ -701,7 +706,7 @@
   function validProfile(p) {
     const g=p?.gyroAim || defaultGyro(), r=p?.remap || defaultRemap(),c=p?.inputEffects || defaultInputEffects();
     const bindings=Array.isArray(r.bindings)?r.bindings:[];
-    return p && validGameFields(p) && typeof p.id==='string' && p.id.length>0 && p.id.length<=80
+    return p && window.ControllerGameSessions.valid(p) && validGameFields(p) && typeof p.id==='string' && p.id.length>0 && p.id.length<=80
       && typeof p.name === 'string' && p.name.trim().length>0 && p.name.length<=40
       && typeof p.description==='string' && p.description.length<=180 && typeof p.tag==='string' && p.tag.length<=40
       && (!p.matchExe || (typeof p.matchExe==='string' && p.matchExe.length<=80 && !/[\\/]/.test(p.matchExe)))
@@ -792,10 +797,11 @@
   $('#update-trigger-preset').addEventListener('click',async()=>{const p=triggerPresets.find(p=>p.id===$('#trigger-library').value);if(!p)return;const previous=clone(p);Object.assign(p,{name:$('#trigger-preset-name').value.trim()||p.name,triggers:clone(profile().triggers),inputEffects:clone(profile().inputEffects)});if(!await saveProfiles(true))Object.assign(p,previous);renderGameProfiles();});
   $('#load-trigger-preset').addEventListener('click',()=>{const p=triggerPresets.find(p=>p.id===$('#trigger-library').value);if(!p)return;profile().triggers=clone(p.triggers);profile().inputEffects=clone(p.inputEffects);renderTriggerControls();saveProfiles();toast(`Loaded ${p.name}. Press Apply to use it.`);});
   $('#delete-trigger-preset').addEventListener('click',async()=>{const id=$('#trigger-library').value;if(!id)return;const used=state.profiles.some(p=>p.weaponBindings.some(b=>b.presetId===id));if(used){toast('Remove this preset’s weapon mappings before deleting it.');return;}const previous=triggerPresets.slice();triggerPresets=triggerPresets.filter(p=>p.id!==id);if(!await saveProfiles(true))triggerPresets=previous;renderGameProfiles();});
-  async function applyGameRules(){
+  async function applyGameRules(sessionOwned=false,epoch=window.gameSessions?.epoch){
+    const dispatch=command=>epoch===window.gameSessions?.epoch?send(command,sessionOwned):Promise.resolve(false);
     const p=profile(),active=!state.pcMode&&!state.autoSuppressed&&(!p.matchExe||matchesForeground(p));
-    const a=await send({action:'setGameActions',enabled:p.actionsEnabled&&active,rules:clone(p.actions)});
-    const b=await send({action:'setGameLink',settings:{...p.gameLink,enabled:p.gameLink.enabled&&active}});
+    const a=await dispatch({action:'setGameActions',enabled:p.actionsEnabled&&active,rules:clone(p.actions)});
+    const b=await dispatch({action:'setGameLink',settings:{...p.gameLink,enabled:p.gameLink.enabled&&active}});
     return a&&b;
   }
   async function useWeapon(name,fromLink=false){
@@ -820,6 +826,10 @@
       if(rule.source==='event'){const e=gameNode('input',{value:rule.event,maxLength:80,placeholder:'dash'});e.addEventListener('change',()=>{rule.event=e.value.trim();saveProfiles();});grid.append(gameField('Event name',e));}
       else grid.append(gameField('Button',gameSelect(names.map((name,i)=>[i,name]),rule.button,v=>{rule.button=+v;saveProfiles();})));
       grid.append(gameField('Tap / hold window · ms',gameNumber(rule.windowMs,80,1000,v=>rule.windowMs=v)),gameField('Duration · ms',gameNumber(rule.durationMs,20,650,v=>rule.durationMs=v)),gameField('Cooldown · ms',gameNumber(rule.cooldownMs,0,10000,v=>rule.cooldownMs=v)));
+      grid.append(gameField('Retrigger while playing',gameSelect([['restart','Restart'],['ignore','Finish current effect']],rule.retrigger||'restart',v=>{rule.retrigger=v;saveProfiles();})),gameField('Only while held',gameSelect([['','No condition'],...names.map((name,i)=>[String(i),name])],rule.conditionButton==null?'':String(rule.conditionButton),v=>{rule.conditionButton=v===''?null:+v;saveProfiles();renderGameProfiles();})));
+      if(rule.conditionButton!=null)grid.append(gameField('Condition threshold ? %',gameNumber(Math.round((rule.conditionThreshold??.5)*100),0,100,v=>{rule.conditionThreshold=v/100;saveProfiles();})));
+      const cancel=gameNode('input',{type:'checkbox',checked:!!rule.cancelOnRelease});cancel.addEventListener('change',()=>{rule.cancelOnRelease=cancel.checked;saveProfiles();});const cancelLabel=gameNode('label',{class:'check-row',text:'Stop on button release'});cancelLabel.prepend(cancel);if(rule.source!=='event')grid.append(cancelLabel);
+      const cancelEvent=gameNode('input',{value:rule.cancelEvent||'',maxLength:80,placeholder:'Optional game event'});cancelEvent.addEventListener('change',()=>{rule.cancelEvent=cancelEvent.value.trim();saveProfiles();});grid.append(gameField('Cancel event',cancelEvent));
       const h=rule.haptic||{shape:'sine',strength:45,frequency:85,pan:0};
       grid.append(gameField('Grip texture',gameSelect([['','No grip effect'],['sine','Smooth'],['square','Sharp'],['saw','Snap'],['noise','Rough']],rule.haptic?.shape||'',v=>{rule.haptic=v?{...h,shape:v}:null;saveProfiles();renderGameProfiles();})));
       if(rule.haptic)grid.append(gameField('Grip strength · %',gameNumber(h.strength,0,100,v=>h.strength=v)),gameField('Frequency · Hz',gameNumber(h.frequency,20,300,v=>h.frequency=v)),gameField('Left / right · −100 / 100',gameNumber(h.pan,-100,100,v=>h.pan=v)));
@@ -841,23 +851,23 @@
   $('#add-weapon-binding').addEventListener('click',()=>{if(!triggerPresets.length){toast('Save a trigger preset on Triggers first.');return;}if(profile().weaponBindings.length>=100)return;let name='Weapon',i=1;while(profile().weaponBindings.some(b=>b.weapon===name))name=`Weapon ${++i}`;profile().weaponBindings.push({weapon:name,presetId:triggerPresets[0].id});saveProfiles();renderGameProfiles();});
   $('#apply-manual-weapon').addEventListener('click',()=>useWeapon($('#manual-weapon').value));
 
-  function renderAllProfileControls() { renderProfiles(); renderTriggerControls(); renderHapticControls(); renderRemapEditor(); renderGyroControls(); renderGameProfiles(); window.studioHooks?.renderProfile(); }
+  function renderAllProfileControls() { renderProfiles(); renderTriggerControls(); renderHapticControls(); renderRemapEditor(); renderGyroControls(); renderGameProfiles(); window.gameSessions?.renderProfile(); window.studioHooks?.renderProfile(); }
 
-  async function applyProfileHardware(announce=true) {
-    const p = profile();
+  async function applyProfileHardware(announce=true,sessionOwned=false,epoch=window.gameSessions?.epoch) {
+    const p = profile(), dispatch=command=>epoch===window.gameSessions?.epoch?send(command,sessionOwned):Promise.resolve(false);
     if(!announce&&state.autoSuppressed)return false;
     if (!state.connected) {
       if (announce) toast('Connect a controller.');
       return false;
     }
-    const ok = await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right});
+    const ok = await dispatch({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right});
     if (!ok) return false;
-    if (!await send(inputEffectCommand(p.inputEffects))) return false;
+    if (!await dispatch(inputEffectCommand(p.inputEffects))) return false;
     activeWeaponPreset='';
     if(announce)state.autoSuppressed=false;
-    if(!await applyGameRules())return false;
+    if(!await applyGameRules(sessionOwned,epoch))return false;
     if (p.gyroAim) {
-      if (!await send({
+      if (!await dispatch({
         action:'setGyroAim',
         enabled: !!p.gyroAim.enabled,
         sensitivity: Number(p.gyroAim.sensitivity)||1,
@@ -871,7 +881,7 @@
       })) return false;
     }
     if (p.remap) {
-      if (!await send({
+      if (!await dispatch({
         action:'setRemap',
         enabled: !!p.remap.enabled,
         bindings: (p.remap.bindings||[]).map(b=>({button:+b.button,vk:+b.vk,modifier:b.modifier??null,behavior:b.behavior||'hold',sequence:b.sequence||[],chord:b.chord||[]}))
@@ -907,6 +917,7 @@
   $('#auto-apply-toggle').addEventListener('click', () => {
     state.autoApply = !state.autoApply;
     renderAutoApply();
+    if(!state.autoApply)window.gameSessions?.enqueue(()=>window.gameSessions.restore());
     saveProfiles(true);
     toast(state.autoApply ? 'Auto-apply on' : 'Auto-apply off');
   });
@@ -1895,6 +1906,7 @@
   $('#battery-segments').innerHTML=Array.from({length:10},()=>'<i></i>').join('');
   function drawActivity(){const canvas=$('#activity-scope'),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);ctx.beginPath();state.activity.forEach((v,i)=>{const x=i/(state.activity.length-1)*w,y=h-8-v*(h-16);if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.lineWidth=3;ctx.strokeStyle='#d4a84b';ctx.stroke();ctx.fillStyle='#7ec9bc';const last=state.activity.at(-1);ctx.fillRect(w-5,h-8-last*(h-16)-4,8,8);}
   function handleEvent(event){
+    window.gameSessions?.event(event);
     window.studioHooks?.event(event);
     if(event.type==='device'){
       const changed=state.connected!==!!event.connected || (event.connected&&(state.name!==event.name||state.transport!==event.transport||state.path!==(event.path||'')||(event.controllerId&&event.controllerId!==calibrationOwner)));
@@ -2019,16 +2031,7 @@
       $('#detected-app').textContent=`Last app: ${state.lastExternalExe||'none'}`;
       const match=state.profiles.filter(matchesForeground).sort((a,b)=>(!!b.matchPath+!!b.matchTitle)-(!!a.matchPath+!!a.matchTitle))[0];
       state.autoMatchId=match?.id||'';
-      // Reset stays stopped across foreground changes until an explicit Apply.
-      if(match && match.id!==state.profileId){
-        state.profileId=match.id;renderAllProfileControls();saveProfiles();
-        log(`AUTO LOAD / ${match.name} FOR ${state.foregroundExe}`);
-        toast(match.name);
-        if (state.autoApply && match.autoApply !== false) applyProfileHardware(false);
-      } else if (match && previousMatch!==match.id && state.autoApply && match.autoApply !== false) {
-        applyProfileHardware(false);
-      }
-      if(state.connected)applyGameRules();
+      window.gameSessions?.foreground(match,previousMatch);
     }else if(event.type==='mouseMode'){
       state.mouse=!!event.enabled;renderMouseSwitch();
     }else if(event.type==='pcMode'){
@@ -2103,13 +2106,14 @@
       setInterval(()=>checkForUpdates(),12*60*60*1000);
     }else{$('#core-status').textContent='Core: browser preview';$('#update-status').textContent='Updates are available in the installed desktop app.';$('#check-update').disabled=true;log('Browser preview');}
   }
-  window.controllerStudio={state,profile,trigger,clone,native,invoke,send,toast,names,vkChoices,validPcKey,gameNode,gameSelect,gameField,saveProfiles,commitProfileDraft,normalizeProfile,validProfile,validLibrary,renderProfiles,renderAllProfileControls,renderTriggerControls,renderPcBindings,savePcBindings,navigate,useWeapon,applyProfileHardware,
+  window.controllerStudio={state,profile,trigger,clone,native,invoke,send,toast,names,vkChoices,validPcKey,gameNode,gameSelect,gameField,saveProfiles,commitProfileDraft,normalizeProfile,validProfile,validLibrary,renderProfiles,renderAllProfileControls,renderTriggerControls,renderPcBindings,savePcBindings,navigate,useWeapon,applyProfileHardware,applyGameRules,
     getPresets:()=>triggerPresets,getPcBindings:()=>pcBindings,
     async selectProfile(id,apply=false){if(!state.profiles.some(p=>p.id===id))return;state.profileId=id;renderAllProfileControls();await saveProfiles(true);if(apply&&state.connected)await applyProfileHardware(true);},
     setSupportedKeys(keys){if(Array.isArray(keys)){supportedKeys=new Set(keys);renderPcBindings();}},
     archive:()=>({schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles),triggerPresets:clone(triggerPresets)}),
     async replaceArchive(data){if(!data?.profiles?.length||!data.profiles.every(validProfile)||!validLibrary(data.triggerPresets||[]))throw Error('Invalid archive');await send({action:'reset'});state.autoSuppressed=true;state.profiles=data.profiles.map(normalizeProfile);state.profileId=state.profiles.some(p=>p.id===data.activeId)?data.activeId:state.profiles[0].id;triggerPresets=data.triggerPresets||[];state.autoApply=data.autoApply!==false;renderAllProfileControls();return saveProfiles(true);}
   };
+  window.gameSessions=new window.ControllerGameSessions(window.controllerStudio);
   renderPlatform();
   start();
 })();

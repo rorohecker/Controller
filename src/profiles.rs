@@ -56,6 +56,80 @@ struct Profile {
     weapon_bindings: Vec<WeaponBinding>,
     #[serde(default)]
     game_shortcuts: Vec<GameShortcut>,
+    #[serde(default)]
+    session: SessionSettings,
+    #[serde(default)]
+    community: CommunityMetadata,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+struct SessionSettings {
+    enabled: bool,
+    input_route: String,
+    audio: String,
+    audio_gain: u8,
+    hide_hint: bool,
+}
+impl Default for SessionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            input_route: "keep".into(),
+            audio: "keep".into(),
+            audio_gain: 50,
+            hide_hint: false,
+        }
+    }
+}
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+struct CommunityMetadata {
+    author: String,
+    version: String,
+    game_version: String,
+    source_url: String,
+    license: String,
+    updated_at: String,
+    reports: Vec<CompatibilityReport>,
+}
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CompatibilityReport {
+    platform: String,
+    transport: String,
+    result: String,
+    date: String,
+    game_version: String,
+    notes: String,
+}
+impl CommunityMetadata {
+    fn validate(&self) -> bool {
+        [
+            &self.author,
+            &self.version,
+            &self.game_version,
+            &self.license,
+        ]
+        .iter()
+        .all(|s| s.chars().count() <= 80 && !s.contains(char::is_control))
+            && self.updated_at.len() <= 32
+            && self.source_url.len() <= 1024
+            && (self.source_url.is_empty()
+                || (self.source_url.starts_with("https://")
+                    && !self.source_url.contains(char::is_whitespace)
+                    && !self.source_url.contains(char::is_control)))
+            && self.reports.len() <= 20
+            && self.reports.iter().all(|r| {
+                matches!(r.platform.as_str(), "windows" | "macos" | "linux")
+                    && matches!(r.transport.as_str(), "usb" | "bluetooth")
+                    && matches!(r.result.as_str(), "works" | "partial" | "broken")
+                    && r.date.len() <= 32
+                    && r.game_version.chars().count() <= 80
+                    && r.notes.chars().count() <= 300
+                    && !r.notes.contains('\0')
+            })
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -331,6 +405,13 @@ fn validate(data: Value) -> Result<Archive, String> {
     }
     let mut ids = std::collections::HashSet::new();
     for p in &archive.profiles {
+        if !matches!(p.session.input_route.as_str(), "keep" | "native" | "xinput")
+            || !matches!(p.session.audio.as_str(), "keep" | "off" | "system")
+            || p.session.audio_gain > 100
+            || !p.community.validate()
+        {
+            return Err("Invalid session settings or profile source details".into());
+        }
         let mut shortcuts = std::collections::HashSet::new();
         if p.game_shortcuts.len() > 12
             || p.game_shortcuts.iter().any(|s| {
@@ -680,6 +761,29 @@ pub fn export(data: Value) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn session_and_community_records_roundtrip_and_legacy_defaults_are_safe() {
+        let old = validate(sample_profile()).unwrap();
+        assert!(!old.profiles[0].session.enabled);
+        assert!(old.profiles[0].community.reports.is_empty());
+        let mut data = sample_profile();
+        data["profiles"][0]["session"] = serde_json::json!({"enabled":true,"inputRoute":"xinput","audio":"off","audioGain":50,"hideHint":true});
+        data["profiles"][0]["community"] = serde_json::json!({"author":"Tester","version":"2","sourceUrl":"https://example.com/profile","license":"MIT","reports":[{"platform":"windows","transport":"usb","result":"partial","date":"2026-10-28","gameVersion":"1.2","notes":"Inputs work; needs more recoil"}]});
+        let encoded = serde_json::to_value(validate(data.clone()).unwrap()).unwrap();
+        assert_eq!(
+            encoded["profiles"][0]["community"]["reports"][0]["result"],
+            "partial"
+        );
+        assert!(validate(encoded).is_ok());
+        let mut bad = data.clone();
+        bad["profiles"][0]["community"]["sourceUrl"] = "javascript:alert(1)".into();
+        assert!(validate(bad).is_err());
+        let mut bad = data.clone();
+        bad["profiles"][0]["session"]["audioGain"] = 101.into();
+        assert!(validate(bad).is_err());
+        data["profiles"][0]["community"]["reports"][0]["platform"] = "all".into();
+        assert!(validate(data).is_err());
+    }
 
     #[test]
     fn backup_restore_keeps_current_archive_and_rejects_traversal() {

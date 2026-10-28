@@ -43,6 +43,24 @@ impl Default for XInputBridge {
 }
 
 impl XInputBridge {
+    pub fn active(&self) -> bool {
+        self.status == XInputStatus::Active
+    }
+    /// Nonblocking notification polling. Only the hardware loop writes outputs.
+    pub fn take_feedback(&mut self) -> Result<Option<[u8; 2]>, String> {
+        #[cfg(windows)]
+        if let Some(pad) = self.inner.as_mut() {
+            let result = pad.feedback();
+            if let Err(error) = &result {
+                self.shutdown();
+                self.status = XInputStatus::Unavailable;
+                self.last_error = Some(error.clone());
+            }
+            return result;
+        }
+        Ok(None)
+    }
+
     pub fn status_event(&self) -> Value {
         json!({
             "type": "xinput",
@@ -141,10 +159,12 @@ impl XInputBridge {
 #[cfg(windows)]
 mod windows_impl {
     use aftertouch_protocol::InputState;
+    use std::pin::Pin;
     use vigem_client::{Client, TargetId, XButtons, XGamepad, Xbox360Wired};
 
     pub struct Pad {
         target: Xbox360Wired<Client>,
+        notification: Pin<Box<vigem_client::XRequestNotification>>,
     }
 
     impl Pad {
@@ -159,7 +179,27 @@ mod windows_impl {
             target
                 .wait_ready()
                 .map_err(|error| format!("Virtual Xbox pad not ready: {error}"))?;
-            Ok(Self { target })
+            let mut notification = Box::pin(
+                target
+                    .request_notification()
+                    .map_err(|error| format!("Game feedback unavailable: {error}"))?,
+            );
+            notification.as_mut().request();
+            Ok(Self {
+                target,
+                notification,
+            })
+        }
+
+        pub fn feedback(&mut self) -> Result<Option<[u8; 2]>, String> {
+            match self.notification.as_mut().poll(false) {
+                Ok(Some(data)) => {
+                    self.notification.as_mut().request();
+                    Ok(Some([data.large_motor, data.small_motor]))
+                }
+                Ok(None) => Ok(None),
+                Err(error) => Err(format!("Game feedback lost: {error}")),
+            }
         }
 
         pub fn update(&mut self, input: &InputState) -> Result<(), String> {

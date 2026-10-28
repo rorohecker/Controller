@@ -57,6 +57,7 @@ jobs:
           python -m playwright install chromium
           python tests/ui_smoke.py
           python tests/game_profiles_smoke.py
+          python tests/game_session_smoke.py
           python tests/studio_smoke.py
           python tests/platform_smoke.py
           python tests/reliability_smoke.py
