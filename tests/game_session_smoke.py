@@ -52,7 +52,7 @@ def main():
           await a.send({action:'setGyroAim',enabled:false,sensitivity:1,yawScale:1,pitchScale:1,invertY:false,activation:'always',bias:[0,0,0],deadzone:90,smoothing:.18});
           await a.send({action:'setXinput',enabled:false});
           const game=a.normalizeProfile(a.clone(a.profile()));game.id='session-test';game.name='Test game';game.matchExe='testgame.exe';
-          game.session={enabled:true,inputRoute:'xinput',audio:'off',audioGain:40,hideHint:true};game.gyroAim.enabled=true;
+          game.session={enabled:true,inputRoute:'xinput',audio:'off',audioGain:40,hideHint:true};game.gyroAim.enabled=true;game.actionsEnabled=true;
           a.state.profiles.push(game);
           window.coreHandler({type:'foreground',exe:'testgame.exe',title:'Test game'});
         }""")
@@ -62,6 +62,10 @@ def main():
         assert '120 / 80' in page.locator('#game-feedback-status').inner_text()
         await_queue = "async()=>{await window.gameSessions.queue}"
         page.evaluate(await_queue)
+        armed = page.evaluate("window.sent.filter(c=>c.action==='setGameActions').length")
+        page.evaluate("window.coreHandler({type:'foreground',exe:'testgame.exe',title:'A new game window title'})")
+        page.evaluate(await_queue)
+        assert page.evaluate("window.sent.filter(c=>c.action==='setGameActions').length") == armed
         # Manual audio changes should survive leaving the session.
         page.evaluate("async()=>{await window.controllerStudio.send({action:'setAudioBridge',enabled:true,gain:.25,preset:'gentle'});window.coreHandler({type:'foreground',exe:'notepad.exe'})}")
         page.evaluate(await_queue)

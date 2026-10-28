@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "controller"
-version = "0.15.6"
+version = "0.15.7"
 dependencies = [
  "aftertouch-protocol",
  "arc-swap",

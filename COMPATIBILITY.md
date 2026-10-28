@@ -65,6 +65,6 @@ The user confirmed the microphone light and amplified-tapping fix, but rejected 
 The file player now has Play/Pause/Resume, Stop, and a position scrubber. Pausing freezes the source sample index while the USB output stream continues with silence, and resuming adjusts its origin so playback continues from that sample. Tests verify the pause sample, browser transport state, and buffering after page changes. Higher-note energy now drives an 85–170 Hz grip carrier, with a stronger bounded output. A live core check with a 3 kHz source reported the same 0.758-second position at pause and resume. Gyro spread was 13.2 counts while playing, 4.1 while paused, and 12.4 after resuming. The user requested this after finding grip playback too weak on higher notes; its final feel is awaiting the next USB check.
 
 
-## 0.15.6 game compatibility batch
+## 0.15.7 game compatibility batch
 
 Windows Xbox bridge vibration now returns to the DualSense: USB uses bounded low/high grip waveforms and Bluetooth uses standard motor rumble. The Profiles setup card shows actual route and receiver state. Opt-in sessions coordinate and restore routing, audio, gyro, remaps, trigger and action settings; HidHide remains manual. Action rules add input conditions, release/event cancellation and retrigger policy. Profile exports retain sources, versions and self-reported platform/transport reports. See [game sessions](docs/game-sessions.md) for setup, the ten-second stale-rumble limit, and native feedback limitations. Physical return-path feedback is not yet verified with a game.

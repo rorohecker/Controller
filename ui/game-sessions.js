@@ -67,11 +67,18 @@
     async write(command,epoch=this.epoch){if(epoch!==this.epoch||!this.a.state.connected)return false;return this.a.send(command,true);}
     async start(p,manual=false){
       const {state}=this.a;
+      const epoch=this.epoch;
       if(!state.connected){this.a.toast('Connect a controller.');return;}
       if(state.pcMode){this.a.toast('Switch to Game mode before starting a game session.');return;}
-      if(this.active?.id===p.id&&!manual){await this.a.applyGameRules(true);return;}
+      if(this.active?.id===p.id&&!manual){
+        // Foreground titles can change while a button is held. Replacing an
+        // already armed mapper would turn that held button into a fresh press.
+        if(p.actionsEnabled&&!this.rulesActive)await this.write({action:'setGameActions',enabled:true,rules:copy(p.actions)},epoch);
+        if(p.gameLink.enabled&&!this.linkActive)await this.write({action:'setGameLink',settings:copy(p.gameLink)},epoch);
+        return;
+      }
       if(this.active)await this.restore();
-      const epoch=this.epoch;
+      if(epoch!==this.epoch)return;
       this.active={id:p.id,previousId:state.profileId,baseline:this.baseline(),owned:new Map()};
       const s=p.session||sessionDefaults();
       if(s.inputRoute!=='keep'&&window.controllerPlatform.xinput){
@@ -103,12 +110,15 @@
     foreground(match,previous){
       if(!this.a.state.foregroundExe)return; // Own app/minimized desktop has no external executable.
       this.enqueue(async()=>{
+        const epoch=this.epoch;
         if((match?.id||'')!==this.a.state.autoMatchId)return;
         const {state}=this.a,eligible=match&&state.autoApply&&match.autoApply!==false&&!state.autoSuppressed&&state.connected&&!state.pcMode;
         if(this.active&&(!eligible||this.active.id!==match.id))await this.restore();
+        if(epoch!==this.epoch)return;
         if(match?.session?.enabled&&eligible){await this.start(match);return;}
         const changed=match&&match.id!==state.profileId;
         if(changed)await this.a.selectProfile(match.id,false);
+        if(epoch!==this.epoch)return;
         if(eligible&&(changed||previous!==match.id))await this.a.applyProfileHardware(false);
         if(state.connected)await this.a.applyGameRules();
         this.render();

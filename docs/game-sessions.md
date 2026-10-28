@@ -1,4 +1,4 @@
-# Game sessions and feedback (0.15.6)
+# Game sessions and feedback (0.15.7)
 
 ## Getting started
 
