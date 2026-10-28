@@ -4,6 +4,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::audio_haptics::authoring::{EffectClip, PersonalSettings, limit_trigger};
 use crate::{
     audio_haptics::{AudioEngine, VoiceClip},
     game_actions::{ActionMapper, ActionRule},
@@ -38,12 +39,30 @@ pub enum DeviceCommand {
         right: TriggerSetting,
     },
     RenewTriggers,
+    PlayEffectClip {
+        clip: EffectClip,
+        #[serde(rename = "playId")]
+        play_id: u64,
+    },
+    StopEffectClip {
+        #[serde(rename = "playId")]
+        play_id: u64,
+    },
+    SetPersonalHaptics {
+        settings: PersonalSettings,
+        #[serde(default, rename = "requestId")]
+        request_id: u64,
+    },
+    PlayPersonalTest {
+        side: u8,
+        strength: u8,
+    },
     SetGameActions {
         enabled: bool,
         rules: Vec<ActionRule>,
     },
     TestGameAction {
-        rule: ActionRule,
+        rule: Box<ActionRule>,
     },
     SetGameLink {
         settings: LinkSettings,
@@ -339,10 +358,20 @@ struct Connected {
     game_actions: ActionMapper,
     action_until: Option<Instant>,
     action_id: Option<String>,
+    timeline: Option<TimelineRun>,
+    timeline_generation: u64,
+    personal: PersonalSettings,
     low_battery_alert: bool,
     low_battery_latched: bool,
     last_battery: Option<u8>,
     haptic_timer: Option<Instant>,
+}
+
+struct TimelineRun {
+    clip: EffectClip,
+    start: Instant,
+    previous: [Option<[u8; 11]>; 2],
+    last_event: Instant,
 }
 
 struct InputEffect {
@@ -396,7 +425,7 @@ impl BowReturn {
     }
 }
 
-fn encode_live_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str> {
+pub(crate) fn encode_live_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str> {
     setting.validate()?;
     if setting.mode == "weapon" && setting.preload_strength.unwrap_or(0.0) > 0.0 {
         let start = usize::from(setting.start_zone.unwrap_or(5));
@@ -684,8 +713,81 @@ impl Connected {
         self.haptic = Some(fallback);
     }
 
+    fn start_timeline(&mut self, clip: EffectClip) -> Result<(), String> {
+        clip.validate().map_err(str::to_string)?;
+        if clip.has_grips() && !matches!(self.transport, BusType::Usb) {
+            return Err(
+                "Stereo timeline grips require USB; trigger-only clips work over Bluetooth".into(),
+            );
+        }
+        self.restore_action()?;
+        self.audio.cancel_cue();
+        if clip.has_grips() {
+            self.enable_pcm()?;
+            self.audio.play_timeline(clip.clone())?;
+        }
+        let start = Instant::now();
+        self.trigger_active |= clip.trigger_mask() != 0;
+        self.action_until = Some(start + Duration::from_millis(u64::from(clip.duration_ms())));
+        self.timeline = Some(TimelineRun {
+            clip,
+            start,
+            previous: [None, None],
+            last_event: start - Duration::from_millis(50),
+        });
+        Ok(())
+    }
+    fn tick_timeline(&mut self) -> Result<Option<serde_json::Value>, String> {
+        let Some(timeline) = self.timeline.as_ref() else {
+            return Ok(None);
+        };
+        let elapsed = timeline
+            .start
+            .elapsed()
+            .as_millis()
+            .min(u128::from(u32::MAX)) as u32;
+        let duration = timeline.clip.duration_ms();
+        if elapsed >= duration {
+            self.restore_action()?;
+            return Ok(Some(
+                json!({"type":"effectTimeline","playId":self.timeline_generation,"playing":false,"positionMs":duration,"durationMs":duration}),
+            ));
+        }
+        let blocks = timeline
+            .clip
+            .triggers(elapsed - elapsed % 10, self.personal.cap());
+        if blocks != timeline.previous {
+            self.write(protocol::usb_report(
+                (if blocks[0].is_some() { 8 } else { 0 })
+                    | (if blocks[1].is_some() { 4 } else { 0 }),
+                0,
+                0,
+                blocks[1],
+                blocks[0],
+                None,
+                None,
+                false,
+            ))?;
+            if let Some(timeline) = self.timeline.as_mut() {
+                timeline.previous = blocks;
+            }
+        }
+        let timeline = self.timeline.as_mut().unwrap();
+        if timeline.last_event.elapsed() >= Duration::from_millis(50) {
+            timeline.last_event = Instant::now();
+            return Ok(Some(
+                json!({"type":"effectTimeline","playId":self.timeline_generation,"name":timeline.clip.name,"playing":true,"positionMs":elapsed,"durationMs":duration}),
+            ));
+        }
+        Ok(None)
+    }
     fn play_action(&mut self, rule: &ActionRule) -> Result<(), String> {
         self.stop_action();
+        if let Some(clip) = &rule.timeline {
+            self.start_timeline(clip.clone())?;
+            self.action_id = Some(rule.id.clone());
+            return Ok(());
+        }
         if let Some(h) = &rule.haptic {
             self.play_feedback(
                 &h.shape,
@@ -757,7 +859,7 @@ impl Connected {
         }
     }
     fn stop_action(&mut self) {
-        if self.action_id.is_some() {
+        if self.action_id.is_some() || self.timeline.is_some() {
             self.audio.cancel_cue();
             self.haptic = None;
             if self.rumble_active {
@@ -768,6 +870,40 @@ impl Connected {
     }
     fn restore_action(&mut self) -> Result<(), String> {
         if self.action_until.is_none() {
+            return Ok(());
+        }
+        if let Some(timeline) = self.timeline.as_ref() {
+            let expired = self
+                .trigger_until
+                .is_some_and(|until| Instant::now() >= until);
+            let mask = if expired {
+                12
+            } else {
+                timeline.clip.trigger_mask()
+            };
+            let off = [0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            let (left, right) = if expired {
+                (off, off)
+            } else {
+                self.last_trigger.unwrap_or((off, off))
+            };
+            if mask != 0 {
+                self.write(protocol::usb_report(
+                    mask,
+                    0,
+                    0,
+                    (mask & 4 != 0).then_some(right),
+                    (mask & 8 != 0).then_some(left),
+                    None,
+                    None,
+                    false,
+                ))?;
+            }
+            self.timeline = None;
+            self.audio.stop_timeline();
+            self.action_until = None;
+            self.action_id = None;
+            self.trigger_active = left[0] != 5 || right[0] != 5;
             return Ok(());
         }
         let off = protocol::encode_trigger(&TriggerSetting {
@@ -814,6 +950,17 @@ impl Connected {
     }
 
     fn write(&mut self, mut report: [u8; protocol::USB_OUTPUT_LEN]) -> Result<(), String> {
+        if self.personal.enabled {
+            for (flag, offset) in [(4, 11), (8, 22)] {
+                if report[1] & flag != 0 {
+                    let block: [u8; 11] = report[offset..offset + 11].try_into().unwrap();
+                    report[offset..offset + 11]
+                        .copy_from_slice(&limit_trigger(block, self.personal.cap()));
+                }
+            }
+            report[4] = (f32::from(report[4]) * self.personal.side_limit(0)).round() as u8;
+            report[3] = (f32::from(report[3]) * self.personal.side_limit(1)).round() as u8;
+        }
         if report[1] & 0x0c != 0 {
             protocol::use_full_motor_power(&mut report);
         }
@@ -890,6 +1037,8 @@ impl Connected {
         self.screen_color = None;
         self.sensor_light = false;
         self.game_actions = ActionMapper::default();
+        self.timeline = None;
+        self.timeline_generation = self.timeline_generation.saturating_add(1);
         self.action_until = None;
         self.action_id = None;
         self.last_sensor = None;
@@ -1233,6 +1382,9 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     game_actions: ActionMapper::default(),
                     action_until: None,
                     action_id: None,
+                    timeline: None,
+                    timeline_generation: 0,
+                    personal: PersonalSettings::default(),
                     last_light: None,
                     battery_light: false,
                     sensor_light: false,
@@ -1889,6 +2041,11 @@ fn handle_command(
         return true;
     };
 
+    let effect_request = match &command {
+        DeviceCommand::PlayEffectClip { play_id, .. }
+        | DeviceCommand::StopEffectClip { play_id } => Some(*play_id),
+        _ => None,
+    };
     let audio_request = match &command {
         DeviceCommand::PlayAudioFile { track_id, .. }
         | DeviceCommand::PlaySpeakerSound { track_id, .. }
@@ -1897,6 +2054,36 @@ fn handle_command(
         _ => None,
     };
     let result: Result<&str, String> = match command {
+        DeviceCommand::PlayPersonalTest {side,strength} => {
+            if side>1 || strength>100 || !matches!(device.transport,BusType::Usb) {Err("Choose a grip and 0?100% strength over USB".into())}
+            else { device.stop_action();let mut voice=VoiceClip::new("sine",90,10,180,strength,if side==0{-100}else{100});voice.raw_test=true;device.play_voice(voice).map(|_|"Raw grip test") }
+        }
+        DeviceCommand::PlayEffectClip {clip,play_id} => {
+            if play_id<device.timeline_generation {Ok("Ignored stale timeline")} else {
+                device.timeline_generation=play_id;
+                device.start_timeline(clip).map(|_|"Timeline started")
+            }
+        }
+        DeviceCommand::StopEffectClip {play_id} => {
+            if play_id<device.timeline_generation {Ok("Ignored stale timeline stop")} else {
+                device.timeline_generation=play_id;device.restore_action().map(|_|"Timeline stopped")
+            }
+        }
+        DeviceCommand::SetPersonalHaptics {settings,request_id} => {
+            let result=(||->Result<(),String>{
+                settings.validate().map_err(str::to_string)?;
+                device.audio.set_personal(settings.clone())?;device.personal=settings;
+                if let Some(motors)=device.last_rumble.take(){device.write_rumble(motors)?;}
+                if let Some(timeline)=device.timeline.as_mut(){timeline.previous=[None,None];device.tick_timeline()?;}
+                else {
+                    if device.action_until.is_some(){device.audio.cancel_cue();device.restore_action()?;}
+                    if let Some((left,right))=device.last_trigger{device.write(protocol::usb_report(12,0,0,Some(right),Some(left),None,None,false))?;}
+                }
+                Ok(())
+            })();
+            emit(proxy,json!({"type":"personalHapticsStatus","requestId":request_id,"applied":result.is_ok(),"message":result.as_ref().err()}));
+            result.map(|_|"Personal limits applied")
+        }
         DeviceCommand::TestGameAction {rule} => {rule.validate().map_err(str::to_string).and_then(|()|device.play_action(&rule)).map(|()|"Action played")}
         DeviceCommand::ApplyTriggers { left, right } => {
             let _=device.restore_action();
@@ -2405,6 +2592,12 @@ fn handle_command(
     match result {
         Ok(message) => emit(proxy, json!({ "type": "notice", "message": message })),
         Err(message) => {
+            if let Some(play_id) = effect_request {
+                emit(
+                    proxy,
+                    json!({"type":"effectTimeline","playId":play_id,"playing":false,"error":message,"positionMs":0,"durationMs":0}),
+                );
+            }
             if let Some(track_id) = audio_request {
                 emit(
                     proxy,
@@ -2661,6 +2854,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                                 haptic: None,
                                 left_trigger: update.triggers[0].clone(),
                                 right_trigger: update.triggers[1].clone(),
+                                timeline: None,
                             };
                             let _ = d.play_action(&rule);
                         }
@@ -2941,6 +3135,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
             }
         }
         if let Some(connected) = device.as_mut() {
+            match connected.tick_timeline() {
+                Ok(Some(event)) => emit(&proxy, event),
+                Err(message) => emit(&proxy, json!({"type":"error","message":message})),
+                _ => {}
+            }
             if connected
                 .speaker_route_until
                 .is_some_and(|at| Instant::now() >= at)
@@ -2983,10 +3182,23 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     ..TriggerSetting::default()
                 })
                 .unwrap();
-                let report =
-                    protocol::usb_report(0x0c, 0, 0, Some(off), Some(off), None, None, false);
-                if connected.write(report).is_ok() {
-                    connected.trigger_active = false;
+                let held = connected
+                    .timeline
+                    .as_ref()
+                    .map_or(0, |t| t.clip.trigger_mask());
+                let mask = 12 & !held;
+                let report = protocol::usb_report(
+                    mask,
+                    0,
+                    0,
+                    (mask & 4 != 0).then_some(off),
+                    (mask & 8 != 0).then_some(off),
+                    None,
+                    None,
+                    false,
+                );
+                if mask == 0 || connected.write(report).is_ok() {
+                    connected.trigger_active = held != 0;
                     connected.trigger_until = None;
                     connected.last_trigger = None;
                     connected.bows = [None, None];
@@ -3020,7 +3232,10 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
             {
                 connected.rumble_until = None;
             }
-            match connected.hid.read_timeout(&mut input_report, 20) {
+            match connected.hid.read_timeout(
+                &mut input_report,
+                if connected.timeline.is_some() { 5 } else { 20 },
+            ) {
                 Ok(length) if length > 0 => {
                     if let Some(mut input) = protocol::parse_input(&input_report[..length]) {
                         connected.last_battery = input.battery;

@@ -28,11 +28,11 @@ Work in batches of five. Each batch includes regression checks, wording/layout r
 
 ## Batch 4 — Trigger and haptic authoring
 
-16. Pending — Effect timeline with trigger load/wall/kick/release and stereo grip lanes.
-17. Pending — Requested-versus-encoded trigger preview, force steps and rounded timing.
-18. Pending — Personal perceived-strength calibration, side balance and comfortable limits.
-19. Pending — Reusable tactile clips/material library with descriptive tags and license records.
-20. Pending — Bass/impact/texture/full-soundtrack conversion modes and matched A/B preview.
+16. Complete — Effect timeline with trigger load/wall/kick/release and stereo grip lanes.
+17. Complete — Requested-versus-encoded trigger preview, force steps and rounded timing.
+18. Complete — Personal perceived-strength calibration, side balance and comfortable limits.
+19. Complete — Reusable tactile clips/material library with descriptive tags and license records.
+20. Complete — Bass/impact/texture/full-soundtrack conversion modes and matched A/B preview.
 
 ## Batch 5 — Motion and input
 
@@ -86,6 +86,8 @@ Batch 2 implementation is complete (0.15.5): native file picking/probing and wor
 
 The unpublished 0.15.4 candidate exposed an atomic API deprecation on CI's newer Rust toolchain. The counter now uses a compare/exchange loop compatible with both toolchains.
 
-Batch 3 is complete (0.15.7). Windows XInput notifications feed low/high grip waveforms over USB and motor rumble over Bluetooth, with explicit stops and a ten-second stale-command cutoff. The setup card shows actual route/receiver status and last received feedback. Opt-in game sessions restore routing, system-audio, gyro, remap, trigger and action settings while preserving manual overrides; HidHide remains manual. Rules add analog/digital input conditions, restart/ignore behavior, release cancellation and named cancel events. Exported profiles now retain author, version, source, reuse terms, maintenance date and up to 20 self-reported compatibility records. Old archives receive disabled session defaults. Regression coverage includes session exits/reset/manual overrides, platform visibility, conditional action timing, import validation and bounded/muted game-rumble mixing. Physical game vibration still needs validation with ViGEmBus and a game. Batch 4 is next. Driver/output calibration is item 46. Research claims and implementation status are tracked separately; experimental items must not be presented as supported features.
+Batch 3 is complete (0.15.7). Windows XInput notifications feed low/high grip waveforms over USB and motor rumble over Bluetooth, with explicit stops and a ten-second stale-command cutoff. The setup card shows actual route/receiver status and last received feedback. Opt-in game sessions restore routing, system-audio, gyro, remap, trigger and action settings while preserving manual overrides; HidHide remains manual. Rules add analog/digital input conditions, restart/ignore behavior, release cancellation and named cancel events. Exported profiles now retain author, version, source, reuse terms, maintenance date and up to 20 self-reported compatibility records. Old archives receive disabled session defaults. Regression coverage includes session exits/reset/manual overrides, platform visibility, conditional action timing, import validation and bounded/muted game-rumble mixing. Physical game vibration still needs validation with ViGEmBus and a game. Batch 4 is complete; Batch 5 is next. Driver/output calibration is item 46. Research claims and implementation status are tracked separately; experimental items must not be presented as supported features.
 
 The unpublished 0.15.6 candidate was stopped during final review: an external window-title change could rearm an active session's action mapper. The 0.15.7 correction preserves armed receivers and adds a regression check for this case.
+
+Batch 4 implementation is complete (0.16.0): bounded eight-second timelines with L2/R2 load/wall/kick/release phases and overlapping stereo grip lanes; native packet/force-step inspection and 10 ms scheduling-rounding previews; per-controller personal thresholds, side balance, grip caps and trigger-force ceilings; original reusable tactile clips with tags/authorship/reuse records and independent game-action snapshots; and native soundtrack/bass/impact/texture conversion with matched five-second A/B windows. Timeline end/cancel restores only owned trigger lanes, lease expiry clears unowned lanes, and Reset still clears timeline-owned physical effects. Personal caps remain after Reset; explicit raw feel tests briefly solo one grip within the fixed output limiter. Archive import/export/backups retain tactile clips, reject invalid/overlapping schedules and avoid duplicating identical imported clips. Regression tests cover native validation, stereo isolation, output caps, trigger masks, quiet-signal preservation, onset decay, timeline-duration retriggering, per-pad storage, stale events, rapid A/B requests, file-duration preservation and narrow layouts. Physical feel and macOS/Linux controller operation still need hardware checks.

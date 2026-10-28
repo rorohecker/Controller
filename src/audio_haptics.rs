@@ -8,11 +8,14 @@ use std::sync::{
 #[cfg(windows)]
 use std::{sync::mpsc, thread, time::Duration};
 
+#[path = "audio_haptics/authoring.rs"]
+pub mod authoring;
 #[path = "audio_haptics/file.rs"]
 pub mod file;
 #[path = "audio_haptics/stream.rs"]
 mod stream;
 use arc_swap::{ArcSwap, ArcSwapOption};
+use authoring::{EffectClip, PersonalSettings};
 use crossbeam_queue::ArrayQueue;
 pub use stream::MixerSettings;
 use stream::{PcmStream, RenderState, routed_frame};
@@ -55,6 +58,7 @@ impl SpeakerChirp {
 
 #[derive(Clone, Copy)]
 pub struct VoiceClip {
+    pub raw_test: bool,
     pub frequency: f32,
     pub attack: f32,
     pub release: f32,
@@ -83,6 +87,7 @@ impl VoiceClip {
         pan: i16,
     ) -> Self {
         Self {
+            raw_test: false,
             frequency: frequency.clamp(40, 300) as f32,
             attack: attack.clamp(2, 200) as f32 / 1000.0,
             release: release.clamp(25, 650) as f32 / 1000.0,
@@ -159,7 +164,14 @@ impl GameRumble {
     }
 }
 
+struct TimelineAudio {
+    clip: EffectClip,
+    start_frame: u64,
+}
+
 struct Shared {
+    timeline: ArcSwapOption<TimelineAudio>,
+    personal: ArcSwap<PersonalSettings>,
     game: ArcSwapOption<GameRumble>,
     clip: ArcSwapOption<VoiceClip>,
     speaker: ArcSwapOption<SpeakerChirp>,
@@ -186,6 +198,8 @@ struct Shared {
 impl Default for Shared {
     fn default() -> Self {
         Self {
+            timeline: ArcSwapOption::from(None),
+            personal: ArcSwap::from_pointee(PersonalSettings::default()),
             game: ArcSwapOption::from(None),
             clip: ArcSwapOption::from(None),
             speaker: ArcSwapOption::from(None),
@@ -257,13 +271,36 @@ impl Drop for ExclusiveOutput {
 }
 
 impl AudioEngine {
+    pub fn set_personal(&self, settings: PersonalSettings) -> Result<(), String> {
+        settings.validate().map_err(str::to_string)?;
+        self.shared.personal.store(Arc::new(settings));
+        Ok(())
+    }
+    pub fn play_timeline(&mut self, clip: EffectClip) -> Result<(), String> {
+        clip.validate().map_err(str::to_string)?;
+        if clip.has_grips() {
+            self.start_output()?;
+            self.shared.timeline.store(Some(Arc::new(TimelineAudio {
+                clip,
+                start_frame: self.shared.rendered_frames.load(Ordering::Relaxed),
+            })));
+        }
+        Ok(())
+    }
+    pub fn stop_timeline(&self) {
+        self.shared.timeline.store(None);
+    }
     pub fn cancel_cue(&self) {
         self.shared.clip.store(None);
+        self.stop_timeline();
     }
 
     fn sources_idle(&self) -> bool {
         let frame = self.shared.rendered_frames.load(Ordering::Relaxed);
         !self.bridge_on()
+            && self.shared.timeline.load().as_ref().is_none_or(|t| {
+                frame.saturating_sub(t.start_frame) >= u64::from(t.clip.duration_ms()) * 48
+            })
             && self.shared.game.load().is_none()
             && self.shared.clip.load().as_ref().is_none_or(|c| {
                 c.sample(frame.saturating_sub(c.start_frame) as f32 / RATE as f32)
@@ -288,6 +325,7 @@ impl AudioEngine {
             self.output = None;
             self.endpoint = None;
             self.shared.clip.store(None);
+            self.stop_timeline();
             self.shared.speaker.store(None);
         }
     }
@@ -538,7 +576,9 @@ impl AudioEngine {
         {
             return Err("Choose a position inside a track up to one hour long.".into());
         }
-        if !matches!(route, "speaker" | "both" | "grips") || !matches!(kind, "music" | "haptic") {
+        if !matches!(route, "speaker" | "both" | "grips")
+            || !matches!(kind, "music" | "haptic" | "bass" | "impact" | "texture")
+        {
             return Err("Choose a valid audio route and content type.".into());
         }
         self.start_output()?;
@@ -549,7 +589,7 @@ impl AudioEngine {
             true,
             ((duration - start) * RATE as f64).round() as u64,
         ));
-        file::spawn(path, start, kind == "haptic", stream.clone())?;
+        file::spawn_conversion(path, start, kind.into(), stream.clone())?;
         self.shared.speaker_pcm.store(Some(stream));
         Ok(())
     }
@@ -652,6 +692,7 @@ impl AudioEngine {
     }
 
     pub fn stop(&mut self) {
+        self.stop_timeline();
         self.shared.game.store(None);
         self.shared.bridge_on.store(false, Ordering::Relaxed);
         self.capture = None;
@@ -772,9 +813,29 @@ struct GripFilter {
     energy: f32,
     treble_energy: f32,
     phase: f32,
+    bass: f32,
+    impact: f32,
+    slow_energy: f32,
 }
 
 impl GripFilter {
+    fn frame_mode(&mut self, x: f32, mode: &str) -> f32 {
+        let full = self.frame(x);
+        self.bass += 0.012 * (self.high * 3.0 - self.bass);
+        self.slow_energy += 0.00008 * (self.energy - self.slow_energy);
+        self.impact = (self.impact * 0.99965)
+            .max((self.energy - self.slow_energy * 1.4).max(0.0).sqrt() * 2.4);
+        match mode {
+            "bass" => self.bass,
+            "impact" => self.phase.sin() * self.impact,
+            "texture" => {
+                (self.phase * 1.3).sin()
+                    * (self.treble_energy.sqrt() * 2.0 + self.energy.sqrt() * 0.25)
+            }
+            _ => full,
+        }
+        .clamp(-1.0, 1.0)
+    }
     #[cfg(test)]
     fn process(&mut self, samples: &[i16]) -> Vec<f32> {
         samples
@@ -831,6 +892,8 @@ fn fill_frames(
     state: &mut RenderState,
 ) {
     let clip_guard = shared.clip.load();
+    let timeline_guard = shared.timeline.load();
+    let personal = shared.personal.load();
     let game_guard = shared.game.load();
     let speaker_guard = shared.speaker.load();
     let pcm_guard = shared.speaker_pcm.load();
@@ -892,14 +955,59 @@ fn fill_frames(
             audio[0] * mixer.bridge_gain + file[2] * mixer.file_gain + game[0] * mixer.game_gain,
             audio[1] * mixer.bridge_gain + file[3] * mixer.file_gain + game[1] * mixer.game_gain,
         ];
+        let timeline_seconds = timeline_guard
+            .as_ref()
+            .map(|t| frame.saturating_sub(t.start_frame) as f32 / RATE as f32);
+        let timeline = timeline_guard
+            .as_ref()
+            .zip(timeline_seconds)
+            .map_or([0.0; 2], |(t, seconds)| t.clip.sample(seconds, &personal));
+        let authored = std::array::from_fn(|side| {
+            let strength = clip.map_or(0.0, |c| c.strength);
+            tone.unwrap_or([0.0; 2])[side]
+                * if strength > 0.0 {
+                    personal.authored_strength(strength, side) / strength
+                } else {
+                    1.0
+                }
+                + timeline[side]
+        });
+        let timeline_active =
+            timeline_guard
+                .as_ref()
+                .zip(timeline_seconds)
+                .is_some_and(|(t, seconds)| {
+                    t.clip.cues.iter().any(|c| {
+                        c.lane.ends_with("Grip")
+                            && c.strength > 0.0
+                            && seconds * 1000.0 >= c.start() as f32
+                            && seconds * 1000.0 < c.end() as f32
+                    })
+                });
         let mixed = state.mix_grips(
-            tone.unwrap_or([0.0; 2]),
+            authored,
             background,
             &mixer,
-            tone.is_some() && mixer.cue_gain > 0.0 && clip.is_some_and(|c| c.strength > 0.0),
+            mixer.cue_gain > 0.0
+                && ((tone.is_some() && clip.is_some_and(|c| c.strength > 0.0)) || timeline_active),
         );
-        let l = soft_limit(mixed[0], &mut state.duty[0]);
-        let r = soft_limit(mixed[1], &mut state.duty[1]);
+        let raw_test = tone.is_some() && clip.is_some_and(|c| c.raw_test);
+        let l = soft_limit(
+            if raw_test { tone.unwrap()[0] } else { mixed[0] },
+            &mut state.duty[0],
+        ) * if raw_test {
+            1.0
+        } else {
+            personal.side_limit(0)
+        };
+        let r = soft_limit(
+            if raw_test { tone.unwrap()[1] } else { mixed[1] },
+            &mut state.duty[1],
+        ) * if raw_test {
+            1.0
+        } else {
+            personal.side_limit(1)
+        };
         let chirp = speaker
             .and_then(|c| {
                 frame
@@ -1158,6 +1266,85 @@ fn build_loopback(shared: Arc<Shared>) -> Result<Stream, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn timeline_stereo_mix_obeys_personal_caps_and_raw_test_is_bounded() {
+        let mut engine = AudioEngine::default();
+        let clip: EffectClip =
+            serde_json::from_value(serde_json::json!({"id":"stereo","name":"Stereo","cues":[
+                {"lane":"leftGrip","kind":"pulse","startMs":0,"durationMs":100,"strength":100.0},
+                {"lane":"rightGrip","kind":"pulse","startMs":0,"durationMs":100,"strength":100.0}
+            ]}))
+            .unwrap();
+        engine.shared.timeline.store(Some(Arc::new(TimelineAudio {
+            clip,
+            start_frame: 0,
+        })));
+        engine
+            .set_personal(PersonalSettings {
+                enabled: true,
+                maximum: [25, 50],
+                ..Default::default()
+            })
+            .unwrap();
+        let mut output = [0.0; 4096];
+        render_output(
+            &mut output,
+            &engine.shared,
+            &mut 0,
+            &mut RenderState::default(),
+        );
+        assert!(output.as_chunks::<4>().0.iter().all(|f| f[0] == 0.0
+            && f[1] == 0.0
+            && f[2].abs() <= MAX_AMPLITUDE * 0.25
+            && f[3].abs() <= MAX_AMPLITUDE * 0.5));
+        engine.cancel_cue();
+        assert!(engine.shared.timeline.load().is_none());
+        let mut voice = VoiceClip::new("sine", 90, 10, 180, 100, -100);
+        voice.raw_test = true;
+        engine.shared.clip.store(Some(Arc::new(voice)));
+        render_output(
+            &mut output,
+            &engine.shared,
+            &mut 0,
+            &mut RenderState::default(),
+        );
+        assert!(
+            output
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|f| f[2].abs() > MAX_AMPLITUDE * 0.25)
+        );
+        assert!(
+            output
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|f| f[2].abs() <= MAX_AMPLITUDE && f[3] == 0.0)
+        );
+        engine.stop();
+        assert!(engine.shared.timeline.load().is_none());
+    }
+    #[test]
+    fn conversion_modes_distinguish_bass_texture_and_transient_energy() {
+        let energy = |frequency: f32, mode: &str| {
+            let mut filter = GripFilter::default();
+            (0..48000)
+                .map(|i| {
+                    let x = (i as f32 / 48000.0 * frequency * std::f32::consts::TAU).sin() * 0.5;
+                    filter.frame_mode(x, mode).powi(2)
+                })
+                .collect::<Vec<_>>()
+        };
+        let bass = energy(60.0, "bass");
+        let treble = energy(2000.0, "bass");
+        let texture = energy(2000.0, "texture");
+        assert!(bass.iter().sum::<f32>() > treble.iter().sum::<f32>() * 10.0);
+        assert!(texture.iter().sum::<f32>() > treble.iter().sum::<f32>() * 10.0);
+        let impact = energy(90.0, "impact");
+        assert!(impact[..4800].iter().sum::<f32>() > impact[40000..].iter().sum::<f32>() * 10.0);
+        assert!(impact.iter().all(|x| x.is_finite() && *x <= 1.0));
+    }
     #[test]
     fn game_rumble_keeps_motor_channels_and_expires_without_new_commands() {
         let rumble = GameRumble {

@@ -163,6 +163,7 @@ struct Converter {
     output_frames: u64,
     filters: [GripFilter; 2],
     direct: bool,
+    mode: String,
 }
 impl Converter {
     fn new(rate: u32, direct: bool) -> Result<Self, String> {
@@ -184,6 +185,7 @@ impl Converter {
             output_frames: 0,
             filters: Default::default(),
             direct,
+            mode: "music".into(),
         })
     }
     fn emit(&mut self, output: &[Vec<f32>], limit: u64, stream: &PcmStream) -> Result<(), String> {
@@ -203,8 +205,8 @@ impl Converter {
                 input
             } else {
                 [
-                    self.filters[0].frame(input[0]),
-                    self.filters[1].frame(input[1]),
+                    self.filters[0].frame_mode(input[0], &self.mode),
+                    self.filters[1].frame_mode(input[1], &self.mode),
                 ]
             };
             let frame = routed_frame(input, grip, stream);
@@ -290,7 +292,7 @@ impl Converter {
         Ok(())
     }
 }
-fn decode(path: &Path, start: f64, direct: bool, stream: &PcmStream) -> Result<(), String> {
+fn decode(path: &Path, start: f64, kind: &str, stream: &PcmStream) -> Result<(), String> {
     let mut reader = open(path)?;
     let mut at = 0u64;
     if start > 0.0 {
@@ -310,7 +312,8 @@ fn decode(path: &Path, start: f64, direct: bool, stream: &PcmStream) -> Result<(
         }
     }
     let skip_to = (start * reader.rate as f64).round() as u64;
-    let mut converter = Converter::new(reader.rate, direct)?;
+    let mut converter = Converter::new(reader.rate, kind == "haptic")?;
+    converter.mode = kind.into();
     while !stream.canceled.load(Ordering::Acquire) {
         let Some(packet) = next_packet(&mut reader)? else {
             break;
@@ -345,17 +348,31 @@ fn decode(path: &Path, start: f64, direct: bool, stream: &PcmStream) -> Result<(
     }
     Ok(())
 }
+#[cfg(test)]
 pub(super) fn spawn(
     path: String,
     start: f64,
     direct: bool,
     stream: Arc<PcmStream>,
 ) -> Result<(), String> {
+    spawn_conversion(
+        path,
+        start,
+        if direct { "haptic" } else { "music" }.into(),
+        stream,
+    )
+}
+pub(super) fn spawn_conversion(
+    path: String,
+    start: f64,
+    kind: String,
+    stream: Arc<PcmStream>,
+) -> Result<(), String> {
     thread::Builder::new()
         .name("controller-file-decoder".into())
         .spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                decode(Path::new(&path), start, direct, &stream)
+                decode(Path::new(&path), start, &kind, &stream)
             }))
             .unwrap_or_else(|_| Err("The audio decoder stopped unexpectedly.".into()));
             if let Err(error) = result
@@ -423,7 +440,7 @@ mod tests {
             assert_eq!(info.channels, 2);
             assert!((info.duration - 0.2).abs() < 0.00001);
             let stream = PcmStream::new(12, "grips", true, 9600);
-            decode(&fixture.0, 0.0, true, &stream).unwrap();
+            decode(&fixture.0, 0.0, "haptic", &stream).unwrap();
             assert_eq!(stream.queue.len(), 9600, "incorrect length at {rate} Hz");
             assert!(stream.eof.load(Ordering::Acquire));
             let mut peak = 0.0f32;
@@ -444,7 +461,7 @@ mod tests {
     fn native_seek_preserves_remaining_duration() {
         let fixture = wav(44100, 8820);
         let stream = PcmStream::new(13, "both", true, 4800);
-        decode(&fixture.0, 0.1, false, &stream).unwrap();
+        decode(&fixture.0, 0.1, "music", &stream).unwrap();
         assert_eq!(stream.queue.len(), 4800);
         assert_eq!(stream.total.load(Ordering::Relaxed), 4800);
         assert!(stream.queue.pop().unwrap()[3].abs() < 0.00001);

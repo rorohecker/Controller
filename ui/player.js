@@ -15,7 +15,11 @@
       $('speaker-file-stop').addEventListener('click', () => this.stop());
       $('speaker-file').addEventListener('change', e => this.load(e.target.files[0]));
       $('speaker-route').addEventListener('change', () => this.stop());
-      $('speaker-content-kind').addEventListener('change', () => this.stop('Content changed. Press Play.'));
+      $('speaker-content-kind').addEventListener('change', () => {
+        if(!this.nativeFile&&!['music','haptic'].includes($('speaker-content-kind').value)){$('speaker-content-kind').value='music';this.stop('Choose a native audio file to use conversion modes.');return;}
+        $('speaker-content-note').textContent={music:'Convert bass and higher notes for the grips.',bass:'Focus grip feedback on low frequencies.',impact:'Emphasize onsets; steady sounds fade.',texture:'Turn higher notes into a tactile carrier.',haptic:'Keep the stereo haptic waveform.'}[$('speaker-content-kind').value];
+        this.stop('Conversion changed. Press Play.');
+      });
       $('speaker-native-file').addEventListener('click', () => this.chooseNative());
       const updatePicker=()=>{ $('speaker-file').hidden=!!window.controllerPlatform.nativeAudioFiles; };
       document.addEventListener('controller-platform',updatePicker);updatePicker();
@@ -30,7 +34,7 @@
       this.render();
     }
     current() {
-      return Math.min(this.duration, this.position + (this.mode === 'playing' ? (performance.now() - this.started) / 1000 : 0));
+      return Math.min(this.previewEnd??this.duration, this.position + (this.mode === 'playing' ? (performance.now() - this.started) / 1000 : 0));
     }
     command(command, id = this.trackId, unconditional = false) {
       const operation = this.chain.then(() => unconditional || id === this.trackId ? this.send(command) : false);
@@ -39,7 +43,7 @@
     }
     stop(message = 'Stopped') {
       this.trackId++; this.mode = 'stopped'; this.position = 0; this.base = 0;
-      this.next = 0; this.hasStream = false; this.chunkPending = false;
+      this.next = 0; this.hasStream = false; this.chunkPending = false; this.previewEnd=null;
       $('speaker-file-status').textContent = message;
       this.render();
       return this.connected()
@@ -100,13 +104,22 @@
       for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
       return {pcmBase64: btoa(binary), duration: count / 48_000};
     }
-    async startAt(position) {
+    async audition(kind,position,seconds=5){
+      if(!this.nativeFile||!this.connected()||!['music','bass','impact','texture'].includes(kind))return;
+      const pendingStop=this.stop(),stopped=this.trackId;await pendingStop;
+      if(stopped!==this.trackId)return;
+      position=Math.max(0,Math.min(this.duration,position));
+      if(position>=this.duration){$('speaker-file-status').textContent='Capture a position before the end of the track.';return;}
+      return this.startAt(position,{kind,end:Math.min(this.duration,position+seconds)});
+    }
+    async startAt(position,comparison=null) {
       const id = ++this.trackId;
-      this.route = $('speaker-route').value; this.base = position; this.position = position;
+      this.previewEnd=comparison?.end??null;
+      this.route = comparison?'grips':$('speaker-route').value; this.base = position; this.position = position;
       this.mode = 'starting'; this.next = position; this.hasStream = false;
       $('speaker-file-status').textContent = 'Opening controller audio…'; this.render();
       if(this.nativeFile){
-        const ok=await this.command({action:'playAudioFile',path:this.nativeFile.path,position,duration:this.duration,kind:$('speaker-content-kind').value,route:this.route,trackId:id},id);
+        const ok=await this.command({action:'playAudioFile',path:this.nativeFile.path,position,duration:this.previewEnd??this.duration,kind:comparison?.kind||$('speaker-content-kind').value,route:this.route,trackId:id},id);
         if(id!==this.trackId)return;
         if(!ok)this.stop('Could not start playback. Check Diagnostics.');
         else this.hasStream=true;
@@ -156,6 +169,7 @@
         const file=event.file;
         if(!this.nativeFile||!file||file.trackId!==this.trackId)return;
         if(file.mode==='finished'){
+          if(this.previewEnd!=null){const anchor=this.base;this.stop('Comparison finished');this.position=anchor;this.render();return;}
           this.duration=this.base+file.duration;this.stop('Finished');this.position=this.duration;this.render();return;
         }
         if(!['starting','playing','buffering','paused'].includes(this.mode))return;

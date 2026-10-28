@@ -355,3 +355,32 @@ input[type='range']:disabled { cursor: not-allowed; opacity: .65; }
 .compatibility-reports { padding: 0; list-style: none; }
 .compatibility-reports li { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px 0; border-bottom: 1px solid #a2b1b74d; }
 .compatibility-reports span { flex: 1 1 240px; overflow-wrap: anywhere; }
+/* Tactile clips keep the workbench's warm glass and pixel backdrop. */
+.tactile-panel { margin-block: 20px; min-width: 0; }
+.tactile-panel .panel-cap { background: linear-gradient(110deg,#4c3e4c,#353a40); color: #fae8c9; }
+.tactile-grid { display: grid; grid-template-columns: minmax(0,1.6fr) minmax(260px,1fr); gap: 22px; margin-block: 18px; }
+.tactile-lane { display: grid; grid-template-columns: 75px minmax(0,1fr); align-items: center; gap: 10px; margin-block: 14px; }
+.tactile-track { height: 46px; position: relative; background: repeating-linear-gradient(90deg,#22293888 0 calc(10% - 1px),#e4cfa94d calc(10% - 1px) 10%); border: 1px solid #c6af8e66; border-radius: 5px; }
+.tactile-cue { position: absolute; min-width: 0; height: 100%; padding: 4px; border: 1px solid #e0b77f; background: #6f503f; color: #fff0d4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 4px; font-size: 12px; }
+.tactile-lane[data-lane="rightTrigger"] .tactile-cue { background: #674a6c; border-color: #d2a5dd; }
+.tactile-lane[data-lane="leftGrip"] .tactile-cue { background: #31585a; border-color: #9cdbcd; }
+.tactile-lane[data-lane="rightGrip"] .tactile-cue { background: #5c5734; border-color: #e7d593; }
+.tactile-cue.is-selected { outline: 2px solid #ffe2a3; outline-offset: 2px; box-shadow: 0 0 12px #f2ce8870; z-index: 1; }
+.tactile-cue.is-load { background-image: linear-gradient(90deg,#ffffff00,#ffffff50); }
+.tactile-cue.is-release { opacity: .55; background: transparent; border-style: dashed; }
+.tactile-cue.is-kick { box-shadow: inset 3px 0 #fff2d8; }
+.tactile-caption { font-size: 12px; margin: 0 0 16px 85px; overflow-wrap: anywhere; }
+.tactile-editor { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; padding: 14px; border: 1px solid #bcacd477; border-radius: 8px; background: #33333fe8; color: #f4e6d6; }
+.tactile-editor .game-field { color: #f3e6d4; }
+.tactile-panel input:not([type="checkbox"]),.tactile-panel select { font:inherit; color:#2b3f4b; background:#f2ede4; border:1px solid #b9a892; border-radius:4px; padding:9px 11px; min-height:38px; }
+.tactile-editor input,.tactile-editor select,.tactile-panel input,.tactile-panel select { max-width: 100%; min-width: 0; }
+.tactile-panel progress { width: 100%; height: 8px; accent-color: #dcb889; }
+.tactile-encoded { margin-block: 16px; padding: 16px; background: #cbbbd81a; border-inline-start: 3px solid #c9addc; font-variant-numeric: tabular-nums; }
+.tactile-encoded p,#trigger-encoded p { overflow-wrap: anywhere; }
+.tactile-library-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(260px,100%),1fr)); gap: 14px; margin-block: 16px; }
+.tactile-library-card { padding: 18px; border: 1px solid #d9b8a266; border-radius: 5px 16px 5px 5px; background: linear-gradient(120deg,#423b4ee8,#29373ce8),url('./assets/observatory-pixel.png'); color: #f3e4d0; box-shadow: inset 0 1px #f9dfb622,0 0 14px #c8a4df13; }
+.tactile-library-card:nth-child(2n) { border-color: #a6d1be66; }
+.tactile-library-card h3 { margin-top: 0; }
+.personal-guide { padding: 18px; margin-top: 18px; border: 1px solid #a9c4c066; background: #bddece18; border-radius: 8px; }
+@media(max-width:900px){ .tactile-grid { grid-template-columns:minmax(0,1fr); } }
+@media(prefers-reduced-motion:reduce){ .tactile-cue { transition:none; } }

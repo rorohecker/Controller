@@ -696,8 +696,9 @@
     const shortcuts=p.gameShortcuts??[];
     if(p.favorite!=null&&typeof p.favorite!=='boolean')return false;
     if(!Array.isArray(shortcuts)||shortcuts.length>12||shortcuts.some(s=>!s||!integer(s.button,0,22)||[6,7,16,18].includes(s.button)||s.modifier!=null&&(!integer(s.modifier,0,22)||s.modifier===s.button||[6,7,16,18].includes(s.modifier))||!['nextProfile','previousProfile','nextWeapon','previousWeapon'].includes(s.action))||new Set(shortcuts.map(s=>`${s.button}:${s.modifier??'none'}`)).size!==shortcuts.length)return false;
-    if(rules.some(r=>!r||!text(r.id,80)||!text(r.name,40)||!['press','double','hold','event'].includes(r.source)||!integer(r.button??0,0,22)||!integer(r.windowMs??280,80,1000)||!integer(r.durationMs,20,2000)||!integer(r.cooldownMs??180,0,10000)||r.source==='event'&&!text(r.event,80)||!r.haptic&&!r.leftTrigger&&!r.rightTrigger||r.haptic&&(!['sine','square','saw','noise'].includes(r.haptic.shape)||!integer(r.haptic.frequency,20,300)||!integer(r.haptic.strength,0,100)||!integer(r.haptic.pan??0,-100,100))))return false;
+    if(rules.some(r=>!r||!text(r.id,80)||!text(r.name,40)||!['press','double','hold','event'].includes(r.source)||!integer(r.button??0,0,22)||!integer(r.windowMs??280,80,1000)||!integer(r.durationMs,20,2000)||!integer(r.cooldownMs??180,0,10000)||r.source==='event'&&!text(r.event,80)||!r.timeline&&!r.haptic&&!r.leftTrigger&&!r.rightTrigger||r.haptic&&(!['sine','square','saw','noise'].includes(r.haptic.shape)||!integer(r.haptic.frequency,20,300)||!integer(r.haptic.strength,0,100)||!integer(r.haptic.pan??0,-100,100))))return false;
     if(rules.some(r=>(r.conditionButton!=null&&!integer(r.conditionButton,0,22))||!Number.isFinite(r.conditionThreshold??.5)||(r.conditionThreshold??.5)<0||(r.conditionThreshold??.5)>1||typeof(r.cancelOnRelease??false)!=='boolean'||typeof(r.cancelEvent??'')!=='string'||(r.cancelEvent??'').length>80||!['restart','ignore'].includes(r.retrigger??'restart')))return false;
+    if(rules.some(r=>r.timeline&&(!window.ControllerHapticAuthoring.validClip(r.timeline)||r.haptic||r.leftTrigger||r.rightTrigger)))return false;
     if(new Set(rules.map(r=>r.id)).size!==rules.length||weapons.some(b=>!b||!text(b.weapon,80)||!text(b.presetId,80))||new Set(weapons.map(b=>b.weapon.toLowerCase())).size!==weapons.length)return false;
     const link=p.gameLink;if(link&&(!['json','dsx'].includes(link.format??'json')||!integer(link.port??6969,1024,65535)||typeof(link.enabled??false)!=='boolean'))return false;
     return true;
@@ -757,9 +758,10 @@
   async function loadProfiles() {
     try {
       const data = native ? await invoke('load_profiles') : JSON.parse(localStorage.getItem('aftertouch.profiles.v3') || localStorage.getItem('aftertouch.profiles.v2') || 'null');
-      if (data && [1,2,3].includes(data.schemaVersion) && Array.isArray(data.profiles) && data.profiles.length && data.profiles.every(validProfile) && validLibrary(data.triggerPresets??[])) {
+      if (data && [1,2,3].includes(data.schemaVersion) && Array.isArray(data.profiles) && data.profiles.length && data.profiles.every(validProfile) && validLibrary(data.triggerPresets??[]) && window.ControllerHapticAuthoring.validLibrary(data.tactileClips??[])) {
         state.profiles = data.profiles.map(normalizeProfile);
         triggerPresets=Array.isArray(data.triggerPresets)?data.triggerPresets:[];
+        window.hapticAuthoring.restore(data.tactileClips);
         state.profileId = state.profiles.some(p=>p.id===data.activeId) ? data.activeId : state.profiles[0].id;
         state.autoApply = data.autoApply !== false;
       }
@@ -769,7 +771,7 @@
     window.studioHooks?.loaded();
   }
   function persistProfiles() {
-    const data={schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles),triggerPresets:clone(triggerPresets)};
+    const data={schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles),triggerPresets:clone(triggerPresets),tactileClips:window.hapticAuthoring.archive()};
     saveChain=saveChain.catch(()=>{}).then(async()=>{
       if(native) await invoke('save_profiles',{data});
       else localStorage.setItem('aftertouch.profiles.v3',JSON.stringify(data));
@@ -830,12 +832,17 @@
       if(rule.conditionButton!=null)grid.append(gameField('Condition threshold ? %',gameNumber(Math.round((rule.conditionThreshold??.5)*100),0,100,v=>{rule.conditionThreshold=v/100;saveProfiles();})));
       const cancel=gameNode('input',{type:'checkbox',checked:!!rule.cancelOnRelease});cancel.addEventListener('change',()=>{rule.cancelOnRelease=cancel.checked;saveProfiles();});const cancelLabel=gameNode('label',{class:'check-row',text:'Stop on button release'});cancelLabel.prepend(cancel);if(rule.source!=='event')grid.append(cancelLabel);
       const cancelEvent=gameNode('input',{value:rule.cancelEvent||'',maxLength:80,placeholder:'Optional game event'});cancelEvent.addEventListener('change',()=>{rule.cancelEvent=cancelEvent.value.trim();saveProfiles();});grid.append(gameField('Cancel event',cancelEvent));
+      const clips=window.hapticAuthoring?.archive()||[],clipChoices=[['','Simple feel'],...clips.map(c=>[c.id,c.name])];
+      if(rule.timeline&&!clips.some(c=>c.id===rule.timeline.id))clipChoices.push(['snapshot',rule.timeline.name+' (saved copy)']);
+      grid.append(gameField('Tactile clip',gameSelect(clipChoices,rule.timeline?.id&&clips.some(c=>c.id===rule.timeline.id)?rule.timeline.id:rule.timeline?'snapshot':'',v=>{const c=clips.find(c=>c.id===v);rule.timeline=c?clone(c):null;rule.haptic=c?null:{shape:'sine',frequency:85,strength:45,pan:0};rule.leftTrigger=null;rule.rightTrigger=null;saveProfiles();renderGameProfiles();})));
+      if(!rule.timeline){
       const h=rule.haptic||{shape:'sine',strength:45,frequency:85,pan:0};
       grid.append(gameField('Grip texture',gameSelect([['','No grip effect'],['sine','Smooth'],['square','Sharp'],['saw','Snap'],['noise','Rough']],rule.haptic?.shape||'',v=>{rule.haptic=v?{...h,shape:v}:null;saveProfiles();renderGameProfiles();})));
       if(rule.haptic)grid.append(gameField('Grip strength · %',gameNumber(h.strength,0,100,v=>h.strength=v)),gameField('Frequency · Hz',gameNumber(h.frequency,20,300,v=>h.frequency=v)),gameField('Left / right · −100 / 100',gameNumber(h.pan,-100,100,v=>h.pan=v)));
       const snapshots=triggerPresets.find(t=>JSON.stringify(t.triggers.left)===JSON.stringify(rule.leftTrigger)&&JSON.stringify(t.triggers.right)===JSON.stringify(rule.rightTrigger));
       const options=libraryOptions();if(!snapshots&&(rule.leftTrigger||rule.rightTrigger))options.push(['snapshot','Saved action trigger settings']);
       grid.append(gameField('Trigger feel',gameSelect(options,snapshots?.id||(rule.leftTrigger||rule.rightTrigger?'snapshot':''),v=>{const t=triggerPresets.find(p=>p.id===v);rule.leftTrigger=t?clone(t.triggers.left):null;rule.rightTrigger=t?clone(t.triggers.right):null;saveProfiles();})));
+      }else grid.append(gameNode('p',{class:'pc-note',text:'Timeline: '+rule.timeline.name+'. Duration and feel come from the saved clip copy.'}));
       const buttons=gameNode('div',{class:'game-buttons'}),test=gameNode('button',{type:'button',class:'quiet-action',text:'Test feel'}),remove=gameNode('button',{type:'button',class:'quiet-action',text:'Remove'});
       test.addEventListener('click',()=>{if(state.connected)send({action:'testGameAction',rule:clone(rule)});else toast('Connect a controller.');});remove.addEventListener('click',()=>{p.actions=p.actions.filter(r=>r.id!==rule.id);saveProfiles();renderGameProfiles();});buttons.append(test,remove);card.append(grid,buttons);host.append(card);
     });
@@ -1000,7 +1007,7 @@
   $('#learn-process-path').addEventListener('click',()=>{if(!state.lastExternalExe||!state.lastExternalPath){toast('Focus the game first.');return;}$('#profile-match').value=state.lastExternalExe;$('#profile-match-path').value=state.lastExternalPath;commitProfileDraft(true);});
   $('#export-profiles').addEventListener('click',async () => {
     if(!await commitProfileDraft(false))return;
-    const data={schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:state.profiles,triggerPresets};
+    const data={schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:state.profiles,triggerPresets,tactileClips:window.hapticAuthoring.archive()};
     if(native) { try { const path=await invoke('export_profiles',{data}); toast(`Exported to ${path}`); } catch(error){toast(String(error));} }
     else { const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='CONTROLLER-profiles.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000); }
   });
@@ -1008,19 +1015,21 @@
   $('#import-file').addEventListener('change',async e => {
     const file=e.target.files[0]; if(!file)return;
     try { if(file.size>1_000_000)throw Error('File is too large'); const data=JSON.parse(await file.text());
-      if(![1,2,3].includes(data.schemaVersion)||!Array.isArray(data.profiles)||!data.profiles.length||data.profiles.length>50||!data.profiles.every(validProfile)||!validLibrary(data.triggerPresets??[]))throw Error('Unsupported or invalid profile file');
+      if(![1,2,3].includes(data.schemaVersion)||!Array.isArray(data.profiles)||!data.profiles.length||data.profiles.length>50||!data.profiles.every(validProfile)||!validLibrary(data.triggerPresets??[])||!window.ControllerHapticAuthoring.validLibrary(data.tactileClips??[]))throw Error('Unsupported or invalid profile file');
       if(window.studioHooks&&!await window.studioHooks.previewImport(data))return;
       if(state.profiles.length+data.profiles.length>50)throw Error('50 profile limit');
       const incoming=Array.isArray(data.triggerPresets)?data.triggerPresets:[];
+      const previousClips=window.hapticAuthoring.archive(),clipSignatures=new Set(previousClips.map(c=>JSON.stringify({...c,id:''}))),importedClips=(data.tactileClips||[]).filter(c=>{const key=JSON.stringify({...c,id:''});if(clipSignatures.has(key))return false;clipSignatures.add(key);return true;}).map(c=>({...clone(c),id:crypto.randomUUID()}));
+      if(previousClips.length+importedClips.length>64)throw Error('64 tactile clip limit');
       if(triggerPresets.length+incoming.length>100)throw Error('100 trigger preset limit');
       const presetIds=new Map(incoming.map(p=>[p.id,`trigger-${crypto.randomUUID()}`]));
       const importedPresets=incoming.map(p=>({...p,id:presetIds.get(p.id)}));
       const imported=data.profiles.map(p=>{const c=normalizeProfile(p);c.id=`import-${crypto.randomUUID()}`;c.name=c.name.slice(0,40);c.description=String(c.description||'').slice(0,180);c.tag='IMPORTED';c.weaponBindings=c.weaponBindings.map(b=>({...b,presetId:presetIds.get(b.presetId)||b.presetId}));return c;});
       const previousProfiles=state.profiles.slice(),previousId=state.profileId,previousPresets=triggerPresets.slice();
-      triggerPresets.push(...importedPresets);
+      triggerPresets.push(...importedPresets);window.hapticAuthoring.restore([...previousClips,...importedClips]);
       state.profiles.unshift(...imported);state.profileId=imported[0].id;renderAllProfileControls();
       if(await saveProfiles(true))toast(`Imported ${imported.length}`);
-      else{state.profiles=previousProfiles;state.profileId=previousId;triggerPresets=previousPresets;renderAllProfileControls();}
+      else{state.profiles=previousProfiles;state.profileId=previousId;triggerPresets=previousPresets;window.hapticAuthoring.restore(previousClips);renderAllProfileControls();}
     } catch(error){toast(`Import failed: ${error.message}`);} finally {e.target.value='';}
   });
 
@@ -1105,6 +1114,7 @@
   });
 
   function renderTriggerControls() {
+    window.hapticAuthoring?.inspectTrigger();
     const t=trigger();
     $$('.side-tab').forEach(b=>b.classList.toggle('is-active',b.dataset.side===state.side));
     $('#curve-side-label').textContent=state.side==='left'?'L2':'R2';
@@ -1906,6 +1916,7 @@
   $('#battery-segments').innerHTML=Array.from({length:10},()=>'<i></i>').join('');
   function drawActivity(){const canvas=$('#activity-scope'),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);ctx.beginPath();state.activity.forEach((v,i)=>{const x=i/(state.activity.length-1)*w,y=h-8-v*(h-16);if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.lineWidth=3;ctx.strokeStyle='#d4a84b';ctx.stroke();ctx.fillStyle='#7ec9bc';const last=state.activity.at(-1);ctx.fillRect(w-5,h-8-last*(h-16)-4,8,8);}
   function handleEvent(event){
+    window.hapticAuthoring?.event(event);
     window.gameSessions?.event(event);
     window.studioHooks?.event(event);
     if(event.type==='device'){
@@ -1913,7 +1924,7 @@
       if(changed)padNavPrev=null;
       if(changed&&event.connected)selectControllerCalibration(event);
       setConnected(!!event.connected,event.name||'',event.transport||'',event.firmware||'',event.path||'');
-      if(changed && event.connected){sendPcBindings();sendCalibration();audioMixer.apply();applyGameRules();}
+      if(changed && event.connected){window.hapticAuthoring?.device(event);sendPcBindings();sendCalibration();audioMixer.apply();applyGameRules();}
       if(event.path) state.selectedPath = event.path;
       if(changed||state.manualScan){const msg=event.connected?`${event.name} · ${event.transport}`:(event.message||'Disconnected');log(msg);toast(msg);}
       if(state.manualScan)finishScan();
@@ -2106,13 +2117,14 @@
       setInterval(()=>checkForUpdates(),12*60*60*1000);
     }else{$('#core-status').textContent='Core: browser preview';$('#update-status').textContent='Updates are available in the installed desktop app.';$('#check-update').disabled=true;log('Browser preview');}
   }
-  window.controllerStudio={state,profile,trigger,clone,native,invoke,send,toast,names,vkChoices,validPcKey,gameNode,gameSelect,gameField,saveProfiles,commitProfileDraft,normalizeProfile,validProfile,validLibrary,renderProfiles,renderAllProfileControls,renderTriggerControls,renderPcBindings,savePcBindings,navigate,useWeapon,applyProfileHardware,applyGameRules,
+  window.controllerStudio={state,profile,trigger,clone,native,invoke,send,toast,names,vkChoices,validPcKey,gameNode,gameSelect,gameField,saveProfiles,commitProfileDraft,normalizeProfile,validProfile,validLibrary,renderProfiles,renderAllProfileControls,renderTriggerControls,renderPcBindings,savePcBindings,navigate,useWeapon,applyProfileHardware,applyGameRules,renderGameProfiles,getPlayer:()=>musicPlayer,
     getPresets:()=>triggerPresets,getPcBindings:()=>pcBindings,
     async selectProfile(id,apply=false){if(!state.profiles.some(p=>p.id===id))return;state.profileId=id;renderAllProfileControls();await saveProfiles(true);if(apply&&state.connected)await applyProfileHardware(true);},
     setSupportedKeys(keys){if(Array.isArray(keys)){supportedKeys=new Set(keys);renderPcBindings();}},
-    archive:()=>({schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles),triggerPresets:clone(triggerPresets)}),
-    async replaceArchive(data){if(!data?.profiles?.length||!data.profiles.every(validProfile)||!validLibrary(data.triggerPresets||[]))throw Error('Invalid archive');await send({action:'reset'});state.autoSuppressed=true;state.profiles=data.profiles.map(normalizeProfile);state.profileId=state.profiles.some(p=>p.id===data.activeId)?data.activeId:state.profiles[0].id;triggerPresets=data.triggerPresets||[];state.autoApply=data.autoApply!==false;renderAllProfileControls();return saveProfiles(true);}
+    archive:()=>({schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles),triggerPresets:clone(triggerPresets),tactileClips:window.hapticAuthoring.archive()}),
+    async replaceArchive(data){if(!data?.profiles?.length||!data.profiles.every(validProfile)||!validLibrary(data.triggerPresets||[])||!window.ControllerHapticAuthoring.validLibrary(data.tactileClips??[]))throw Error('Invalid archive');await send({action:'reset'});state.autoSuppressed=true;state.profiles=data.profiles.map(normalizeProfile);state.profileId=state.profiles.some(p=>p.id===data.activeId)?data.activeId:state.profiles[0].id;triggerPresets=data.triggerPresets||[];window.hapticAuthoring.restore(data.tactileClips);state.autoApply=data.autoApply!==false;renderAllProfileControls();return saveProfiles(true);}
   };
+  window.hapticAuthoring=new window.ControllerHapticAuthoring(window.controllerStudio);
   window.gameSessions=new window.ControllerGameSessions(window.controllerStudio);
   renderPlatform();
   start();

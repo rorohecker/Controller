@@ -306,6 +306,28 @@ fn send_command(command: Value, bridge: State<'_, Arc<Bridge>>) -> Result<(), St
 }
 
 #[tauri::command]
+fn preview_authoring(
+    clip: Option<audio_haptics::authoring::EffectClip>,
+    trigger: Option<aftertouch_protocol::TriggerSetting>,
+    personal: Option<audio_haptics::authoring::PersonalSettings>,
+) -> Result<Value, String> {
+    use audio_haptics::authoring::{inspect_clip, levels, limit_trigger};
+    let personal = personal.unwrap_or_default();
+    personal.validate().map_err(str::to_string)?;
+    if let Some(clip) = clip {
+        return inspect_clip(&clip, &personal);
+    }
+    let setting = trigger.ok_or("Choose a clip or trigger to inspect")?;
+    let block = limit_trigger(
+        device::encode_live_trigger(&setting).map_err(str::to_string)?,
+        personal.cap(),
+    );
+    Ok(
+        serde_json::json!({"requested":setting,"packet":block,"levels":levels(&block),"triggerLimit":personal.cap(),"frequencyHz":if block[0]==0x26{Some(block[9])}else{None},"note":if matches!(setting.mode.as_str(),"bow"|"weapon"){"Initial packet. Live pull/release rules can change it."}else{"Encoded force steps; not measured force."}}),
+    )
+}
+
+#[tauri::command]
 async fn choose_audio_file(
     app: tauri::AppHandle,
 ) -> Result<Option<audio_haptics::file::AudioFileInfo>, String> {
@@ -569,6 +591,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             send_command,
+            preview_authoring,
             choose_audio_file,
             open_driver_setup,
             load_profiles,

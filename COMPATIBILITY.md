@@ -68,3 +68,8 @@ The file player now has Play/Pause/Resume, Stop, and a position scrubber. Pausin
 ## 0.15.7 game compatibility batch
 
 Windows Xbox bridge vibration now returns to the DualSense: USB uses bounded low/high grip waveforms and Bluetooth uses standard motor rumble. The Profiles setup card shows actual route and receiver state. Opt-in sessions coordinate and restore routing, audio, gyro, remaps, trigger and action settings; HidHide remains manual. Action rules add input conditions, release/event cancellation and retrigger policy. Profile exports retain sources, versions and self-reported platform/transport reports. See [game sessions](docs/game-sessions.md) for setup, the ten-second stale-rumble limit, and native feedback limitations. Physical return-path feedback is not yet verified with a game.
+
+
+## 0.16.0 tactile authoring
+
+Adds an eight-second trigger/stereo-grip timeline, native encoded previews, per-controller personal grip/trigger limits, reusable clip metadata and game-action snapshots, and native bass/impact/texture/full-soundtrack conversion with matched-window A/B audition. Stereo clips/conversion require USB; trigger-only schedules also use Bluetooth HID. Scheduling is software based and can arrive later under load. Personal limits affect this app's output, persist locally and survive Reset; they are not controller firmware calibration. See [tactile authoring](docs/tactile-authoring.md) for workflow, limits and physical-validation status.

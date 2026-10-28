@@ -36,6 +36,8 @@ pub struct ActionRule {
     pub left_trigger: Option<TriggerSetting>,
     #[serde(default)]
     pub right_trigger: Option<TriggerSetting>,
+    #[serde(default)]
+    pub timeline: Option<crate::audio_haptics::authoring::EffectClip>,
 }
 fn default_window() -> u16 {
     280
@@ -77,11 +79,19 @@ impl ActionRule {
             || !(20..=2000).contains(&self.duration_ms)
             || self.event.len() > 80
             || (self.source == "event" && self.event.trim().is_empty())
-            || (self.haptic.is_none()
+            || (self.timeline.is_none()
+                && self.haptic.is_none()
                 && self.left_trigger.is_none()
                 && self.right_trigger.is_none())
         {
             return Err("Choose a name, input, and feel for each game action");
+        }
+        if let Some(clip) = &self.timeline {
+            clip.validate()?;
+            if self.haptic.is_some() || self.left_trigger.is_some() || self.right_trigger.is_some()
+            {
+                return Err("Choose a timeline or a simple action feel");
+            }
         }
         if let Some(h) = &self.haptic
             && (!matches!(h.shape.as_str(), "sine" | "square" | "saw" | "noise")
@@ -153,7 +163,11 @@ impl ActionMapper {
             self.fired.insert(rule.id.clone(), now);
             self.active.insert(
                 rule.id.clone(),
-                now + Duration::from_millis(u64::from(rule.duration_ms)),
+                now + Duration::from_millis(
+                    rule.timeline
+                        .as_ref()
+                        .map_or(u64::from(rule.duration_ms), |t| u64::from(t.duration_ms())),
+                ),
             );
             output.push(rule.clone());
         }
@@ -307,7 +321,28 @@ mod tests {
             }),
             left_trigger: None,
             right_trigger: None,
+            timeline: None,
         }
+    }
+    #[test]
+    fn timeline_retrigger_uses_the_actual_clip_duration() {
+        let now = Instant::now();
+        let mut action = rule("timeline", "event");
+        action.haptic = None;
+        action.retrigger = "ignore".into();
+        action.timeline=Some(serde_json::from_value(serde_json::json!({"id":"clip","name":"Clip","cues":[{"lane":"rightGrip","kind":"pulse","startMs":0,"durationMs":600,"strength":30.0}]})).unwrap());
+        let mut mapper = ActionMapper::default();
+        mapper.set(vec![action]).unwrap();
+        assert_eq!(mapper.event("dash", now).len(), 1);
+        assert!(
+            mapper
+                .event("dash", now + Duration::from_millis(200))
+                .is_empty()
+        );
+        assert_eq!(
+            mapper.event("dash", now + Duration::from_millis(601)).len(),
+            1
+        );
     }
     #[test]
     fn conditions_cancellation_and_retrigger_respect_live_input() {

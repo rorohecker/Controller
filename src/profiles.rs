@@ -19,6 +19,8 @@ struct Archive {
     profiles: Vec<Profile>,
     #[serde(default)]
     trigger_presets: Vec<TriggerPreset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tactile_clips: Option<Vec<crate::audio_haptics::authoring::EffectClip>>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -389,6 +391,10 @@ fn validate(data: Value) -> Result<Archive, String> {
     if archive.trigger_presets.len() > 100 {
         return Err("Up to 100 trigger presets can be saved".into());
     }
+    crate::audio_haptics::authoring::validate_library(
+        archive.tactile_clips.as_deref().unwrap_or(&[]),
+    )
+    .map_err(str::to_string)?;
     let mut preset_ids = std::collections::HashSet::new();
     for preset in &archive.trigger_presets {
         if preset.id.is_empty()
@@ -761,6 +767,26 @@ pub fn export(data: Value) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn tactile_library_and_action_snapshots_survive_native_archive_validation() {
+        let mut data = sample_profile();
+        let clip = serde_json::json!({"id":"tap","name":"Tap","author":"Local","license":"CC0-1.0","tags":["soft"],"cues":[{"lane":"leftGrip","kind":"pulse","startMs":0,"durationMs":100,"strength":35.0}]});
+        data["tactileClips"] = serde_json::json!([clip.clone()]);
+        data["profiles"][0]["actions"] = serde_json::json!([{"id":"roll","name":"Roll","source":"press","button":1,"durationMs":120,"timeline":clip}]);
+        let encoded = serde_json::to_value(validate(data.clone()).unwrap()).unwrap();
+        assert_eq!(encoded["tactileClips"][0]["license"], "CC0-1.0");
+        assert_eq!(
+            encoded["profiles"][0]["actions"][0]["timeline"]["name"],
+            "Tap"
+        );
+        data["tactileClips"] = serde_json::json!([]);
+        assert!(validate(data.clone()).is_ok()); // action snapshots remain independent
+        data["profiles"][0]["actions"][0]["haptic"] =
+            serde_json::json!({"shape":"sine","frequency":90,"strength":40});
+        assert!(validate(data).is_err());
+        let legacy = serde_json::to_value(validate(sample_profile()).unwrap()).unwrap();
+        assert!(legacy.get("tactileClips").is_none());
+    }
     #[test]
     fn session_and_community_records_roundtrip_and_legacy_defaults_are_safe() {
         let old = validate(sample_profile()).unwrap();
