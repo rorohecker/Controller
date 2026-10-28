@@ -92,14 +92,44 @@
   let inputCalibration=null,calibrationRun=null;
   const validMotorZones=map=>Array.isArray(map)&&map.length===11&&map[0]===0&&map[10]===1&&Array.from({length:11},(_,i)=>Number.isFinite(map[i])&&(i===0||map[i]>map[i-1])).every(Boolean);
   let motorZones={left:null,right:null},zoneRun=null,zoneRenewal=null;
-  try{
-    const saved=JSON.parse(localStorage.getItem('controller.motorZones')||'null');
-    for(const side of ['left','right'])if(validMotorZones(saved?.[side]))motorZones[side]=saved[side];
-  }catch{}
-  try{
-    const saved=JSON.parse(localStorage.getItem('aftertouch.inputCalibration')||'null');
-    if(saved&&['axisCenters','axisMins','axisMaxs','triggerRests','triggerFulls','touchMins','touchMaxs'].every(key=>Array.isArray(saved[key])&&saved[key].every(Number.isFinite)))inputCalibration=saved;
-  }catch{}
+  let calibrationOwner='';
+  function calibrationRecord(save=false){
+    let store={controllers:{}};
+    try{store=JSON.parse(localStorage.getItem('controller.deviceCalibration'))||store;}catch{}
+    store.controllers=store.controllers&&typeof store.controllers==='object'?store.controllers:{};
+    if(!calibrationOwner)return null;
+    if(save){
+      store.controllers[calibrationOwner]={input:inputCalibration,motorZones};
+      try{localStorage.setItem('controller.deviceCalibration',JSON.stringify(store));}catch{toast('Could not save calibration. Local storage is full or unavailable.');}
+    }
+    return store.controllers[calibrationOwner]||null;
+  }
+  function selectControllerCalibration(event){
+    const id=event.controllerId||event.path||`${event.name}:${event.transport}`;
+    if(id===calibrationOwner)return;
+    calibrationRun=null;
+    if(zoneRun)stopZoneCalibration(false);
+    calibrationOwner=id;inputCalibration=null;motorZones={left:null,right:null};
+    let record=calibrationRecord();
+    if(!record){
+      try{
+        if(!localStorage.getItem('controller.legacyCalibrationOwner')){
+          const input=JSON.parse(localStorage.getItem('aftertouch.inputCalibration')||'null');
+          const zones=JSON.parse(localStorage.getItem('controller.motorZones')||'null');
+          // Claim legacy ranges once; another pad must never inherit them.
+          localStorage.setItem('controller.legacyCalibrationOwner',id);
+          if(input||zones){record={input,motorZones:zones};}
+        }
+      }catch{}
+    }
+    const input=record?.input;
+    const lengths={axisCenters:4,axisMins:4,axisMaxs:4,triggerRests:2,triggerFulls:2,touchMins:2,touchMaxs:2};
+    if(input&&Object.entries(lengths).every(([key,n])=>Array.isArray(input[key])&&input[key].length===n&&input[key].every(Number.isFinite)))inputCalibration=input;
+    for(const side of ['left','right'])if(validMotorZones(record?.motorZones?.[side]))motorZones[side]=record.motorZones[side];
+    calibrationRecord(true);
+    $('#calibration-status').textContent=inputCalibration?'Saved ranges loaded for this controller.':'No calibration saved for this controller.';
+    $('#calibration-fill').style.width='0%';
+  }
   try{
     const saved=JSON.parse(localStorage.getItem('aftertouch.pcBindings')||'null');
     if(Array.isArray(saved)&&saved.length<=pcButtons.length&&saved.every(b=>pcButtons.includes(b.button)&&(Number.isInteger(b.vk)&&b.vk>=1&&b.vk<=255||['launch','program'].includes(b.behavior)&&b.vk===0)&&['hold','tap','macro','launch','program'].includes(b.behavior)&&Array.isArray(b.sequence)&&b.sequence.length<=5&&b.sequence.every(vk=>Number.isInteger(vk)&&vk>=1&&vk<=255)&&(!b.chord||Array.isArray(b.chord)&&b.chord.length<=8&&b.chord.every(vk=>Number.isInteger(vk)&&vk>=1&&vk<=255))&&(!b.launchPath||typeof b.launchPath==='string'&&b.launchPath.length<=1024)))pcBindings=saved;
@@ -350,7 +380,7 @@
       return;
     }
     calibrationRun=null;inputCalibration=candidate;
-    try{localStorage.setItem('aftertouch.inputCalibration',JSON.stringify(candidate));}catch{}
+    calibrationRecord(true);
     $('#calibration-fill').style.width='100%';
     $('#calibration-step').textContent='Calibration saved';
     $('#calibration-instruction').textContent='Your ranges are applied to input and pointer controls.';
@@ -377,7 +407,7 @@
     $('#calibration-status').textContent='Previous ranges restored.';renderCalibrationStatus();
   });
   $('#reset-calibration').addEventListener('click',()=>{
-    inputCalibration=null;try{localStorage.removeItem('aftertouch.inputCalibration');}catch{}
+    inputCalibration=null;calibrationRecord(true);
     sendCalibration();$('#calibration-step').textContent='Default ranges restored';
     $('#calibration-status').textContent='Using default ranges.';$('#calibration-fill').style.width='0%';renderCalibrationStatus();
   });
@@ -390,6 +420,33 @@
     }catch{}
     sendPcBindings();
     $('#pc-bindings-status').textContent=pcBindings.some(b=>b.behavior==='launch'&&!validAppPath(b.launchPath||''))?'Enter the full application path to finish the shortcut.':'Saved locally. Shortcuts take effect in PC control while another window is focused.';
+  }
+  let cancelPcRecording=null;
+  function recordPcShortcut(binding,button){
+    cancelPcRecording?.();
+    state.shortcutRecording=true;button.textContent='Press shortcut (Esc cancels)';
+    let finished=false,timer;
+    const finish=()=>{
+      if(finished)return;finished=true;state.shortcutRecording=false;
+      clearTimeout(timer);window.removeEventListener('keydown',capture,true);
+      if(native)invoke('cancel_shortcut_recording').catch(()=>{});
+      cancelPcRecording=null;renderPcBindings();
+    };
+    cancelPcRecording=finish;
+    const accept=chord=>{
+      if(finished||!Array.isArray(chord)||!chord.length)return;
+      if(chord.length>8||!chord.every(validPcKey)){toast('That shortcut is not supported. Use the modifier buttons and key selector.');finish();return;}
+      binding.chord=[...new Set(chord)];binding.vk=chord.at(-1);savePcBindings();finish();
+    };
+    const capture=event=>{
+      event.preventDefault();event.stopImmediatePropagation();
+      if(event.key==='Escape'){finish();return;}
+      if(['Control','Shift','Alt','Meta'].includes(event.key))return;
+      const vk=event.code.startsWith('Key')?event.code.charCodeAt(3):event.code.startsWith('Digit')?event.code.charCodeAt(5):event.keyCode;
+      accept([event.ctrlKey?17:0,event.altKey?18:0,event.shiftKey?16:0,event.metaKey?91:0,vk].filter(Boolean));
+    };
+    window.addEventListener('keydown',capture,true);timer=setTimeout(()=>{if(!finished)toast('Use the modifier buttons and key selector for system shortcuts.');finish();},10000);
+    if(native)invoke('record_shortcut').then(accept).catch(error=>{if(!finished){$('#pc-bindings-status').textContent=String(error);}});
   }
   function renderPcBindings(){
     const host=$('#pc-bindings');host.replaceChildren();
@@ -405,23 +462,34 @@
       }else if(binding?.behavior==='program'){
         const edit=gameNode('button',{type:'button',class:'quiet-action',text:`Edit ${binding.program?.steps?.length||0} steps`});edit.addEventListener('click',()=>window.studioHooks?.editMacro(binding));row.append(edit);
       }else if(binding){
-        const keys=gameNode('div',{class:'pc-key-editor'}),key=gameSelect([['','Choose key'],...vkChoices.filter(k=>validPcKey(k.vk)).map(k=>[k.vk,k.label])],binding.vk,value=>{if(!value)return;binding.vk=+value;binding.chord=[];savePcBindings();renderPcBindings();});key.setAttribute('aria-label',`${names[button]} key`);
+        const keys=gameNode('div',{class:'pc-key-editor'}),key=gameSelect([['','Choose key'],...vkChoices.filter(k=>validPcKey(k.vk)).map(k=>[k.vk,k.label])],binding.vk,value=>{if(!value)return;const modifiers=(binding.chord||[]).filter(vk=>[16,17,18,91].includes(vk));binding.vk=+value;binding.chord=modifiers.length?[...new Set([...modifiers,binding.vk])]:[];savePcBindings();renderPcBindings();});key.setAttribute('aria-label',`${names[button]} key`);
         if(!vkChoices.some(k=>k.vk===binding.vk))key.add(new Option(`Key ${binding.vk}`,binding.vk));key.value=String(binding.vk);
         keys.append(key);
         if(binding.behavior!=='macro'){
           const record=gameNode('button',{class:'quiet-action pc-record',type:'button',text:binding.chord?.length?binding.chord.map(vk=>vkChoices.find(k=>k.vk===vk)?.label||`Key ${vk}`).join(' + '):'Record shortcut'});
           record.setAttribute('aria-label',`${names[button]} record shortcut`);
-          record.addEventListener('click',()=>{
-            record.textContent='Press shortcut…';state.shortcutRecording=true;let timer;
-            const finish=()=>{state.shortcutRecording=false;window.removeEventListener('keydown',capture,true);clearTimeout(timer);renderPcBindings();};
-            const capture=event=>{event.preventDefault();event.stopImmediatePropagation();if(['Control','Shift','Alt','Meta'].includes(event.key))return;
-              const vk=event.code.startsWith('Key')?event.code.charCodeAt(3):event.code.startsWith('Digit')?event.code.charCodeAt(5):event.keyCode;
-              if(!validPcKey(vk))return;
-              const chord=[event.ctrlKey?17:0,event.altKey?18:0,event.shiftKey?16:0,event.metaKey?91:0,vk].filter(Boolean);
-              binding.vk=vk;binding.chord=[...new Set(chord)];savePcBindings();finish();
-            };
-            window.addEventListener('keydown',capture,true);timer=setTimeout(finish,10000);
-          });keys.append(record);
+          record.addEventListener('click',()=>recordPcShortcut(binding,record));keys.append(record);
+          const modifiers=gameNode('div',{class:'pc-modifiers'});
+          for(const [vk,fallback] of [[17,'Ctrl'],[18,'Alt'],[16,'Shift'],[91,'Super']]){
+            if(!validPcKey(vk))continue;
+            const modifier=gameNode('button',{type:'button',class:'quiet-action',text:platform.keyLabel(vk,fallback)});
+            modifier.setAttribute('aria-label',`${names[button]} ${platform.keyLabel(vk,fallback)} modifier`);
+            modifier.setAttribute('aria-pressed',String((binding.chord||[]).includes(vk)));
+            modifier.addEventListener('click',()=>{
+              const chosen=new Set((binding.chord||[]).filter(key=>[16,17,18,91].includes(key)));
+              chosen.has(vk)?chosen.delete(vk):chosen.add(vk);
+              binding.chord=chosen.size?[...new Set([...chosen,binding.vk])]:[];
+              savePcBindings();renderPcBindings();
+            });modifiers.append(modifier);
+          }
+          keys.append(modifiers);
+          const common=gameSelect([['','Common shortcut'],['switch','Switch app'],['previous','Previous app'],['close','Close window'],['copy','Copy'],['paste','Paste']], '',value=>{
+            if(!value)return;
+            const primary=platform.os==='macos'?91:17;
+            binding.chord={switch:[platform.os==='macos'?91:18,9],previous:[platform.os==='macos'?91:18,16,9],close:platform.os==='macos'?[91,87]:[18,115],copy:[primary,67],paste:[primary,86]}[value];
+            binding.vk=binding.chord.at(-1);savePcBindings();renderPcBindings();
+          });common.setAttribute('aria-label',`${names[button]} common shortcut`);keys.append(common);
+
         }else{
           const sequence=gameNode('input',{type:'text',maxLength:120,placeholder:'Then: E, Space',value:binding.sequence.map(vk=>vkChoices.find(k=>k.vk===vk)?.label||`Key ${vk}`).join(', ')});sequence.setAttribute('aria-label',`${names[button]} following keys`);
           sequence.addEventListener('change',()=>{const values=sequence.value.split(',').map(v=>v.trim()).filter(Boolean).map(label=>vkChoices.find(k=>k.label.toLowerCase()===label.toLowerCase())?.vk||Number(label.replace(/^Key\s+/i,'')));if(values.length<1||values.length>5||!values.every(validPcKey)){toast('Enter one to five key names or key codes, separated by commas.');return;}binding.sequence=values;savePcBindings();});keys.append(sequence);
@@ -450,6 +518,31 @@
   $('#pc-reverse-scroll').addEventListener('change',event=>{
     pcReverseScroll=event.target.checked;savePcBindings();
   });
+  $('#pc-permission-note').insertAdjacentHTML('afterend','<div class="desktop-access" data-platform-only="macos"><p id="desktop-access-status" role="status">Checking desktop permissions...</p><button type="button" id="desktop-access-request" class="quiet-action">Allow desktop control</button><button type="button" id="desktop-recording-request" class="quiet-action">Allow shortcut recording</button><button type="button" id="desktop-access-settings" class="quiet-action">Accessibility settings</button><button type="button" id="desktop-recording-settings" class="quiet-action">Input Monitoring settings</button></div>');
+  async function refreshDesktopAccess(){
+    if(!native||platform.os!=='macos')return;
+    try{
+      const access=await invoke('desktop_access_status');if(!access)return;
+      $('#desktop-access-status').textContent=`Desktop control: ${access.controlAllowed?'allowed':'permission needed'}. Shortcut recording: ${access.recordingAllowed?'allowed':'Input Monitoring needed'}.`;
+      $('#desktop-access-request').hidden=!!access.controlAllowed;
+      $('#desktop-recording-request').hidden=!!access.recordingAllowed;
+    }catch(error){$('#desktop-access-status').textContent=`Could not check permissions: ${error}`;}
+  }
+  for(const [id,recording] of [['desktop-access-request',false],['desktop-recording-request',true]]){
+    $(`#${id}`).addEventListener('click',async()=>{
+      try{await invoke('request_desktop_access',{recording});await refreshDesktopAccess();}
+      catch(error){$('#desktop-access-status').textContent=String(error);}
+    });
+  }
+  for(const [id,recording] of [['desktop-access-settings',false],['desktop-recording-settings',true]]){
+    $(`#${id}`).addEventListener('click',async()=>{
+      try{await invoke('open_desktop_access_settings',{recording});}
+      catch(error){$('#desktop-access-status').textContent=String(error);}
+    });
+  }
+  window.addEventListener('focus',refreshDesktopAccess);
+  document.addEventListener('controller-platform',refreshDesktopAccess);
+  refreshDesktopAccess();platform.apply();
   function reportUiFocus(){
     if(native)invoke('send_command',{command:{action:'setUiFocused',focused:document.hasFocus()&&!document.hidden}}).catch(()=>{});
   }
@@ -459,6 +552,7 @@
   function navigate(view) {
     if (!$('#' + view)?.classList.contains('screen')) return;
     if(zoneRun&&view!=='triggers')stopZoneCalibration();
+    if(view!=='pc-controls')cancelPcRecording?.();
     clearPadFocus();
     window.studioHooks?.beforeNavigate(view);
     state.currentView = view;
@@ -1142,7 +1236,7 @@
       run.positions[10]=1;
       if(!validMotorZones(run.positions)){run.message='The zone positions crossed. Repeat this zone.';renderZoneCalibration();return;}
       motorZones[run.side]=run.positions;
-      try{localStorage.setItem('controller.motorZones',JSON.stringify(motorZones));}catch{}
+      calibrationRecord(true);
       await stopZoneCalibration();
       toast(`${run.side==='left'?'L2':'R2'} motor zones saved`);
     }else{
@@ -1328,99 +1422,13 @@
   $('#alert-ping').addEventListener('click',()=>send({action:'playHaptic',shape:'sine',frequency:125,attack:5,release:160,strength:26,pan:0}));
   $('#alert-ping').insertAdjacentHTML('afterend','<button id="speaker-chirp" class="quiet-action" type="button" disabled title="Play a test tone through the controller speaker over USB">Speaker test · USB</button>');
   $('.alert-body > div > p').textContent='Low battery and timer alerts tap the grips. Find my pad taps them now. Speaker chirp uses the controller speaker over USB. Reset, disconnect, or exit to stop alerts.';
-  let speakerSound=null,speakerDecoded=null,speakerTrackDuration=0,speakerClipDuration=0,speakerClipStart=0,speakerStartedAt=0,speakerPending=false,speakerNextChunkStart=0,speakerChunkPending=false,speakerRoute='speaker',speakerScale=1,speakerGeneration=0,speakerPaused=false,speakerElapsed=0,speakerScrubbing=false;
-  function renderSpeakerTransport(){const button=$('#speaker-file-play');button.textContent=speakerPending?'Starting…':speakerStartedAt?'Pause':speakerPaused?'Resume':'Play';button.disabled=speakerPending||!speakerDecoded||!state.connected||state.transport!=='USB';}
-  function stopSpeakerPlayback(){speakerGeneration++;speakerStartedAt=0;speakerPending=false;speakerChunkPending=false;speakerPaused=false;speakerElapsed=0;$('#speaker-start').disabled=!speakerDecoded;$('#speaker-file-stop').disabled=true;renderSpeakerTransport();send({action:'stopSpeakerSound'});}
-  async function testSpeaker(){stopSpeakerPlayback();$('#speaker-file-status').textContent='Playing speaker test';await send({action:'playSpeakerChirp'});}
+  const musicPlayer=new window.ControllerPlayer(send,()=>state.connected&&state.transport==='USB');
+  async function testSpeaker(){await musicPlayer.stop('Playing speaker test');await send({action:'playSpeakerChirp'});}
   $('#speaker-chirp').addEventListener('click',testSpeaker);
   $('#speaker-panel-test').addEventListener('click',testSpeaker);
   $('#speaker-panel-test').insertAdjacentHTML('afterend','<button id="controller-mic" class="quiet-action" type="button" disabled aria-pressed="false">Controller mic: live</button>');
   let controllerMicMuted=false;
   $('#controller-mic').addEventListener('click',()=>send({action:'setMicrophoneMute',enabled:!controllerMicMuted}));
-  const soundTime=seconds=>`${Math.floor(seconds/60)}:${String(Math.floor(seconds%60)).padStart(2,'0')}`;
-  function renderSpeakerProgress(now=performance.now()){
-    const elapsed=Math.min(speakerClipDuration,speakerElapsed+(speakerStartedAt?(now-speakerStartedAt)/1000:0));
-    const position=speakerClipStart+elapsed;
-    $('#speaker-time').textContent=`${soundTime(position)} / ${soundTime(speakerTrackDuration)}`;
-    $('#speaker-progress').max=Math.max(speakerTrackDuration,1);
-    $('#speaker-progress').value=position;
-    if(!speakerScrubbing){$('#speaker-start').value=String(position);$('#speaker-start-value').textContent=soundTime(position);}
-    if(speakerStartedAt&&elapsed>=speakerClipDuration){speakerStartedAt=0;$('#speaker-start').disabled=+$('#speaker-start').max<=0;$('#speaker-file-stop').disabled=true;$('#speaker-file-status').textContent='Finished';}
-    else if(speakerStartedAt&&speakerNextChunkStart<speakerTrackDuration&&position>=speakerNextChunkStart-6)queueSpeakerChunk();
-    renderSpeakerTransport();
-  }
-  function prepareSpeakerSound(){
-    if(!speakerDecoded)return;
-    const decoded=speakerDecoded, count=Math.min(144_000,Math.ceil((decoded.duration-speakerClipStart)*48_000));
-    if(!count)throw Error('The selected section has no audio.');
-    const channels=Array.from({length:Math.min(2,decoded.numberOfChannels)},(_,i)=>decoded.getChannelData(i));
-    const mono=new Float32Array(count);let peak=0;
-    for(let i=0;i<count;i++){
-      const position=(speakerClipStart+i/48_000)*decoded.sampleRate,index=Math.floor(position),mix=position-index;
-      let sample=0;
-      for(const data of channels)sample+=(data[index]||0)*(1-mix)+(data[index+1]||0)*mix;
-      sample/=channels.length;mono[i]=sample;peak=Math.max(peak,Math.abs(sample));
-    }
-    const scale=.85;speakerScale=scale;
-    const bytes=new Uint8Array(count*2),view=new DataView(bytes.buffer);
-    for(let i=0;i<count;i++)view.setInt16(i*2,Math.round(clamp(mono[i]*scale,-1,1)*32767),true);
-    let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
-    speakerSound=btoa(binary);speakerClipDuration=speakerTrackDuration-speakerClipStart;speakerNextChunkStart=speakerClipStart+count/48_000;
-    $('#speaker-file-status').textContent=peak<.005?'This section starts quietly.':'Ready to play';
-    $('#speaker-file-play').disabled=!state.connected||state.transport!=='USB';
-    renderSpeakerProgress();
-  }
-  function encodeSpeakerChunk(start){
-    const decoded=speakerDecoded,count=Math.min(144_000,Math.ceil((decoded.duration-start)*48_000));
-    if(count<=0)return null;
-    const channels=Array.from({length:Math.min(2,decoded.numberOfChannels)},(_,i)=>decoded.getChannelData(i));
-    const bytes=new Uint8Array(count*2),view=new DataView(bytes.buffer);
-    for(let i=0;i<count;i++){
-      const position=(start+i/48_000)*decoded.sampleRate,index=Math.floor(position),mix=position-index;
-      let sample=0;
-      for(const data of channels)sample+=(data[index]||0)*(1-mix)+(data[index+1]||0)*mix;
-      view.setInt16(i*2,Math.round(clamp(sample/channels.length*speakerScale,-1,1)*32767),true);
-    }
-    let binary='';for(let i=0;i<bytes.length;i+=8192)binary+=String.fromCharCode(...bytes.subarray(i,i+8192));
-    return {sound:btoa(binary),duration:count/48_000};
-  }
-  async function queueSpeakerChunk(){
-    if(speakerChunkPending||!speakerStartedAt||speakerNextChunkStart>=speakerTrackDuration)return;
-    speakerChunkPending=true;
-    const generation=speakerGeneration;
-    const next=encodeSpeakerChunk(speakerNextChunkStart);
-    if(next&&await send({action:'playSpeakerSound',pcmBase64:next.sound,route:speakerRoute,append:true})){if(generation===speakerGeneration)speakerNextChunkStart+=next.duration;}
-    else {speakerStartedAt=0;$('#speaker-file-status').textContent='Playback stopped';}
-    speakerChunkPending=false;
-  }
-  $('#speaker-file').addEventListener('change',async event=>{
-    if(speakerStartedAt||speakerPending)stopSpeakerPlayback();
-    speakerSound=null;speakerDecoded=null;speakerStartedAt=0;$('#speaker-file-play').disabled=true;
-    const file=event.target.files[0];if(!file)return;
-    if(file.size>64_000_000){$('#speaker-file-status').textContent='Choose a file under 64 MB.';return;}
-    try{
-      audioContext=audioContext||new(window.AudioContext||window.webkitAudioContext)();
-      speakerDecoded=await audioContext.decodeAudioData(await file.arrayBuffer());
-      speakerTrackDuration=speakerDecoded.duration;speakerClipStart=0;
-      if(!speakerTrackDuration)throw Error('The file has no audio.');
-      if(speakerTrackDuration>600)throw Error('Choose a track under ten minutes.');
-      $('#speaker-start').max=String(Math.max(0,speakerTrackDuration-.1));
-      $('#speaker-start').value='0';$('#speaker-start').disabled=speakerTrackDuration<=.1;
-      $('#speaker-start-value').textContent='0:00';
-      prepareSpeakerSound();
-      $('#speaker-file-status').title=file.name;
-    }catch(error){$('#speaker-file-status').textContent=`Could not read sound: ${error.message}`;}
-  });
-  $('#speaker-start').addEventListener('pointerdown',()=>speakerScrubbing=true);
-  $('#speaker-start').addEventListener('keydown',()=>speakerScrubbing=true);
-  $('#speaker-start').addEventListener('blur',()=>speakerScrubbing=false);
-  window.addEventListener('pointerup',()=>speakerScrubbing=false);
-  $('#speaker-start').addEventListener('input',e=>{$('#speaker-start-value').textContent=soundTime(+e.target.value);});
-  $('#speaker-start').addEventListener('change',e=>{speakerScrubbing=false;const playing=!!speakerStartedAt,position=+e.target.value;stopSpeakerPlayback();speakerClipStart=position;prepareSpeakerSound();if(playing)$('#speaker-file-play').click();});
-  $('#speaker-file-play').addEventListener('click',async()=>{if(!speakerDecoded)return;if(speakerStartedAt||speakerPaused){await send({action:'setSpeakerPaused',paused:!speakerPaused});return;}stopSpeakerPlayback();prepareSpeakerSound();speakerPending=true;speakerRoute=$('#speaker-route').value;$('#speaker-file-stop').disabled=false;renderSpeakerTransport();if(!await send({action:'playSpeakerSound',pcmBase64:speakerSound,route:speakerRoute}))speakerPending=false;renderSpeakerTransport();});
-  $('#speaker-file-stop').addEventListener('click',()=>{stopSpeakerPlayback();$('#speaker-file-status').textContent='Stopped';renderSpeakerProgress();});
-  $('#speaker-route').addEventListener('change',()=>{if(speakerStartedAt||speakerPaused||speakerPending){stopSpeakerPlayback();$('#speaker-file-status').textContent='Output changed. Press Play.';}});
-  setInterval(()=>{if(speakerStartedAt)renderSpeakerProgress();},400);
   $('#alert-low-battery').addEventListener('click',()=>send({action:'setLowBatteryAlert',enabled:!state.lowBatteryAlert}));
   $('#alert-timer-start').addEventListener('click',()=>send({action:'setHapticTimer',seconds:Number($('#alert-timer-minutes').value)*60}));
   $('#alert-timer-cancel').addEventListener('click',()=>send({action:'setHapticTimer',seconds:0}));
@@ -1719,7 +1727,8 @@
     $('#speaker-chirp').disabled=!connected||transport!=='USB';
     $('#speaker-panel-test').disabled=!connected||transport!=='USB';
     $('#controller-mic').disabled=!connected;
-    $('#speaker-file-play').disabled=!connected||transport!=='USB'||!speakerSound;
+    if(!connected)musicPlayer.stop('Controller disconnected');
+    musicPlayer.render();
     if(!connected){clearPadFocus();calibrationRun=null;if(state.gyroCalibration)clearTimeout(state.gyroCalibration.timer);state.gyroCalibration=null;state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.pcMode=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.temperatureLight=false;state.screenLight=false;state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderTemperatureLight();renderScreenLight();renderInput();}
     renderPcMode();
     if(!connected){state.lowBatteryAlert=false;state.timerUntil=0;}
@@ -1886,8 +1895,9 @@
   function handleEvent(event){
     window.studioHooks?.event(event);
     if(event.type==='device'){
-      const changed=state.connected!==!!event.connected || (event.connected&&(state.name!==event.name||state.transport!==event.transport||state.path!==(event.path||'')));
+      const changed=state.connected!==!!event.connected || (event.connected&&(state.name!==event.name||state.transport!==event.transport||state.path!==(event.path||'')||(event.controllerId&&event.controllerId!==calibrationOwner)));
       if(changed)padNavPrev=null;
+      if(changed&&event.connected)selectControllerCalibration(event);
       setConnected(!!event.connected,event.name||'',event.transport||'',event.firmware||'',event.path||'');
       if(changed && event.connected){sendPcBindings();sendCalibration();applyGameRules();}
       if(event.path) state.selectedPath = event.path;
@@ -1936,9 +1946,12 @@
       $('#controller-mic').setAttribute('aria-pressed',String(controllerMicMuted));
     }else if(event.type==='speakerStatus'){
       log(event.message||'Controller speaker chirp playing');
-      if(event.source==='chirp'){$('#speaker-file-status').textContent='Speaker test playing';setTimeout(()=>{if(!speakerStartedAt)$('#speaker-file-status').textContent='Speaker test finished';},1000);}
-      if(event.source==='transport'){speakerPaused=!!event.paused;speakerElapsed=event.position||0;speakerStartedAt=speakerPaused?0:performance.now();$('#speaker-file-status').textContent=speakerPaused?'Paused':'Playing';renderSpeakerProgress();}
-      if(speakerPending&&event.source==='file'){speakerPending=false;speakerElapsed=0;speakerPaused=false;speakerStartedAt=performance.now();$('#speaker-start').disabled=false;$('#speaker-file-status').textContent='Playing';renderSpeakerProgress();}
+      musicPlayer.event(event);
+      if(event.source==='chirp'){
+        const id=musicPlayer.trackId;
+        $('#speaker-file-status').textContent='Speaker test playing';
+        setTimeout(()=>{if(id===musicPlayer.trackId&&musicPlayer.mode==='stopped')$('#speaker-file-status').textContent='Speaker test finished';},1000);
+      }
     }else if(event.type==='inputEffects'){
       state.inputEffectsActive=!!event.enabled;
       $('#click-status').textContent=event.enabled?'Armed · release R2 to rearm':'Not armed';
@@ -2041,6 +2054,7 @@
       state.leaseUntil=event.active?performance.now()+event.durationMs:0;
       renderSession();
     }else if(event.type==='safetyReset'){
+      musicPlayer.stop('Effects reset');
       state.autoSuppressed=true;
       state.pcMode=false;renderPcMode();
       state.leaseUntil=0;
@@ -2069,7 +2083,7 @@
       toast(event.message);log(event.message);
     }
   }
-  let lastCanvas=0;function frame(now){if(!document.hidden&&now-lastCanvas>50){syncRangeFills();if(state.packet!==state.lastFramePacket){renderInput();if(state.currentView==='live')drawActivity();state.lastFramePacket=state.packet;}if(state.currentView==='haptics'||now<state.playUntil)drawWave(now);if(state.leaseUntil>now||state.lastLeaseDraw){renderSession();state.lastLeaseDraw=state.leaseUntil>now;}if(state.currentView==='haptics'&&state.timerUntil)renderAlerts();if(state.currentView==='haptics'&&speakerStartedAt)renderSpeakerProgress(now);updateStickTest(now);if(state.telemetryOn&&state.telemetryLast&&now-state.telemetryLast>1500)$('#telemetry-status').textContent='Listening · waiting for telemetry';lastCanvas=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
+  let lastCanvas=0;function frame(now){if(!document.hidden&&now-lastCanvas>50){syncRangeFills();if(state.packet!==state.lastFramePacket){renderInput();if(state.currentView==='live')drawActivity();state.lastFramePacket=state.packet;}if(state.currentView==='haptics'||now<state.playUntil)drawWave(now);if(state.leaseUntil>now||state.lastLeaseDraw){renderSession();state.lastLeaseDraw=state.leaseUntil>now;}if(state.currentView==='haptics'&&state.timerUntil)renderAlerts();updateStickTest(now);if(state.telemetryOn&&state.telemetryLast&&now-state.telemetryLast>1500)$('#telemetry-status').textContent='Listening · waiting for telemetry';lastCanvas=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
   const keyMap={j:2,k:0,l:1,i:3,q:4,e:5,z:6,c:7,ArrowUp:12,ArrowDown:13,ArrowLeft:14,ArrowRight:15};
   const held=new Set();window.addEventListener('keydown',e=>{if(state.connected||e.ctrlKey||e.metaKey||e.altKey||e.target.matches('input,textarea,button,select'))return;if(!(e.key in keyMap))return;held.add(e.key);state.buttons[keyMap[e.key]]=1;renderInput();});
   window.addEventListener('keyup',e=>{if(!(e.key in keyMap)||state.connected)return;held.delete(e.key);state.buttons[keyMap[e.key]]=0;renderInput();});

@@ -59,6 +59,7 @@ jobs:
           python tests/game_profiles_smoke.py
           python tests/studio_smoke.py
           python tests/platform_smoke.py
+          python tests/reliability_smoke.py
           python tests/layout_smoke.py
       - name: Build core smoke executable
         run: cargo build --bin controller

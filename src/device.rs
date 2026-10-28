@@ -125,14 +125,21 @@ pub enum DeviceCommand {
         enabled: bool,
     },
     PlaySpeakerSound {
+        #[serde(default, rename = "trackId")]
+        track_id: u64,
         #[serde(rename = "pcmBase64")]
         pcm_base64: String,
         route: String,
         #[serde(default)]
         append: bool,
     },
-    StopSpeakerSound,
+    StopSpeakerSound {
+        #[serde(default, rename = "trackId")]
+        track_id: u64,
+    },
     SetSpeakerPaused {
+        #[serde(default, rename = "trackId")]
+        track_id: u64,
         paused: bool,
     },
     SetAudioBridge {
@@ -279,6 +286,7 @@ struct Connected {
     hid: HidDevice,
     path: Vec<u8>,
     path_display: String,
+    controller_id: String,
     name: String,
     transport: BusType,
     product_id: u16,
@@ -294,6 +302,7 @@ struct Connected {
     haptic: Option<HapticClip>,
     audio: AudioEngine,
     speaker_route_until: Option<Instant>,
+    speaker_track_id: u64,
     microphone_muted: Option<bool>,
     desktop: DesktopMapper,
     calibration: InputCalibration,
@@ -1040,6 +1049,37 @@ fn path_key(info: &hidapi::DeviceInfo) -> String {
     info.path().to_string_lossy().into_owned()
 }
 
+fn controller_identity(info: &hidapi::DeviceInfo, hid: &HidDevice) -> String {
+    let serial = info
+        .serial_number()
+        .unwrap_or("")
+        .replace([':', '-'], "")
+        .to_ascii_lowercase();
+    let mut pairing = [0u8; 20];
+    pairing[0] = 0x09;
+    let address = if serial.len() == 12 && serial.bytes().all(|b| b.is_ascii_hexdigit()) {
+        serial
+    } else if hid
+        .get_feature_report(&mut pairing)
+        .is_ok_and(|length| length >= 7)
+        && pairing[1..7].iter().any(|byte| *byte != 0)
+    {
+        pairing[1..7]
+            .iter()
+            .rev()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    } else {
+        format!("path:{}", path_key(info))
+    };
+    // Opaque stable local identifier; never include the hardware address in shareable diagnostics.
+    let identity = format!("{:04x}:{address}", info.product_id());
+    let hash = identity.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    format!("pad-{hash:016x}")
+}
+
 fn list_devices(api: &HidApi) -> Vec<serde_json::Value> {
     let mut items: Vec<_> = api
         .device_list()
@@ -1113,9 +1153,11 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     let _ = hid.get_feature_report(&mut feature);
                 }
                 let display = path_key(info);
+                let controller_id = controller_identity(info, &hid);
                 return Ok(Some(Connected {
                     hid,
                     path: info.path().to_bytes().to_vec(),
+                    controller_id,
                     path_display: display,
                     name: info.product_string().unwrap_or("DualSense").to_string(),
                     transport: info.bus_type(),
@@ -1135,6 +1177,7 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     haptic: None,
                     audio: AudioEngine::default(),
                     speaker_route_until: None,
+                    speaker_track_id: 0,
                     microphone_muted: None,
                     desktop: DesktopMapper::default(),
                     calibration: InputCalibration::default(),
@@ -1228,6 +1271,7 @@ fn emit_connected(proxy: &Sender<serde_json::Value>, found: &Connected) {
             "transport": if matches!(found.transport, BusType::Bluetooth) { "Bluetooth" } else { "USB" },
             "firmware": found.firmware,
             "path": found.path_display,
+            "controllerId": found.controller_id,
             "productId": format!("{:04x}", found.product_id),
             "isEdge": found.product_id == protocol::EDGE_PID,
         }),
@@ -1795,6 +1839,12 @@ fn handle_command(
         return true;
     };
 
+    let audio_request = match &command {
+        DeviceCommand::PlaySpeakerSound { track_id, .. }
+        | DeviceCommand::SetSpeakerPaused { track_id, .. }
+        | DeviceCommand::StopSpeakerSound { track_id } => Some(*track_id),
+        _ => None,
+    };
     let result: Result<&str, String> = match command {
         DeviceCommand::TestGameAction {rule} => {rule.validate().map_err(str::to_string).and_then(|()|device.play_action(&rule)).map(|()|"Action played")}
         DeviceCommand::ApplyTriggers { left, right } => {
@@ -2083,11 +2133,14 @@ fn handle_command(
             }
         }
         DeviceCommand::PlaySpeakerSound {
+            track_id,
             pcm_base64,
             route,
             append,
         } => {
-            if !matches!(device.transport, BusType::Usb) {
+            if append && track_id != device.speaker_track_id {
+                Err("Ignored an audio chunk from an old track.".into())
+            } else if !matches!(device.transport, BusType::Usb) {
                 Err("Controller speaker playback requires USB.".into())
             } else if pcm_base64.len() > 400_000 {
                 Err("Sound is too long. Use at most 3 seconds.".into())
@@ -2104,29 +2157,34 @@ fn handle_command(
                     let routing = device.audio.start_output().map(|_| ());
                     routing.and_then(|_| device.enable_pcm()).and_then(|_| if append { Ok(()) } else if route == "grips" { device.set_speaker_route(false) } else { device.set_speaker_route(true) })
                     .and_then(|_| device.audio.play_speaker_pcm(samples, &route, append)).map(|endpoint| {
-                        device.speaker_route_until = (route != "grips").then(|| Instant::now() + duration + Duration::from_secs(1));
+                        device.speaker_track_id = track_id;
+                        if route != "grips" {
+                            let now = Instant::now();
+                            let end = device.speaker_route_until.unwrap_or(now).max(now);
+                            device.speaker_route_until = Some(if append { end + duration } else { now + duration + Duration::from_secs(1) });
+                        }
                         if !append {
-                            emit(proxy, json!({"type":"speakerStatus","source":"file","message":format!("Sound sent to {endpoint}")}));
+                            emit(proxy, json!({"type":"speakerStatus","source":"file","trackId":track_id,"message":format!("Sound sent to {endpoint}")}));
                         }
                         "Controller speaker playing"
                     })
                 })
             }
         }
-        DeviceCommand::StopSpeakerSound => {
+        DeviceCommand::StopSpeakerSound { track_id } => {
+            device.speaker_track_id = track_id;
             device.audio.stop_speaker_pcm();
-            if device.speaker_route_until.is_some() {
-                device
-                    .set_speaker_route(false)
-                    .map(|_| "Controller audio stopped")
+            emit(proxy, json!({"type":"speakerStatus","source":"stopped","trackId":track_id,"position":0}));
+            if matches!(device.transport, BusType::Usb) {
+                device.set_speaker_route(false).map(|_| "Controller audio stopped")
             } else {
                 Ok("Controller audio stopped")
             }
         }
-        DeviceCommand::SetSpeakerPaused { paused } => {
-            device.audio.pause_speaker_pcm(paused).map(|playback| {
+        DeviceCommand::SetSpeakerPaused { paused, track_id } => {
+            (if track_id != device.speaker_track_id { Err("The audio track changed.".into()) } else { device.audio.pause_speaker_pcm(paused) }).map(|playback| {
                 device.speaker_route_until = (!playback.paused && playback.speaker).then(|| Instant::now() + Duration::from_secs_f32(playback.remaining + 1.0));
-                emit(proxy,json!({"type":"speakerStatus","source":"transport","paused":playback.paused,"position":playback.position,"message":if paused {"Paused"} else {"Playing"}}));
+                emit(proxy,json!({"type":"speakerStatus","source":"transport","trackId":track_id,"paused":playback.paused,"position":playback.position,"message":if paused {"Paused"} else {"Playing"}}));
                 if paused { "Controller audio paused" } else { "Controller audio resumed" }
             })
         }
@@ -2281,7 +2339,15 @@ fn handle_command(
     };
     match result {
         Ok(message) => emit(proxy, json!({ "type": "notice", "message": message })),
-        Err(message) => emit(proxy, json!({ "type": "error", "message": message })),
+        Err(message) => {
+            if let Some(track_id) = audio_request {
+                emit(
+                    proxy,
+                    json!({"type":"speakerStatus","source":"error","trackId":track_id,"message":message}),
+                );
+            }
+            emit(proxy, json!({ "type": "error", "message": message }));
+        }
     }
     true
 }

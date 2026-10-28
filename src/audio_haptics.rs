@@ -407,7 +407,10 @@ impl AudioEngine {
         self.start_output()?;
         *self.shared.speaker.lock().map_err(|e| e.to_string())? = None;
         let mut current = self.shared.speaker_pcm.lock().map_err(|e| e.to_string())?;
-        if append && let Some(active) = current.as_mut() {
+        if append {
+            let active = current
+                .as_mut()
+                .ok_or("The track stopped. Discarding queued audio.")?;
             if active.speaker != (route != "grips") || active.grips.is_some() != use_grips {
                 return Err("Sound route changed during playback. Start the track again.".into());
             }
@@ -434,6 +437,9 @@ impl AudioEngine {
     }
 
     pub fn stop_speaker_pcm(&mut self) {
+        if let Ok(mut chirp) = self.shared.speaker.lock() {
+            *chirp = None;
+        }
         if let Ok(mut current) = self.shared.speaker_pcm.lock() {
             *current = None;
         }
@@ -1054,6 +1060,24 @@ mod tests {
         let mut output = [0.0f32; 64];
         render_output(&mut output, &engine.shared, &mut 2100, &mut 0.0);
         assert!((output[0] - 100.0 / i16::MAX as f32 * SPEAKER_FILE_GAIN).abs() < 0.000001);
+    }
+    #[test]
+    fn stop_clears_paused_pcm_and_test_tone() {
+        let mut engine = AudioEngine::default();
+        *engine.shared.speaker_pcm.lock().unwrap() = Some(SpeakerPcm {
+            start_frame: 0,
+            samples: vec![20000; 6000],
+            speaker: true,
+            grips: Some(vec![0.2; 6000]),
+            grip_filter: GripFilter::default(),
+            paused_at: Some(100),
+        });
+        *engine.shared.speaker.lock().unwrap() = Some(SpeakerChirp { start_frame: 0 });
+        engine.stop_speaker_pcm();
+        assert!(engine.pause_speaker_pcm(false).is_err());
+        let mut output = [1.0f32; 64];
+        render_output(&mut output, &engine.shared, &mut 100, &mut 0.0);
+        assert!(output.iter().all(|sample| *sample == 0.0));
     }
     #[test]
     fn grip_audio_maps_high_notes_into_the_tactile_band() {

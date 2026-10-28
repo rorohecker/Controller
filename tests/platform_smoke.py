@@ -14,12 +14,33 @@ def main():
             mock_core(page)
             capabilities={'os':os,'desktopInput':True,'xinput':os=='windows','screenColor':os=='windows','systemAudioBridge':os=='windows','updates':os=='windows'}
             page.add_init_script('const platformInvoke=window.__TAURI__.core.invoke;window.__TAURI__.core.invoke=async(name,args)=>name==="platform_capabilities"?'+json.dumps(capabilities)+':platformInvoke(name,args);')
+            page.add_init_script("""
+              const accessInvoke=window.__TAURI__.core.invoke;
+              window.mockAccess={controlAllowed:false,recordingAllowed:false};
+              window.__TAURI__.core.invoke=async(name,args)=>{
+                if(name==='desktop_access_status')return window.mockAccess;
+                if(name==='request_desktop_access'){window.mockAccess[args.recording?'recordingAllowed':'controlAllowed']=true;return window.mockAccess;}
+                if(name==='open_desktop_access_settings'){window.openedRecordingSettings=args.recording;return null;}
+                return accessInvoke(name,args);
+              };
+            """)
             errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
             page.goto((ROOT/'ui/index.html').as_uri())
             page.wait_for_function('!!window.studioHooks && !!window.coreHandler')
             assert page.locator('body').get_attribute('data-platform')==os
             assert page.locator('#command-palette-button').text_content()==('⌘ K' if os=='macos' else 'Ctrl K')
             page.locator('[data-view="pc-controls"]').click()
+            assert page.locator('.desktop-access').is_visible()==(os=='macos')
+            if os=='macos':
+                page.wait_for_function("document.querySelector('#desktop-access-status').textContent.includes('permission needed')")
+                page.locator('#desktop-access-request').click()
+                page.wait_for_function("document.querySelector('#desktop-access-request').hidden")
+                page.locator('#desktop-recording-request').click()
+                page.wait_for_function("document.querySelector('#desktop-recording-request').hidden")
+                page.locator('#desktop-recording-settings').click()
+                assert page.evaluate('window.openedRecordingSettings') is True
+                page.locator('[aria-label="CROSS common shortcut"]').select_option('switch')
+                assert page.evaluate("JSON.parse(localStorage.getItem('aftertouch.pcBindings')).find(b=>b.button===0).chord")==[91,9]
             keys=page.locator('[aria-label="CROSS key"]')
             labels=keys.locator('option').all_text_contents()
             expected='Command' if os=='macos' else 'Windows key' if os=='windows' else 'Super'

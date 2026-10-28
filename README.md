@@ -22,6 +22,8 @@ Release builds use the private updater key generated at `%APPDATA%\CONTROLLER\up
 
 See [Compatibility and test record](COMPATIBILITY.md) for the controller, transport, and game combinations actually checked.
 
+The [development backlog](docs/development-backlog.md) tracks upcoming work in batches of five, verification results, and hardware validation still needed.
+
 ## The workbench
 
 - **Live input and PC controls:** A front-facing DualSense vector map lights up each reported button and moves both stick caps, trigger bars, and touch contacts with live input. The activity trace includes both sticks. Game mode is the default, so controller presses only show on the map and remain available to games. PC control is opt-in: when this app is focused, the pad navigates its pages; in other windows, one finger on the touchpad moves the pointer, the right stick scrolls, and L2/R2 click. Right-stick down scrolls down by default, and touchpad sensitivity is adjustable. The PC controls page lets you assign keys, taps, and short key sequences to the other buttons and tune the click point. The controller remains visible to games in both modes. Edge buttons appear in the diagnostics matrix when reported.

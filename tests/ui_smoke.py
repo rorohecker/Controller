@@ -21,7 +21,7 @@ def mock_core(page):
           if (name === 'set_close_to_tray') { window.mockAppSettings.closeToTray=args.enabled; return null; }
           if (name === 'set_start_on_login') { window.mockAppSettings.startOnLogin=args.enabled; return null; }
           if (name === 'platform_capabilities') return {os:'windows',desktopInput:true,xinput:true,screenColor:true,systemAudioBridge:true};
-          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.15.2'}; }
+          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.15.3'}; }
           if (name === 'install_update') { window.installedUpdate=true; return null; }
           if (name === 'send_demo_telemetry') { window.demoPort=args.port; return null; }
           if (name === 'open_driver_setup') { window.driverOpened=args.kind; return 'Driver setup opened'; }
@@ -97,7 +97,7 @@ def main():
         assert not page.evaluate("window.sent.some(c=>c.action==='playHaptic')")
         page.locator('[data-view="diagnostics"]').click()
         page.locator("#check-update").click()
-        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.15.2 is current')")
+        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.15.3 is current')")
         assert page.locator("#install-update").is_hidden()
         page.locator('[data-view="settings"]').click()
         assert page.locator('#close-to-tray').is_checked()
@@ -106,9 +106,9 @@ def main():
         page.locator('#start-on-login').check()
         page.wait_for_function("window.mockAppSettings.startOnLogin===true")
         page.locator('[data-view="diagnostics"]').click()
-        page.evaluate("window.mockUpdateVersion='0.15.2'")
+        page.evaluate("window.mockUpdateVersion='0.15.3'")
         page.locator("#check-update").click()
-        page.wait_for_function("document.querySelector('#install-update').textContent.includes('0.15.2')")
+        page.wait_for_function("document.querySelector('#install-update').textContent.includes('0.15.3')")
         assert page.locator("#install-update").is_visible()
         page.locator("#install-update").click()
         page.wait_for_function("window.installedUpdate===true")
@@ -142,18 +142,18 @@ def main():
         page.locator('[data-view="haptics"]').click()
         page.locator('#speaker-route').select_option('grips')
         page.locator('#speaker-file-play').click()
-        assert page.evaluate("window.sent.findLast(c=>c.action==='playSpeakerSound').route==='grips'&&!window.sent.findLast(c=>c.action==='playSpeakerSound').append")
+        page.wait_for_function("window.sent.some(c=>c.action==='playSpeakerSound'&&c.route==='grips'&&!c.append)")
         page.evaluate("window.coreHandler({type:'speakerStatus',source:'file',message:'Playing grips'})")
         page.wait_for_function("window.sent.some(c=>c.action==='playSpeakerSound'&&c.append&&c.route==='grips')")
         page.locator('#speaker-file-play').click()
-        assert page.evaluate("window.sent.at(-1).action==='setSpeakerPaused'&&window.sent.at(-1).paused===true")
+        page.wait_for_function("window.sent.at(-1).action==='setSpeakerPaused'&&window.sent.at(-1).paused===true")
         page.evaluate("window.coreHandler({type:'speakerStatus',source:'transport',paused:true,position:1,message:'Paused'})")
         assert page.locator('#speaker-file-play').inner_text().lower()=='resume'
         paused_progress=page.locator('#speaker-progress').evaluate('el=>el.value')
         page.wait_for_timeout(500)
         assert page.locator('#speaker-progress').evaluate('el=>el.value')==paused_progress
         page.locator('#speaker-file-play').click()
-        assert page.evaluate("window.sent.at(-1).action==='setSpeakerPaused'&&window.sent.at(-1).paused===false")
+        page.wait_for_function("window.sent.at(-1).action==='setSpeakerPaused'&&window.sent.at(-1).paused===false")
         page.evaluate("window.coreHandler({type:'speakerStatus',source:'transport',paused:false,position:1,message:'Playing'})")
         page.wait_for_function("document.querySelector('#speaker-progress').value>2")
         page.locator('#speaker-file-stop').click()
@@ -405,7 +405,7 @@ def main():
         for zone in range(1, 10):
             page.evaluate("value => window.coreHandler({type:'input',input:{buttons:Array.from({length:23},(_,i)=>i===7?value:0),axes:[0,0,0,0],touch:[null,null],gyro:[0,0,0],battery:75,charging:false,fullReport:true}})", zone / 10)
             page.locator("#zone-cal-capture").click()
-        page.wait_for_function("!!JSON.parse(localStorage.getItem('controller.motorZones')).right")
+        page.wait_for_function("Object.values(JSON.parse(localStorage.getItem('controller.deviceCalibration')).controllers).some(record=>!!record.motorZones.right)")
         assert "is-uncalibrated" not in (page.locator("#break-preview-track").get_attribute("class") or "")
         page.locator('#trigger-modes [data-mode="resistance"]').click()
         page.locator("#click-enabled").check()

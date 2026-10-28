@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio_haptics;
+mod desktop_access;
 mod device;
 mod diagnostics;
 mod game_actions;
@@ -486,6 +487,13 @@ fn main() {
         return;
     }
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
@@ -549,6 +557,11 @@ fn main() {
             set_close_to_tray,
             set_start_on_login,
             platform_capabilities,
+            desktop_access::desktop_access_status,
+            desktop_access::request_desktop_access,
+            desktop_access::open_desktop_access_settings,
+            desktop_access::record_shortcut,
+            desktop_access::cancel_shortcut_recording,
             updates::check_update,
             updates::install_update
         ])

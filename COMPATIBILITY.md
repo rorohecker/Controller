@@ -1,5 +1,9 @@
 # Compatibility and test record
 
+## 0.15.3 reliability batch
+
+Automated checks cover music pause/resume, seeking while paused, stopping during an in-flight audio append, stale transport acknowledgements, shortcut modifiers/common chords, permission-state UI and per-controller calibration isolation. Ten tabs are checked at five window widths. The single-instance plugin runs before GUI setup/core creation. macOS permission grants, native shortcut interception and physical audio still require platform/hardware validation; browser mocks do not establish those behaviors.
+
 ## 0.15.2 interface checks
 
 The UI now uses pixel-art card headers, compact page layouts, and separate label colors for light and dark panels. Calibration uses the full page width, with a four-step guide beside live readings. The Profiles page places recovery and Steam tools beside the editor; Haptics groups its waveform, controls, and presets. Slider fills use each control's current range and meet the thumb center, including after loading a preset. The duplicate command shortcut label is removed.

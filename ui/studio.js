@@ -1058,6 +1058,7 @@
     recordBytes = 0,
     packets = [],
     replayTimer = null,
+    replayGeneration = 0,
     replaying = false,
     logs = [],
     lastDiagRender = 0,
@@ -1094,9 +1095,12 @@
     const file = replayFile.files[0];
     replayFile.value = "";
     if (!file) return;
+    stopReplay();
+    const generation = replayGeneration;
     try {
       if (file.size > 5_000_000) throw Error("Recording exceeds 5 MB");
       const data = JSON.parse(await file.text());
+      if (generation !== replayGeneration) return;
       if (
         data.schemaVersion !== 1 ||
         !Array.isArray(data.packets) ||
@@ -1128,6 +1132,7 @@
       packets = data.packets;
       startReplay();
     } catch (e) {
+      if (generation !== replayGeneration) return;
       toast(`Replay failed: ${e.message}`);
     }
   });
@@ -1187,19 +1192,21 @@
     checks,
   );
   function stopReplay() {
+    replayGeneration++;
     clearTimeout(replayTimer);
     if (replaying) diagStatus.textContent = "Replay stopped.";
     replaying = false;
   }
   function startReplay() {
     stopReplay();
+    const generation = replayGeneration;
     replaying = true;
     const started = performance.now(),
       port = profile().gameLink.port,
       format = profile().gameLink.format;
     let i = 0;
     async function next() {
-      if (!replaying) return;
+      if (!replaying || generation !== replayGeneration) return;
       const p = packets[i];
       if (!p) {
         replaying = false;
@@ -1214,11 +1221,12 @@
       try {
         await invoke("send_game_packet", { port, format, packet: p.packet });
       } catch (e) {
+        if (generation !== replayGeneration) return;
         stopReplay();
         toast(`Replay stopped: ${e}`);
         return;
       }
-      if (!replaying) return;
+      if (!replaying || generation !== replayGeneration) return;
       i++;
       diagStatus.textContent = `Replaying ${i} / ${packets.length}`;
       replayTimer = setTimeout(

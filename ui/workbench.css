@@ -311,3 +311,14 @@ input[type='range']:disabled { cursor: not-allowed; opacity: .65; }
 @media (prefers-reduced-motion: reduce) {
   .framed::before { animation: none; }
 }
+
+/* File transport stays together at every window width. */
+.speaker-transport { display:flex; gap:10px; margin-top:12px; }
+.speaker-transport button { flex:1; min-width:0; }
+#speaker-track-name { overflow-wrap:anywhere; }
+.pc-modifiers { display:flex; gap:5px; flex-wrap:wrap; flex-basis:100%; }
+.pc-modifiers button { padding:6px 9px; min-height:34px; font-size:12px; }
+.pc-modifiers button[aria-pressed='true'] { background:#f3d4a4; color:#293b42; border-color:#9a7251; }
+.pc-shortcut-help { flex-basis:100%; font-size:12px; color:var(--ink-soft); }
+.desktop-access { display:flex; gap:10px; flex-wrap:wrap; padding-top:12px; }
+.desktop-access p { flex-basis:100%; margin:0; }

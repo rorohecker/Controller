@@ -4,6 +4,11 @@ use std::cell::RefCell;
 thread_local! { static INPUT:RefCell<Option<Enigo>>=const {RefCell::new(None)}; static WHEEL:RefCell<i32>=const {RefCell::new(0)}; }
 #[cfg_attr(test, allow(dead_code))]
 pub fn prepare() -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if crate::desktop_access::desktop_access_status()["controlAllowed"] != true {
+        INPUT.with(|input| *input.borrow_mut() = None);
+        return Err("Allow CONTROLLER in System Settings > Privacy & Security > Accessibility, then enable PC control again.".into());
+    }
     INPUT.with(|input|{if input.borrow().is_none(){let enigo=Enigo::new(&Settings::default()).map_err(|e|format!("Desktop input unavailable: {e}. On macOS allow Accessibility access. On Wayland allow the desktop control prompt."))?;*input.borrow_mut()=Some(enigo);}Ok(())})
 }
 pub fn mouse(dx: i32, dy: i32, wheel: i32, flags: u32) {

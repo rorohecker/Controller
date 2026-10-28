@@ -1,6 +1,6 @@
 [package]
 name = "controller"
-version = "0.15.2"
+version = "0.15.3"
 edition = "2024"
 autobins = false
 autoexamples = false
@@ -20,6 +20,7 @@ tauri = { version = "2.12.4", default-features = false, features = ["wry", "comm
 tauri-plugin-updater = "2.13.3"
 tauri-plugin-autostart = "2.5.1"
 cpal = "0.18.2"
+tauri-plugin-single-instance = "2"
 
 [target.'cfg(windows)'.dependencies]
 hidapi = { version = "2.6.7", default-features = false, features = ["windows-native"] }
