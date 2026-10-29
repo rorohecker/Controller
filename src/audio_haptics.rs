@@ -251,6 +251,8 @@ pub struct AudioEngine {
     capture_source: Option<CaptureSource>,
     shared: Arc<Shared>,
     endpoint: Option<String>,
+    endpoint_id: Option<String>,
+    endpoint_error: Option<String>,
     legacy_filter: GripFilter,
 }
 
@@ -262,6 +264,8 @@ impl Default for AudioEngine {
             capture_source: None,
             shared: Arc::new(Shared::default()),
             endpoint: None,
+            endpoint_id: None,
+            endpoint_error: None,
             legacy_filter: GripFilter::default(),
         }
     }
@@ -381,6 +385,16 @@ impl AudioEngine {
     pub fn bridge_on(&self) -> bool {
         self.shared.bridge_on.load(Ordering::Relaxed)
     }
+    pub fn configure_endpoint(&mut self, id: Option<String>, error: Option<String>) {
+        if self.endpoint_id != id || self.endpoint_error != error {
+            self.stop();
+            self.endpoint_id = id;
+            self.endpoint_error = error;
+        }
+    }
+    pub fn configured_endpoint(&self) -> Option<&str> {
+        self.endpoint_id.as_deref()
+    }
     pub fn capture_source(&self) -> Option<&CaptureSource> {
         self.capture_source.as_ref()
     }
@@ -391,6 +405,9 @@ impl AudioEngine {
 
     #[cfg(windows)]
     pub fn start_output(&mut self) -> Result<&str, String> {
+        if let Some(error) = &self.endpoint_error {
+            return Err(error.clone());
+        }
         if self.output.is_some() {
             return Ok(self.endpoint.as_deref().unwrap_or("DualSense"));
         }
@@ -398,21 +415,33 @@ impl AudioEngine {
         let shared = self.shared.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
+        let endpoint_id = self.endpoint_id.clone();
         let (sender, receiver) = mpsc::sync_channel(1);
         let thread = thread::Builder::new()
             .name("dualsense-exclusive-audio".into())
             .spawn(move || {
-                let result = run_exclusive_output(shared.clone(), thread_stop, sender);
+                let result =
+                    run_exclusive_output(shared.clone(), thread_stop.clone(), sender, endpoint_id);
                 if let Err(error) = result
+                    && !thread_stop.load(Ordering::Acquire)
                     && let Ok(mut slot) = shared.error.lock()
+                    && !thread_stop.load(Ordering::Acquire)
                 {
                     *slot = Some(format!("USB haptic audio stopped: {error}"));
                 }
             })
             .map_err(|e| format!("Could not start USB audio thread: {e}"))?;
-        let name = receiver
-            .recv_timeout(Duration::from_secs(4))
-            .map_err(|e| format!("DualSense audio did not open: {e}"))??;
+        let name = match receiver.recv_timeout(Duration::from_secs(4)) {
+            Ok(Ok(name)) => name,
+            other => {
+                stop.store(true, Ordering::Release);
+                return Err(match other {
+                    Ok(Err(error)) => error,
+                    Err(error) => format!("DualSense audio did not open: {error}"),
+                    _ => unreachable!(),
+                });
+            }
+        };
         self.output = Some(ExclusiveOutput {
             stop,
             thread: Some(thread),
@@ -423,6 +452,9 @@ impl AudioEngine {
 
     #[cfg(not(windows))]
     pub fn start_output(&mut self) -> Result<&str, String> {
+        if let Some(error) = &self.endpoint_error {
+            return Err(error.clone());
+        }
         if self.output.is_some() {
             return Ok(self.endpoint.as_deref().unwrap_or("DualSense"));
         }
@@ -433,7 +465,11 @@ impl AudioEngine {
         for device in host.output_devices().map_err(|e| e.to_string())? {
             let name = device.to_string();
             let lower = name.to_ascii_lowercase();
-            if !lower.contains("dualsense") && !lower.contains("wireless controller") {
+            if let Some(id) = &self.endpoint_id {
+                if !device.id().is_ok_and(|d| d.to_string() == *id) {
+                    continue;
+                }
+            } else if !lower.contains("dualsense") && !lower.contains("wireless controller") {
                 continue;
             }
             let configs = device
@@ -464,7 +500,7 @@ impl AudioEngine {
         if eligible_endpoints > 1 {
             return Err("More than one DualSense USB audio endpoint is connected. Keep one USB pad connected for haptic PCM, or use motor fallback.".into());
         }
-        let (device, name, format) = candidate.ok_or("No four-channel DualSense USB audio endpoint at 48 kHz. Connect by USB and enable its audio output in system settings.".to_string())?;
+        let (device,name,format)=candidate.ok_or_else(||if self.endpoint_id.is_some(){"The paired audio endpoint is unavailable or its format changed. Refresh the pairing in Settings > Controllers.".to_string()}else{"No four-channel DualSense USB audio endpoint at 48 kHz. Connect by USB and enable its audio output in system settings.".to_string()})?;
         let config = StreamConfig {
             channels: 4,
             sample_rate: RATE,
@@ -765,10 +801,20 @@ impl AudioEngine {
             self.shared.bridge_frames.store(0, Ordering::Relaxed);
             self.capture = Some(match &source {
                 CaptureSource::System => CaptureHandle::System {
-                    _stream: build_loopback(self.shared.clone(), None)?,
+                    _stream: build_loopback(
+                        self.shared.clone(),
+                        None,
+                        self.endpoint.as_deref(),
+                        self.endpoint_id.as_deref(),
+                    )?,
                 },
                 CaptureSource::NativeEndpoint { id } => CaptureHandle::System {
-                    _stream: build_loopback(self.shared.clone(), Some(id))?,
+                    _stream: build_loopback(
+                        self.shared.clone(),
+                        Some(id),
+                        self.endpoint.as_deref(),
+                        self.endpoint_id.as_deref(),
+                    )?,
                 },
                 #[cfg(windows)]
                 CaptureSource::Process { pid } => CaptureHandle::Process {
@@ -798,6 +844,9 @@ impl AudioEngine {
         self.capture = None;
         self.capture_source = None;
         self.output = None;
+        if let Ok(mut error) = self.shared.error.lock() {
+            *error = None;
+        }
         self.endpoint = None;
         self.shared.clip.store(None);
         self.stop_speaker_pcm();
@@ -810,6 +859,7 @@ fn run_exclusive_output(
     shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
     ready: mpsc::SyncSender<Result<String, String>>,
+    endpoint_id: Option<String>,
 ) -> Result<(), String> {
     use wasapi::{DeviceEnumerator, Direction, SampleType, ShareMode, StreamMode, WaveFormat};
 
@@ -827,7 +877,11 @@ fn run_exclusive_output(
             let device = device.map_err(|e| e.to_string())?;
             let name = device.get_friendlyname().map_err(|e| e.to_string())?;
             let lower = name.to_ascii_lowercase();
-            if !lower.contains("dualsense") && !lower.contains("wireless controller") {
+            if let Some(id) = &endpoint_id {
+                if device.get_id().map_err(|e| e.to_string())? != *id {
+                    continue;
+                }
+            } else if !lower.contains("dualsense") && !lower.contains("wireless controller") {
                 continue;
             }
             let client = device.get_iaudioclient().map_err(|e| e.to_string())?;
@@ -841,10 +895,7 @@ fn run_exclusive_output(
             }
             selected = Some((name, client));
         }
-        let (name, mut client) = selected.ok_or(
-            "No four-channel DualSense USB audio endpoint at 48 kHz. Connect the pad by USB."
-                .to_string(),
-        )?;
+        let (name, mut client) = selected.ok_or_else(||if endpoint_id.is_some(){"The paired audio endpoint is unavailable or its format changed. Refresh the pairing in Settings > Controllers.".to_string()}else{"No four-channel DualSense USB audio endpoint at 48 kHz. Connect the pad by USB.".to_string()})?;
         let (_, minimum_period) = client.get_device_period().map_err(|e| e.to_string())?;
         let period = minimum_period.max(100_000);
         client
@@ -1332,7 +1383,24 @@ fn push_capture_frame(shared: &Shared, dsp: &mut CaptureDsp, frame: [f32; 2]) {
         .fetch_add(dsp.dropped - before, Ordering::Relaxed);
 }
 
-fn build_loopback(shared: Arc<Shared>, source: Option<&str>) -> Result<Stream, String> {
+fn capture_is_output(
+    name: &str,
+    id: Option<&str>,
+    sink_name: Option<&str>,
+    sink_id: Option<&str>,
+) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.contains("dualsense")
+        || name.contains("wireless controller")
+        || sink_name.is_some_and(|s| s.to_ascii_lowercase() == name)
+        || id.zip(sink_id).is_some_and(|(id, sink)| id.ends_with(sink))
+}
+fn build_loopback(
+    shared: Arc<Shared>,
+    source: Option<&str>,
+    sink_name: Option<&str>,
+    sink_id: Option<&str>,
+) -> Result<Stream, String> {
     let host = cpal::default_host();
     let device = if let Some(id) = source {
         host.output_devices()
@@ -1343,8 +1411,8 @@ fn build_loopback(shared: Arc<Shared>, source: Option<&str>) -> Result<Stream, S
         host.default_output_device()
             .ok_or("No Windows default audio output is available for loopback.")?
     };
-    let capture_name = device.to_string().to_ascii_lowercase();
-    if capture_name.contains("dualsense") || capture_name.contains("wireless controller") {
+    let id = device.id().ok().map(|id| id.to_string());
+    if capture_is_output(&device.to_string(), id.as_deref(), sink_name, sink_id) {
         return Err("Set Windows system audio to your speakers or headphones before enabling the bridge; capturing the controller endpoint would create feedback.".into());
     }
     let format = device
@@ -1412,6 +1480,27 @@ fn build_loopback(shared: Arc<Shared>, source: Option<&str>) -> Result<Stream, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn renamed_paired_output_cannot_be_its_own_loopback_source() {
+        assert!(capture_is_output(
+            "Desk pad",
+            Some("wasapi:target-id"),
+            Some("Desk pad"),
+            Some("target-id")
+        ));
+        assert!(capture_is_output(
+            "Different friendly alias",
+            Some("wasapi:target-id"),
+            None,
+            Some("target-id")
+        ));
+        assert!(!capture_is_output(
+            "Virtual relay",
+            Some("wasapi:relay-id"),
+            Some("Desk pad"),
+            Some("target-id")
+        ));
+    }
     #[test]
     fn capture_failure_is_scoped_and_stale_errors_are_ignored() {
         let mut engine = AudioEngine::default();

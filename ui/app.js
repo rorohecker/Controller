@@ -148,7 +148,7 @@
     try{localStorage.setItem('aftertouch.pcAudioSketch',String(pcAudioSketch));}catch{}
   });
   let updateChecking=false, updateInstalling=false, availableVersion='';
-  let triggerPresets=[],activeWeaponPreset="",appliedTriggerState=null;
+  let triggerPresets=[],activeWeaponPreset="",appliedTriggerState=null,weaponRequest=0,weaponApplying=false;
   const profile = () => state.profiles.find(p => p.id === state.profileId) || state.profiles[0];
   const trigger = () => profile().triggers[state.side];
   const timeLabel = () => new Date().toLocaleTimeString('en-US',{hour12:false});
@@ -254,6 +254,7 @@
     while (list.children.length > 11) list.lastChild.remove();
   }
   async function send(command, sessionOwned=false,applyTicket=null) {
+    if(command.action==='reset'||command.action==='selectDevice'){weaponRequest++;weaponApplying=false;activeWeaponPreset='';}
     if (!native) { toast('Open the desktop app for hardware.'); return false; }
     const commandEpoch=window.gameSessions?.epoch;
     try { await invoke('send_command',{command});
@@ -702,7 +703,7 @@
     if(rules.some(r=>(r.conditionButton!=null&&!integer(r.conditionButton,0,22))||!Number.isFinite(r.conditionThreshold??.5)||(r.conditionThreshold??.5)<0||(r.conditionThreshold??.5)>1||typeof(r.cancelOnRelease??false)!=='boolean'||typeof(r.cancelEvent??'')!=='string'||(r.cancelEvent??'').length>80||!['restart','ignore'].includes(r.retrigger??'restart')))return false;
     if(rules.some(r=>r.timeline&&(!window.ControllerHapticAuthoring.validClip(r.timeline)||r.haptic||r.leftTrigger||r.rightTrigger)))return false;
     if(new Set(rules.map(r=>r.id)).size!==rules.length||weapons.some(b=>!b||!text(b.weapon,80)||!text(b.presetId,80))||new Set(weapons.map(b=>b.weapon.toLowerCase())).size!==weapons.length)return false;
-    const link=p.gameLink;if(link&&(!['json','dsx'].includes(link.format??'json')||!integer(link.port??6969,1024,65535)||typeof(link.enabled??false)!=='boolean'))return false;
+    const link=p.gameLink;if(link&&(!['json','dsx'].includes(link.format??'json')||!integer(link.port??6969,1024,65535)||typeof(link.enabled??false)!=='boolean'||!window.ControllerHardwareResearch.validPolicy(link.recognition)))return false;
     return true;
   }
   function validLibrary(presets){return Array.isArray(presets)&&presets.length<=100&&new Set(presets.map(p=>p?.id)).size===presets.length&&presets.every(p=>p&&validProfile({...clone(defaultProfiles[0]),id:p.id,name:p.name,triggers:p.triggers,inputEffects:p.inputEffects}));}
@@ -812,17 +813,25 @@
     const b=await dispatch({action:'setGameLink',settings:{...p.gameLink,enabled:p.gameLink.enabled&&active}});
     return a&&b;
   }
-  async function useWeapon(name,fromLink=false){
-    const p=profile();if(fromLink&&(state.pcMode||state.autoSuppressed||!p.gameLink.enabled||p.matchExe&&!matchesForeground(p)))return;
+  async function useWeapon(name,fromLink=false,allowDisabled=false){
+    const p=profile();if(fromLink&&(state.pcMode||state.autoSuppressed||(!p.gameLink.enabled&&!allowDisabled)||p.matchExe&&!matchesForeground(p)))return;
     const match=p.weaponBindings.find(b=>b.weapon.toLowerCase()===name.toLowerCase()),preset=triggerPresets.find(t=>t.id===match?.presetId);
     if(!state.connected){toast('Connect a controller.');return;}
-    const id=preset?.id||'';if(fromLink&&activeWeaponPreset===id)return;
+    const id=preset?.id||'';if(fromLink&&activeWeaponPreset===id&&!weaponApplying)return;
+    const request=++weaponRequest,owner=p.id;weaponApplying=true;
+    try{
+    if(!fromLink&&!await send({action:'setWeaponOverride',weapon:name||null}))return;
+    if(request!==weaponRequest||profile().id!==owner)return;
     if(await send({action:'applyTriggers',...(preset?.triggers||p.triggers)})){
-      await send(inputEffectCommand(preset?.inputEffects||p.inputEffects));activeWeaponPreset=id;
+      if(request!==weaponRequest||profile().id!==owner)return;
+      if(!await send(inputEffectCommand(preset?.inputEffects||p.inputEffects)))return;
+      if(request!==weaponRequest||profile().id!==owner)return;activeWeaponPreset=id;
       $('#game-link-status').textContent=preset?`${name} · ${preset.name}`:name?`${name} · profile default (no match)`:'Profile default';
     }
+    }finally{if(request===weaponRequest)weaponApplying=false;}
   }
   function renderGameProfiles(){
+    window.hardwareResearch?.syncProfile();
     renderTriggerLibrary();const p=profile();$('#game-actions-enabled').checked=p.actionsEnabled;
     $('#game-link-enabled').checked=p.gameLink.enabled;$('#game-link-port').value=p.gameLink.port;$('#game-link-format').value=p.gameLink.format;
     const host=$('#game-actions-list');host.replaceChildren();
@@ -860,7 +869,7 @@
   $('#game-actions-enabled').addEventListener('change',e=>{profile().actionsEnabled=e.target.checked;saveProfiles();});
   $('#add-game-action').addEventListener('click',()=>{if(profile().actions.length>=24){toast('24 action limit.');return;}profile().actions.push({id:crypto.randomUUID(),name:'New action',source:'press',button:1,event:'dash',windowMs:280,cooldownMs:180,durationMs:120,haptic:{shape:'sine',frequency:85,strength:45,pan:0},leftTrigger:null,rightTrigger:null});saveProfiles();renderGameProfiles();});
   $('#save-game-actions').addEventListener('click',async()=>{if(await saveProfiles(true)&&state.connected){state.autoSuppressed=false;await applyGameRules();toast('Game rules applied');}else if(!state.connected)toast('Saved. Connect a controller to apply.');});
-  for(const id of ['game-link-enabled','game-link-format','game-link-port'])$('#'+id).addEventListener('change',()=>{profile().gameLink={enabled:$('#game-link-enabled').checked,format:$('#game-link-format').value,port:Number($('#game-link-port').value)};saveProfiles();});
+  for(const id of ['game-link-enabled','game-link-format','game-link-port'])$('#'+id).addEventListener('change',()=>{profile().gameLink={...profile().gameLink,enabled:$('#game-link-enabled').checked,format:$('#game-link-format').value,port:Number($('#game-link-port').value)};saveProfiles();});
   $('#add-weapon-binding').addEventListener('click',()=>{if(!triggerPresets.length){toast('Save a trigger preset on Triggers first.');return;}if(profile().weaponBindings.length>=100)return;let name='Weapon',i=1;while(profile().weaponBindings.some(b=>b.weapon===name))name=`Weapon ${++i}`;profile().weaponBindings.push({weapon:name,presetId:triggerPresets[0].id});saveProfiles();renderGameProfiles();});
   $('#apply-manual-weapon').addEventListener('click',()=>useWeapon($('#manual-weapon').value));
 
@@ -1914,12 +1923,13 @@
   $('#battery-segments').innerHTML=Array.from({length:10},()=>'<i></i>').join('');
   function drawActivity(){const canvas=$('#activity-scope'),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);ctx.beginPath();state.activity.forEach((v,i)=>{const x=i/(state.activity.length-1)*w,y=h-8-v*(h-16);if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.lineWidth=3;ctx.strokeStyle='#d4a84b';ctx.stroke();ctx.fillStyle='#7ec9bc';const last=state.activity.at(-1);ctx.fillRect(w-5,h-8-last*(h-16)-4,8,8);}
   function handleEvent(event){
-    window.integrationStudio?.event(event);window.dailyUse?.event(event);window.motionStudio?.event(event);
+    if(event.type==='safetyReset'||event.type==='device'&&!event.connected){weaponRequest++;weaponApplying=false;activeWeaponPreset='';}
+    window.integrationStudio?.event(event);window.dailyUse?.event(event);window.motionStudio?.event(event);window.hardwareResearch?.event(event);
     window.hapticAuthoring?.event(event);
     window.gameSessions?.event(event);
     window.studioHooks?.event(event);
     if(event.type==='device'){
-      const changed=state.connected!==!!event.connected || (event.connected&&(state.name!==event.name||state.transport!==event.transport||state.path!==(event.path||'')||(event.controllerId&&event.controllerId!==calibrationOwner)));
+      const changed=state.connected!==!!event.connected || (event.connected&&((event.controllerId&&calibrationOwner?event.controllerId!==calibrationOwner:state.name!==event.name)||state.transport!==event.transport||state.path!==(event.path||'')));
       if(changed)padNavPrev=null;
       if(changed&&event.connected)selectControllerCalibration(event);
       setConnected(!!event.connected,event.name||'',event.transport||'',event.firmware||'',event.path||'');
@@ -2124,6 +2134,7 @@
   window.hapticAuthoring=new window.ControllerHapticAuthoring(window.controllerStudio);
   window.gameSessions=new window.ControllerGameSessions(window.controllerStudio);
   window.integrationStudio=new window.ControllerIntegrations(window.controllerStudio);
+  window.hardwareResearch=new window.ControllerHardwareResearch(window.controllerStudio);
   renderPlatform();
   start();
 })();

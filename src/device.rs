@@ -41,6 +41,19 @@ pub enum DeviceCommand {
         enabled: bool,
     },
     CheckDesktopInput,
+    ReadEdgeProfiles {
+        #[serde(rename = "controllerId")]
+        controller_id: String,
+        #[serde(rename = "requestId")]
+        request_id: u32,
+    },
+    ApplyControllerAssignment {
+        #[serde(rename = "controllerId")]
+        controller_id: String,
+    },
+    SetWeaponOverride {
+        weapon: Option<String>,
+    },
     StartLinkExperiment {
         strength: u8,
     },
@@ -360,6 +373,7 @@ struct Connected {
     trigger_active: bool,
     light_active: bool,
     player_leds_active: bool,
+    assignment_error: Option<String>,
     rumble_active: bool,
     trigger_until: Option<Instant>,
     rumble_until: Option<Instant>,
@@ -784,6 +798,29 @@ impl Connected {
         }
         self.last_rumble = None;
         self.write(protocol::audio_haptics_enable_report())
+    }
+    fn load_assignment(&mut self) -> Result<(), String> {
+        let result = (|| {
+            let record = match crate::hardware::assignment(&self.controller_id) {
+                Ok(record) => record,
+                Err(error) => {
+                    self.audio.configure_endpoint(None, Some(error.clone()));
+                    return Err(error);
+                }
+            };
+            self.audio
+                .configure_endpoint(record.as_ref().and_then(|r| r.endpoint_id.clone()), None);
+            let player = record.as_ref().map_or(0, |r| r.player);
+            if player > 0 {
+                self.write(protocol::player_leds_report(
+                    [0, 4, 10, 21, 27, 31][usize::from(player)],
+                ))?;
+                self.player_leds_active = true;
+            }
+            Ok(())
+        })();
+        self.assignment_error = result.as_ref().err().cloned();
+        result
     }
 
     fn play_voice(&mut self, voice: VoiceClip) -> Result<&str, String> {
@@ -1341,7 +1378,7 @@ fn path_key(info: &hidapi::DeviceInfo) -> String {
     info.path().to_string_lossy().into_owned()
 }
 
-fn controller_identity(info: &hidapi::DeviceInfo, hid: &HidDevice) -> String {
+pub(crate) fn controller_identity(info: &hidapi::DeviceInfo, hid: &HidDevice) -> String {
     let serial = info
         .serial_number()
         .unwrap_or("")
@@ -1468,7 +1505,7 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                 }
                 let display = path_key(info);
                 let controller_id = controller_identity(info, &hid);
-                return Ok(Some(Connected {
+                let mut found = Connected {
                     hid,
                     path: info.path().to_bytes().to_vec(),
                     controller_id,
@@ -1485,6 +1522,7 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     trigger_active: false,
                     light_active: false,
                     player_leds_active: false,
+                    assignment_error: None,
                     rumble_active: false,
                     trigger_until: None,
                     rumble_until: None,
@@ -1529,7 +1567,9 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     low_battery_latched: false,
                     last_battery: None,
                     haptic_timer: None,
-                }));
+                };
+                let _ = found.load_assignment();
+                return Ok(Some(found));
             }
             Err(error) => last_error = Some(error.to_string()),
         }
@@ -1588,12 +1628,17 @@ fn stop_input_mappers(
 }
 
 fn emit_connected(proxy: &Sender<serde_json::Value>, found: &Connected) {
+    let assignment = crate::hardware::assignment(&found.controller_id)
+        .ok()
+        .flatten();
     emit(
         proxy,
         json!({
             "type": "device",
             "connected": true,
-            "name": found.name,
+            "name": assignment.as_ref().map(|r|r.name.as_str()).unwrap_or(&found.name),
+            "hardwareName":found.name,"assignmentError":found.assignment_error,
+            "assignment":assignment,"audioEndpointId":found.audio.configured_endpoint(),
             "transport": if matches!(found.transport, BusType::Bluetooth) { "Bluetooth" } else { "USB" },
             "firmware": found.firmware,
             "path": found.path_display,
@@ -1644,6 +1689,13 @@ fn handle_command(
         return true;
     }
     match command {
+        DeviceCommand::SetWeaponOverride { weapon } => {
+            match game_link.manual_weapon(weapon) {
+                Ok(status) => emit(proxy, json!({"type":"weaponRecognition","data":status})),
+                Err(message) => emit(proxy, json!({"type":"error","message":message})),
+            };
+            return true;
+        }
         DeviceCommand::CheckDesktopInput => {
             stop_input_mappers(mouse, gyro, remap, xinput, proxy);
             if let Some(d) = device.as_mut() {
@@ -2206,7 +2258,23 @@ fn handle_command(
         _ => {}
     }
 
+    let edge_request = if let DeviceCommand::ReadEdgeProfiles {
+        controller_id,
+        request_id,
+    } = &command
+    {
+        Some((controller_id.clone(), *request_id))
+    } else {
+        None
+    };
     let Some(device) = device.as_mut() else {
+        if let Some((id, request)) = &edge_request {
+            emit(
+                proxy,
+                json!({"type":"edgeReadStatus","requestId":request,"controllerId":id,"error":"Connect the selected USB Edge first"}),
+            );
+            return true;
+        }
         emit(
             proxy,
             json!({ "type": "notice", "message": "Connect a controller first." }),
@@ -2227,6 +2295,21 @@ fn handle_command(
         _ => None,
     };
     let result: Result<&str, String> = match command {
+        DeviceCommand::ReadEdgeProfiles{controller_id,request_id}=>{
+            if device.controller_id!=controller_id||device.product_id!=protocol::EDGE_PID||!matches!(device.transport,BusType::Usb){Err("Select the same DualSense Edge over USB before reading profiles".into())}
+            else{std::ffi::CString::new(device.path.clone()).map_err(|e|e.to_string()).and_then(|path|crate::hardware::start_edge_read(path,device.controller_id.clone(),device.firmware.clone(),request_id,proxy.clone())).map(|_|"Reading Edge profiles in the background")}
+        }
+        DeviceCommand::ApplyControllerAssignment{controller_id}=>{
+            if controller_id!=device.controller_id{Err("The active controller changed; select it again".into())}
+            else{(||{
+                let record=crate::hardware::assignment(&controller_id)?;
+                let endpoint=record.as_ref().and_then(|r|r.endpoint_id.as_deref());
+                if device.audio.configured_endpoint()!=endpoint{stop_input_mappers(mouse,gyro,remap,xinput,proxy);game_link.stop();let _=telemetry.set(false,0,false);*script=None;screen.set_enabled(false);device.reset()?;emit(proxy,json!({"type":"safetyReset"}));}
+                device.load_assignment()?;
+                if record.as_ref().is_none_or(|r|r.player==0){device.write(protocol::player_leds_report(0))?;device.player_leds_active=false;}
+                emit_connected(proxy,device);Ok("Controller assignment applied")
+            })()}
+        }
         DeviceCommand::StartLinkExperiment{strength}=>{
             let run=LinkExperiment::new(Instant::now(),matches!(device.transport,BusType::Bluetooth),strength);
             run.and_then(|mut run|{
@@ -2802,10 +2885,18 @@ fn handle_command(
         | DeviceCommand::SetGameLink { .. }
         | DeviceCommand::StopMacros
         | DeviceCommand::SetGameRecording { .. } => unreachable!(),
+        DeviceCommand::SetWeaponOverride{..}=>unreachable!(),
     };
     match result {
         Ok(message) => emit(proxy, json!({ "type": "notice", "message": message })),
         Err(message) => {
+            if let Some((id, request)) = edge_request {
+                emit(
+                    proxy,
+                    json!({"type":"edgeReadStatus","requestId":request,"controllerId":id,"error":message}),
+                );
+                return true;
+            }
             if let Some(play_id) = effect_request {
                 emit(
                     proxy,
@@ -3202,10 +3293,22 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                             }
                         }
                     }
-                    emit(
-                        &proxy,
-                        json!({"type":"gameEvent","weapon":update.weapon,"events":update.events,"packet":update.packet,"format":update.format}),
-                    );
+                    if update.format.is_some()
+                        || update.packet.is_some()
+                        || update.weapon.is_some()
+                        || !update.events.is_empty()
+                    {
+                        emit(
+                            &proxy,
+                            json!({"type":"gameEvent","weapon":update.weapon,"events":update.events,"packet":update.packet,"format":update.format}),
+                        );
+                    }
+                    if let Some(status) = update.recognition_status {
+                        emit(
+                            &proxy,
+                            json!({"type":"weaponRecognition","data":status,"clear":update.weapon_reset}),
+                        );
+                    }
                 }
                 Err(message) => {
                     if Instant::now() >= next_game_error {

@@ -351,7 +351,7 @@ fn paths() -> Result<(PathBuf, PathBuf), String> {
     ))
 }
 
-fn config_base() -> Result<PathBuf, String> {
+pub(crate) fn config_base() -> Result<PathBuf, String> {
     #[cfg(windows)]
     {
         env::var_os("APPDATA")

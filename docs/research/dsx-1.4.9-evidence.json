@@ -1,0 +1,511 @@
+{
+  "schemaVersion": 1,
+  "tool": "REA 6.8.0; static managed metadata/CIL anchors; target never executed",
+  "subject": {
+    "name": "DualSenseX",
+    "version": "1.4.9.0",
+    "sha256": "f2e7ef9667f84a2b2f66e9116b06b6fbc3fd5af6695a50366e862692459b7a59",
+    "module": {
+      "name": "DualSenseX.exe",
+      "generation": 0,
+      "mvid": "b1f6fe66-18cf-4903-83e2-730302ee4d30",
+      "enc_id": null,
+      "enc_base_id": null,
+      "token": "0x00000001",
+      "row_offset": 301812
+    }
+  },
+  "inventory": {
+    "types": 307,
+    "methods": 1730,
+    "callEdges": 19438
+  },
+  "facts": [
+    {
+      "caller": "DualSenseX.DuelSense_Base_Updated.StartReading",
+      "methodToken": "0x060003ae",
+      "ilOffset": 17,
+      "target": "System.Threading.Thread.Start",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.DuelSense_Base_Updated.StartReadingTouchPad",
+      "methodToken": "0x060003af",
+      "ilOffset": 17,
+      "target": "System.Threading.Thread.Start",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.DuelSense_Base_Updated.<StartReading>b__104_0",
+      "methodToken": "0x060003ca",
+      "ilOffset": 476,
+      "target": "System.Threading.Thread.Sleep",
+      "precedingIntegerLiteral": 5
+    },
+    {
+      "caller": "DualSenseX.DuelSense_Base_Updated.<StartReadingTouchPad>b__105_0",
+      "methodToken": "0x060003cb",
+      "ilOffset": 107,
+      "target": "System.Threading.Thread.Sleep",
+      "precedingIntegerLiteral": "200"
+    },
+    {
+      "caller": "DualSenseX.GlobalVar.PacketToJson",
+      "methodToken": "0x060003e6",
+      "ilOffset": 1,
+      "target": "Newtonsoft.Json.JsonConvert.SerializeObject",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.GlobalVar.JsonToPacket",
+      "methodToken": "0x060003e7",
+      "ilOffset": 1,
+      "target": "Newtonsoft.Json.JsonConvert.DeserializeObject",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 150,
+      "target": "NAudio.CoreAudioApi.MMDeviceEnumerator..ctor",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 396,
+      "target": "NAudio.CoreAudioApi.WasapiCapture..ctor",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 422,
+      "target": "NAudio.Wave.WasapiLoopbackCapture..ctor",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 456,
+      "target": "NAudio.CoreAudioApi.WasapiCapture..ctor",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 480,
+      "target": "NAudio.Wave.WaveInProvider..ctor",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 506,
+      "target": "NAudio.Wave.WasapiOut..ctor",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 551,
+      "target": "NAudio.Wave.MultiplexingWaveProvider..ctor",
+      "precedingIntegerLiteral": 4
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 602,
+      "target": "NAudio.Wave.WasapiOut.Init",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 647,
+      "target": "NAudio.Wave.MultiplexingWaveProvider..ctor",
+      "precedingIntegerLiteral": 4
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 698,
+      "target": "NAudio.Wave.WasapiOut.Init",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 743,
+      "target": "NAudio.Wave.MultiplexingWaveProvider..ctor",
+      "precedingIntegerLiteral": 4
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 794,
+      "target": "NAudio.Wave.WasapiOut.Init",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 839,
+      "target": "NAudio.Wave.MultiplexingWaveProvider..ctor",
+      "precedingIntegerLiteral": 4
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 890,
+      "target": "NAudio.Wave.WasapiOut.Init",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 913,
+      "target": "NAudio.Wave.MultiplexingWaveProvider..ctor",
+      "precedingIntegerLiteral": 4
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 964,
+      "target": "NAudio.Wave.WasapiOut.Init",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 1007,
+      "target": "NAudio.Wave.IWaveIn.StartRecording",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySlider_ValueChanged",
+      "methodToken": "0x06000582",
+      "ilOffset": 1024,
+      "target": "NAudio.Wave.WasapiOut.Play",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 150,
+      "target": "NAudio.CoreAudioApi.MMDeviceEnumerator..ctor",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 396,
+      "target": "NAudio.CoreAudioApi.WasapiCapture..ctor",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 422,
+      "target": "NAudio.Wave.WasapiLoopbackCapture..ctor",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 456,
+      "target": "NAudio.CoreAudioApi.WasapiCapture..ctor",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 480,
+      "target": "NAudio.Wave.WaveInProvider..ctor",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 506,
+      "target": "NAudio.Wave.WasapiOut..ctor",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 551,
+      "target": "NAudio.Wave.MultiplexingWaveProvider..ctor",
+      "precedingIntegerLiteral": 4
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 602,
+      "target": "NAudio.Wave.WasapiOut.Init",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 647,
+      "target": "NAudio.Wave.MultiplexingWaveProvider..ctor",
+      "precedingIntegerLiteral": 4
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 698,
+      "target": "NAudio.Wave.WasapiOut.Init",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 743,
+      "target": "NAudio.Wave.MultiplexingWaveProvider..ctor",
+      "precedingIntegerLiteral": 4
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 794,
+      "target": "NAudio.Wave.WasapiOut.Init",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 839,
+      "target": "NAudio.Wave.MultiplexingWaveProvider..ctor",
+      "precedingIntegerLiteral": 4
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 890,
+      "target": "NAudio.Wave.WasapiOut.Init",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 913,
+      "target": "NAudio.Wave.MultiplexingWaveProvider..ctor",
+      "precedingIntegerLiteral": 4
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 964,
+      "target": "NAudio.Wave.WasapiOut.Init",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 1007,
+      "target": "NAudio.Wave.IWaveIn.StartRecording",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_AudioHapticsDelaySliderNumberBox_ValueChanged",
+      "methodToken": "0x06000583",
+      "ilOffset": 1024,
+      "target": "NAudio.Wave.WasapiOut.Play",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 45,
+      "target": "NAudio.CoreAudioApi.MMDeviceEnumerator..ctor",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 701,
+      "target": "NAudio.CoreAudioApi.WasapiCapture..ctor",
+      "precedingIntegerLiteral": "10"
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 727,
+      "target": "NAudio.Wave.WasapiLoopbackCapture..ctor",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 756,
+      "target": "NAudio.CoreAudioApi.WasapiCapture..ctor",
+      "precedingIntegerLiteral": "10"
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 780,
+      "target": "NAudio.Wave.WaveInProvider..ctor",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 801,
+      "target": "NAudio.Wave.WasapiOut..ctor",
+      "precedingIntegerLiteral": "10"
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 846,
+      "target": "NAudio.Wave.MultiplexingWaveProvider..ctor",
+      "precedingIntegerLiteral": 4
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 897,
+      "target": "NAudio.Wave.WasapiOut.Init",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 942,
+      "target": "NAudio.Wave.MultiplexingWaveProvider..ctor",
+      "precedingIntegerLiteral": 4
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 993,
+      "target": "NAudio.Wave.WasapiOut.Init",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 1038,
+      "target": "NAudio.Wave.MultiplexingWaveProvider..ctor",
+      "precedingIntegerLiteral": 4
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 1089,
+      "target": "NAudio.Wave.WasapiOut.Init",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 1131,
+      "target": "NAudio.Wave.MultiplexingWaveProvider..ctor",
+      "precedingIntegerLiteral": 4
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 1182,
+      "target": "NAudio.Wave.WasapiOut.Init",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 1225,
+      "target": "NAudio.Wave.IWaveIn.StartRecording",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 1242,
+      "target": "NAudio.Wave.WasapiOut.Play",
+      "precedingIntegerLiteral": null
+    },
+    {
+      "caller": "DualSenseX.Main.SettingsPage_EnableAudioHaptics_Toggled",
+      "methodToken": "0x06000592",
+      "ilOffset": 1283,
+      "target": "NAudio.CoreAudioApi.AudioEndpointVolumeNotificationDelegate..ctor",
+      "precedingIntegerLiteral": null
+    }
+  ],
+  "profileFieldNames": [
+    "<SaveFile_IsSetupComplete>k__BackingField",
+    "<SaveFile_Language>k__BackingField",
+    "<SaveFile_MinimizeWindowToTray>k__BackingField",
+    "<SaveFile_StartAppOnWindowsStartup>k__BackingField",
+    "<SaveFile_StartAppOnWindowsStartupMinimized>k__BackingField",
+    "<SaveFile_ControllerEmulation>k__BackingField",
+    "<SaveFile_EnableHidHide>k__BackingField",
+    "<SaveFile_InputPage_UseXboxLabels>k__BackingField",
+    "<SaveFile_InputPage_ControllerColor>k__BackingField",
+    "<SaveFile_InputPage_SyncButtonColors>k__BackingField",
+    "<SaveFile_DarkMode>k__BackingField",
+    "<SaveFile_Settings_BorderColor>k__BackingField",
+    "<SaveFile_Settings_RedValue>k__BackingField",
+    "<SaveFile_Settings_GreenValue>k__BackingField",
+    "<SaveFile_Settings_BlueValue>k__BackingField",
+    "<SaveFile_Settings_AlphaValue>k__BackingField",
+    "<SaveFile_AutoConnectOnStart>k__BackingField",
+    "<SaveFile_AutoConnectSearchUntilConnected>k__BackingField",
+    "<SaveFile_KillSteamOnControllerConnect>k__BackingField",
+    "<SaveFile_DisableControllerVibration>k__BackingField",
+    "<SaveFile_EnableIncomingVibrationsWhileDisabled>k__BackingField",
+    "<SaveFile_ControllerMotorStrength>k__BackingField",
+    "<SaveFile_AppBackgroundImage>k__BackingField",
+    "<SaveFile_CustomBackgroundImageToggle>k__BackingField",
+    "<SaveFile_CustomBackgroundImageDirectory>k__BackingField",
+    "<SaveFile_CustomBackgroundImageStretch>k__BackingField",
+    "<SaveFile_CustomBackgroundImageBlurRadius>k__BackingField",
+    "<SaveFile_ControllerLEDColorMode>k__BackingField",
+    "<SaveFile_TouchpadLEDColorCustomR>k__BackingField",
+    "<SaveFile_TouchpadLEDColorCustomG>k__BackingField",
+    "<SaveFile_TouchpadLEDColorCustomB>k__BackingField",
+    "<SaveFile_TouchpadLEDColor>k__BackingField",
+    "<SaveFile_TouchpadLEDBrightness>k__BackingField",
+    "<SaveFile_RainbowSpeedMode>k__BackingField",
+    "<SaveFile_MicLED>k__BackingField",
+    "<SaveFile_PlayerLed_FlashWhileCharging>k__BackingField",
+    "SaveFile_PlayerLEDCustom",
+    "<SaveFile_ControllerPLayerLED>k__BackingField",
+    "<SaveFile_PlayerLEDBrightness>k__BackingField",
+    "<SaveFile_PlayLightshow>k__BackingField",
+    "SaveFile_CustomTrigger",
+    "SaveFile_ResistanceValues",
+    "SaveFile_BowValues",
+    "SaveFile_GallopingValues",
+    "SaveFile_SemiAutomaticGunValues",
+    "SaveFile_AutomaticGunValues",
+    "SaveFile_MachineValues",
+    "<SaveFile_OpenXboxGameBar>k__BackingField",
+    "<SaveFile_LoadLastActiveTrigger>k__BackingField",
+    "<SaveFile_UDPListen>k__BackingField",
+    "<SaveFile_UDPPortNumber>k__BackingField",
+    "<SaveFile_LeftTriggerThreshold>k__BackingField",
+    "<SaveFile_RightTriggerThreshold>k__BackingField",
+    "SaveFile_ControllerAudio",
+    "SaveFile_LastActiveTrigger",
+    "<SaveFile_EnableTouchpadToMouse>k__BackingField",
+    "<SaveFile_InvertScrolling>k__BackingField",
+    "<SaveFile_TouchpadToMouse_ScrollSpeed>k__BackingField",
+    "<SaveFile_TouchpadToMouse_SlowSensi>k__BackingField",
+    "<SaveFile_TouchpadToMouse_FastSensi>k__BackingField",
+    "<SaveFile_TouchpadToMouse_NormalSensi>k__BackingField",
+    "<SaveFile_TouchpadToMouse_SlowSensiButton>k__BackingField",
+    "<SaveFile_TouchpadToMouse_FastSensiButton>k__BackingField",
+    "<SaveFile_TouchpadToMouse_RightClickButton>k__BackingField",
+    "<SaveFile_TouchpadToMouse_LeftClickPressedButton>k__BackingField"
+  ],
+  "limits": [
+    "Build-local tokens require the recorded binary hash.",
+    "Static calls do not measure runtime latency, reachability or successful audio startup.",
+    "Current Steam DSX and its private profile format were not inspected.",
+    "No artwork coordinates, BAML transforms or current DSX assets were recovered or copied."
+  ]
+}

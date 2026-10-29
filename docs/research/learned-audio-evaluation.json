@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "method": "Precomputed-waveform inspection; no model inference, hardware playback, quality ranking or app-runtime DSP comparison",
+  "comparison": "Envelope correlation is level independent. Positive lag means candidate follows source. Suggested gains target RMS 0.08 with peak <=0.25.",
+  "pairs": [
+    {
+      "reference": "1-17092-B-27.wav",
+      "candidate": "1-17092-B-27-model1.wav",
+      "referenceMetadata": {
+        "sha256": "cfdcb4cb00c9af6e3f5613993d0c2c2babe1c0ebe442f8aa97017c092fad17f1",
+        "channels": 1,
+        "sampleRate": 44100,
+        "frames": 220500
+      },
+      "candidateMetadata": {
+        "sha256": "15c636581e4d6ff6b287a92a485c52bdbf724c7ee43bce78c256b1a3909ade66",
+        "channels": 1,
+        "sampleRate": 8000,
+        "frames": 40000
+      },
+      "stats": {
+        "durationSeconds": 5.0,
+        "peak": 1.0,
+        "rms": 0.160899,
+        "dc": -2e-06,
+        "crestFactor": 6.21507,
+        "clippedFraction": 2.5e-05,
+        "dominantScanHz": 150,
+        "comparisonGain": 0.25
+      },
+      "durationErrorMs": 0.0,
+      "envelopeCorrelation": 0.88023,
+      "envelopeLagMs": 0
+    },
+    {
+      "reference": "1-17092-B-27.wav",
+      "candidate": "1-17092-B-27-model2.wav",
+      "referenceMetadata": {
+        "sha256": "cfdcb4cb00c9af6e3f5613993d0c2c2babe1c0ebe442f8aa97017c092fad17f1",
+        "channels": 1,
+        "sampleRate": 44100,
+        "frames": 220500
+      },
+      "candidateMetadata": {
+        "sha256": "5638e97ecf41b711f672f341dfb3b6a2c24c313edf9a2381071879c8ac16f484",
+        "channels": 1,
+        "sampleRate": 8000,
+        "frames": 40000
+      },
+      "stats": {
+        "durationSeconds": 5.0,
+        "peak": 1.0,
+        "rms": 0.165777,
+        "dc": -2e-05,
+        "crestFactor": 6.03218,
+        "clippedFraction": 2.5e-05,
+        "dominantScanHz": 150,
+        "comparisonGain": 0.25
+      },
+      "durationErrorMs": 0.0,
+      "envelopeCorrelation": 0.94395,
+      "envelopeLagMs": 0
+    },
+    {
+      "reference": "1-74517-A-37.wav",
+      "candidate": "1-74517-A-37-model1.wav",
+      "referenceMetadata": {
+        "sha256": "119c27838962b7aee90e1d26fbad8a7da2977da8f788d79a1ada43d27f15e4aa",
+        "channels": 1,
+        "sampleRate": 44100,
+        "frames": 220500
+      },
+      "candidateMetadata": {
+        "sha256": "48250eab4e7a28ec12628b72b97bf1d98a57e7ecfcdcfa347f380d0bf26b5335",
+        "channels": 1,
+        "sampleRate": 8000,
+        "frames": 40000
+      },
+      "stats": {
+        "durationSeconds": 5.0,
+        "peak": 1.0,
+        "rms": 0.281541,
+        "dc": -2.5e-05,
+        "crestFactor": 3.55188,
+        "clippedFraction": 2.5e-05,
+        "dominantScanHz": 225,
+        "comparisonGain": 0.25
+      },
+      "durationErrorMs": 0.0,
+      "envelopeCorrelation": 0.94045,
+      "envelopeLagMs": 0
+    },
+    {
+      "reference": "1-74517-A-37.wav",
+      "candidate": "1-74517-A-37-model2.wav",
+      "referenceMetadata": {
+        "sha256": "119c27838962b7aee90e1d26fbad8a7da2977da8f788d79a1ada43d27f15e4aa",
+        "channels": 1,
+        "sampleRate": 44100,
+        "frames": 220500
+      },
+      "candidateMetadata": {
+        "sha256": "b67eb71d7143c3381ae8464df2a9905f21ebebc874159684d5949c6b0955dd18",
+        "channels": 1,
+        "sampleRate": 8000,
+        "frames": 40000
+      },
+      "stats": {
+        "durationSeconds": 5.0,
+        "peak": 1.0,
+        "rms": 0.233223,
+        "dc": -6.5e-05,
+        "crestFactor": 4.28773,
+        "clippedFraction": 2.5e-05,
+        "dominantScanHz": 225,
+        "comparisonGain": 0.25
+      },
+      "durationErrorMs": 0.0,
+      "envelopeCorrelation": 0.96404,
+      "envelopeLagMs": 0
+    }
+  ]
+}

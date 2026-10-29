@@ -7,6 +7,7 @@ mod diagnostics;
 mod game_actions;
 mod game_link;
 mod haptics;
+mod hardware;
 mod input_map;
 mod integrations;
 mod macros;
@@ -18,6 +19,7 @@ mod processes;
 #[path = "processes_portable.rs"]
 mod processes;
 mod profiles;
+mod recognition;
 #[cfg(windows)]
 mod screen_color;
 #[cfg(not(windows))]
@@ -450,6 +452,7 @@ fn send_game_packet(port: u16, format: String, packet: String) -> Result<(), Str
         enabled: true,
         port,
         format: format.clone(),
+        ..game_link::LinkSettings::default()
     }
     .validate()
     .map_err(str::to_string)?;
@@ -596,6 +599,14 @@ fn main() {
             choose_audio_file,
             open_driver_setup,
             load_profiles,
+            hardware::controller_library,
+            hardware::controller_audio_endpoints,
+            hardware::save_controller_library,
+            hardware::inspect_edge_snapshot,
+            hardware::edit_edge_snapshot,
+            hardware::store_edge_snapshot,
+            hardware::edge_snapshots,
+            hardware::delete_edge_snapshot,
             save_profiles,
             export_profiles,
             profile_backups,

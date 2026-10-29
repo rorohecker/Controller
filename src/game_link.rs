@@ -4,12 +4,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::UdpSocket;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct LinkSettings {
     pub enabled: bool,
     pub port: u16,
     pub format: String,
+    pub recognition: crate::recognition::Policy,
 }
 impl Default for LinkSettings {
     fn default() -> Self {
@@ -17,11 +18,13 @@ impl Default for LinkSettings {
             enabled: false,
             port: 6969,
             format: "json".into(),
+            recognition: crate::recognition::Policy::default(),
         }
     }
 }
 impl LinkSettings {
     pub fn validate(&self) -> Result<(), &'static str> {
+        self.recognition.validate()?;
         if self.port < 1024 || !matches!(self.format.as_str(), "json" | "dsx") {
             return Err("Choose JSON or DSX and a port from 1024 to 65535");
         }
@@ -30,6 +33,9 @@ impl LinkSettings {
 }
 #[derive(Default, Debug)]
 pub struct GameUpdate {
+    pub detection: Option<crate::recognition::Observation>,
+    pub recognition_status: Option<crate::recognition::Status>,
+    pub weapon_reset: bool,
     pub weapon: Option<String>,
     pub events: Vec<String>,
     pub triggers: [Option<TriggerSetting>; 2],
@@ -44,6 +50,8 @@ pub struct GameUpdate {
 #[serde(deny_unknown_fields)]
 struct JsonEvent {
     #[serde(default)]
+    detection: Option<crate::recognition::Observation>,
+    #[serde(default)]
     weapon: Option<String>,
     #[serde(default)]
     events: Vec<String>,
@@ -56,16 +64,23 @@ pub fn decode(data: &[u8], format: &str) -> Result<GameUpdate, &'static str> {
     if format == "json" {
         let p: JsonEvent = serde_json::from_slice(data)
             .map_err(|_| "Expected a weapon and/or events JSON packet")?;
+        if let Some(o) = &p.detection {
+            o.validate()?;
+            if p.weapon.is_some() {
+                return Err("Use weapon or detection, not both");
+            }
+        }
         if p.weapon
             .as_ref()
             .is_some_and(|w| w.is_empty() || w.len() > 80)
             || p.events.len() > 16
             || p.events.iter().any(|e| e.is_empty() || e.len() > 80)
-            || p.weapon.is_none() && p.events.is_empty()
+            || p.weapon.is_none() && p.events.is_empty() && p.detection.is_none()
         {
             return Err("Invalid game event names");
         }
         return Ok(GameUpdate {
+            detection: p.detection,
             weapon: p.weapon,
             events: p.events,
             ..GameUpdate::default()
@@ -219,6 +234,7 @@ fn dsx_trigger(mode: u8, args: &[Value]) -> Result<TriggerSetting, &'static str>
 
 #[derive(Default)]
 pub struct GameLink {
+    recognizer: crate::recognition::Recognizer,
     socket: Option<UdpSocket>,
     settings: LinkSettings,
     recording: bool,
@@ -229,14 +245,12 @@ impl GameLink {
     }
     pub fn set(&mut self, settings: LinkSettings) -> Result<(), String> {
         settings.validate().map_err(str::to_string)?;
-        if self.settings.enabled == settings.enabled
-            && self.settings.port == settings.port
-            && self.settings.format == settings.format
-        {
+        if self.settings == settings {
             return Ok(());
         }
         if settings.enabled && self.socket.is_some() && settings.port == self.settings.port {
             self.settings = settings;
+            self.recognizer.reconfigure();
             return Ok(());
         }
         let socket = if settings.enabled {
@@ -249,19 +263,31 @@ impl GameLink {
         };
         self.socket = socket;
         self.settings = settings;
+        self.recognizer.reconfigure();
         Ok(())
     }
     pub fn stop(&mut self) {
+        self.recognizer = crate::recognition::Recognizer::default();
         self.socket = None;
         self.settings.enabled = false;
         self.recording = false;
     }
     pub fn poll(
-        &self,
+        &mut self,
         connected: bool,
         battery: Option<u8>,
     ) -> Vec<Result<GameUpdate, &'static str>> {
         let mut output = Vec::new();
+        if let Some(status) = self
+            .recognizer
+            .tick(&self.settings.recognition, std::time::Instant::now())
+        {
+            output.push(Ok(GameUpdate {
+                weapon_reset: status.clear,
+                recognition_status: Some(status),
+                ..GameUpdate::default()
+            }));
+        }
         let Some(socket) = &self.socket else {
             return output;
         };
@@ -270,6 +296,14 @@ impl GameLink {
             match socket.recv_from(&mut buffer) {
                 Ok((n, peer)) => {
                     let update = decode(&buffer[..n], &self.settings.format).map(|mut update| {
+                        let (weapon, status) = self.recognizer.observe(
+                            update.detection.take(),
+                            update.weapon.take(),
+                            &self.settings.recognition,
+                            std::time::Instant::now(),
+                        );
+                        update.weapon = weapon;
+                        update.recognition_status = status;
                         if self.recording {
                             update.packet =
                                 Some(String::from_utf8_lossy(&buffer[..n]).into_owned());
@@ -286,6 +320,16 @@ impl GameLink {
             }
         }
         output
+    }
+    pub fn manual_weapon(
+        &mut self,
+        weapon: Option<String>,
+    ) -> Result<crate::recognition::Status, &'static str> {
+        self.recognizer.manual(
+            weapon,
+            &self.settings.recognition,
+            std::time::Instant::now(),
+        )
     }
 }
 
@@ -317,6 +361,7 @@ mod tests {
             enabled: true,
             port,
             format: "dsx".into(),
+            ..LinkSettings::default()
         })
         .unwrap();
         let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -374,6 +419,7 @@ mod tests {
             enabled: true,
             port,
             format: "json".into(),
+            ..LinkSettings::default()
         })
         .unwrap();
         let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
