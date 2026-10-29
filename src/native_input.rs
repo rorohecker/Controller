@@ -1,15 +1,44 @@
 //! Native desktop input for macOS and Linux. Constructed only when a pointer mode is enabled.
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Key, Keyboard, Mouse, Settings};
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicBool, Ordering};
+static FAILED: AtomicBool = AtomicBool::new(false);
 thread_local! { static INPUT:RefCell<Option<Enigo>>=const {RefCell::new(None)}; static WHEEL:RefCell<i32>=const {RefCell::new(0)}; }
 #[cfg_attr(test, allow(dead_code))]
 pub fn prepare() -> Result<(), String> {
+    if FAILED.swap(false, Ordering::AcqRel) {
+        INPUT.with(|i| *i.borrow_mut() = None);
+        WHEEL.with(|r| *r.borrow_mut() = 0);
+    }
     #[cfg(target_os = "macos")]
     if crate::desktop_access::desktop_access_status()["controlAllowed"] != true {
         INPUT.with(|input| *input.borrow_mut() = None);
         return Err("Allow CONTROLLER in System Settings > Privacy & Security > Accessibility, then enable PC control again.".into());
     }
     INPUT.with(|input|{if input.borrow().is_none(){let enigo=Enigo::new(&Settings::default()).map_err(|e|format!("Desktop input unavailable: {e}. On macOS allow Accessibility access. On Wayland allow the desktop control prompt."))?;*input.borrow_mut()=Some(enigo);}Ok(())})
+}
+pub fn recheck() -> Option<String> {
+    if !INPUT.with(|i| i.borrow().is_some()) {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    let revoked = crate::desktop_access::desktop_access_status()["controlAllowed"] != true;
+    #[cfg(not(target_os = "macos"))]
+    let revoked = false;
+    if revoked || FAILED.swap(false, Ordering::AcqRel) {
+        INPUT.with(|i| *i.borrow_mut() = None);
+        WHEEL.with(|r| *r.borrow_mut() = 0);
+        Some(
+            if revoked {
+                "Desktop access was revoked. Grant Accessibility access and test again."
+            } else {
+                "Desktop input failed. Test access again before re-enabling controls."
+            }
+            .into(),
+        )
+    } else {
+        None
+    }
 }
 pub fn mouse(dx: i32, dy: i32, wheel: i32, flags: u32) {
     INPUT.with(|input| {
@@ -63,6 +92,7 @@ pub fn key(vk: u16, up: bool) {
 }
 fn report(result: Result<(), enigo::InputError>) {
     if let Err(error) = result {
+        FAILED.store(true, Ordering::Release);
         crate::input_map::record_input_error(format!("Desktop input failed: {error}"));
     }
 }

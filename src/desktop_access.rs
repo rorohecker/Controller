@@ -13,6 +13,7 @@ mod mac {
         fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
         static kAXTrustedCheckOptionPrompt: *const c_void;
         fn CGPreflightListenEventAccess() -> bool;
+        fn CGPreflightPostEventAccess() -> bool;
         fn CGRequestListenEventAccess() -> bool;
         fn CGEventSourceKeyState(state: i32, key: u16) -> bool;
     }
@@ -31,6 +32,9 @@ mod mac {
     }
     pub fn trusted() -> bool {
         unsafe { AXIsProcessTrusted() }
+    }
+    pub fn posting() -> bool {
+        unsafe { CGPreflightPostEventAccess() }
     }
     pub fn listening() -> bool {
         unsafe { CGPreflightListenEventAccess() }
@@ -145,12 +149,12 @@ mod mac {
 pub fn desktop_access_status() -> Value {
     #[cfg(target_os = "macos")]
     {
-        json!({"os":"macos","controlAllowed":mac::trusted(),
+        json!({"os":"macos","controlAllowed":mac::trusted()&&mac::posting(),"postAllowed":mac::posting(),
             "recordingAllowed":mac::listening(),"nativeRecording":true})
     }
     #[cfg(not(target_os = "macos"))]
     {
-        json!({"os":std::env::consts::OS,"controlAllowed":true,
+        json!({"os":std::env::consts::OS,"controlAllowed":cfg!(windows),"controlState":if cfg!(windows){"privilege_limited"}else{"not_probed"},"environment":crate::integrations::environment(),
             "recordingAllowed":cfg!(windows),"nativeRecording":cfg!(windows)})
     }
 }

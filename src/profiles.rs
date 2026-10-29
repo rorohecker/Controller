@@ -415,7 +415,7 @@ fn validate(data: Value) -> Result<Archive, String> {
     for p in &archive.profiles {
         p.controls.validate().map_err(str::to_string)?;
         if !matches!(p.session.input_route.as_str(), "keep" | "native" | "xinput")
-            || !matches!(p.session.audio.as_str(), "keep" | "off" | "system")
+            || !matches!(p.session.audio.as_str(), "keep" | "off" | "system" | "game")
             || p.session.audio_gain > 100
             || !p.community.validate()
         {

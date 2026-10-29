@@ -10,8 +10,11 @@ use std::{sync::mpsc, thread, time::Duration};
 
 #[path = "audio_haptics/authoring.rs"]
 pub mod authoring;
+#[path = "audio_haptics/capture.rs"]
+pub mod capture;
 #[path = "audio_haptics/file.rs"]
 pub mod file;
+use capture::{CaptureHandle, CaptureSource};
 #[path = "audio_haptics/stream.rs"]
 mod stream;
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -75,6 +78,7 @@ pub enum Shape {
     Saw,
     Noise,
     Sniper,
+    LinkTest,
 }
 
 impl VoiceClip {
@@ -109,13 +113,22 @@ impl VoiceClip {
         if elapsed >= total {
             return None;
         }
-        let envelope = if elapsed < self.attack {
+        let envelope = if matches!(self.shape, Shape::LinkTest) {
+            1.0
+        } else if elapsed < self.attack {
             elapsed / self.attack
         } else {
             (total - elapsed) / self.release
         };
         let phase = elapsed * self.frequency;
         let wave = match self.shape {
+            Shape::LinkTest => {
+                if (elapsed * 4.0).fract() < 0.5 {
+                    (phase * std::f32::consts::TAU).sin()
+                } else {
+                    0.0
+                }
+            }
             Shape::Sine => (phase * std::f32::consts::TAU).sin(),
             Shape::Square => {
                 if phase.fract() < 0.5 {
@@ -193,6 +206,8 @@ struct Shared {
     bridge_frames: AtomicU64,
     glitches: AtomicU64,
     error: Mutex<Option<String>>,
+    capture_error: Mutex<Option<String>>,
+    capture_generation: AtomicU64,
 }
 
 impl Default for Shared {
@@ -221,6 +236,8 @@ impl Default for Shared {
             bridge_frames: AtomicU64::new(0),
             glitches: AtomicU64::new(0),
             error: Mutex::new(None),
+            capture_error: Mutex::new(None),
+            capture_generation: AtomicU64::new(0),
         }
     }
 }
@@ -230,7 +247,8 @@ pub struct AudioEngine {
     output: Option<Stream>,
     #[cfg(windows)]
     output: Option<ExclusiveOutput>,
-    capture: Option<Stream>,
+    capture: Option<CaptureHandle>,
+    capture_source: Option<CaptureSource>,
     shared: Arc<Shared>,
     endpoint: Option<String>,
     legacy_filter: GripFilter,
@@ -241,6 +259,7 @@ impl Default for AudioEngine {
         Self {
             output: None,
             capture: None,
+            capture_source: None,
             shared: Arc::new(Shared::default()),
             endpoint: None,
             legacy_filter: GripFilter::default(),
@@ -361,6 +380,9 @@ impl AudioEngine {
     }
     pub fn bridge_on(&self) -> bool {
         self.shared.bridge_on.load(Ordering::Relaxed)
+    }
+    pub fn capture_source(&self) -> Option<&CaptureSource> {
+        self.capture_source.as_ref()
     }
 
     pub fn take_error(&self) -> Option<String> {
@@ -497,6 +519,13 @@ impl AudioEngine {
         Ok(self.endpoint.as_deref().unwrap_or("DualSense"))
     }
 
+    pub fn play_link_test(&mut self, strength: u8) -> Result<(), String> {
+        let mut clip = VoiceClip::new("sine", 80, 2, 650, strength.min(25), 0);
+        clip.shape = Shape::LinkTest;
+        clip.attack = 0.0;
+        clip.release = 2.0;
+        self.play(clip).map(|_| ())
+    }
     pub fn play_speaker_chirp(&mut self) -> Result<&str, String> {
         self.start_output()?;
         self.stop_speaker_pcm();
@@ -647,7 +676,7 @@ impl AudioEngine {
             .map(|p| f32::from_bits(p.swap(0, Ordering::Relaxed)))
             .collect();
         serde_json::json!({"type":"audioMeters","endpoint":self.endpoint,"sampleRate":RATE,
-            "active":self.output.is_some(),"bridge":self.bridge_on(),"file":self.file_status(),"cueActive":cue_active,
+            "active":self.output.is_some(),"captureSource":self.capture_source,"captureState":self.capture.as_ref().map(|c|c.state()).unwrap_or("off"),"bridge":self.bridge_on(),"file":self.file_status(),"cueActive":cue_active,
             "timelineActive":self.shared.timeline.load().as_ref().is_some_and(|t|now.saturating_sub(t.start_frame)<u64::from(t.clip.duration_ms())*48),
             "gameActive":self.shared.game.load().as_ref().is_some_and(|g| now.saturating_sub(g.start_frame) < 10 * u64::from(RATE)),
             "peaks":peaks,"reduction":f32::from_bits(self.shared.reduction.swap(0,Ordering::Relaxed)),
@@ -658,9 +687,42 @@ impl AudioEngine {
     }
 
     pub fn set_bridge(&mut self, enabled: bool, gain: f32, preset: &str) -> Result<String, String> {
+        self.set_capture(enabled, gain, preset, CaptureSource::System)
+    }
+    pub fn take_capture_error(&mut self) -> Option<String> {
+        let error = if self.capture.as_ref().is_some_and(CaptureHandle::timed_out) {
+            Some(
+                "Process audio activation timed out; capture stopped without switching sources"
+                    .into(),
+            )
+        } else {
+            self.shared.capture_error.lock().ok()?.take()
+        };
+        if error.is_some() {
+            self.shared.bridge_on.store(false, Ordering::Release);
+            self.shared
+                .capture_generation
+                .fetch_add(1, Ordering::AcqRel);
+            self.capture = None;
+            self.capture_source = None;
+            while self.shared.bridge.pop().is_some() {}
+        }
+        error
+    }
+    pub fn set_capture(
+        &mut self,
+        enabled: bool,
+        gain: f32,
+        preset: &str,
+        source: CaptureSource,
+    ) -> Result<String, String> {
         if !enabled {
             self.shared.bridge_on.store(false, Ordering::Relaxed);
+            self.shared
+                .capture_generation
+                .fetch_add(1, Ordering::AcqRel);
             self.capture = None;
+            self.capture_source = None;
             while self.shared.bridge.pop().is_some() {}
             return Ok("Audio bridge off".into());
         }
@@ -675,15 +737,49 @@ impl AudioEngine {
             "quiet" => (4, 0.25),
             _ => return Err("Choose a valid audio bridge preset.".into()),
         };
+        source.validate()?;
         self.start_output()?;
-        self.shared
-            .gain_bits
-            .store((gain * preset_gain).to_bits(), Ordering::Relaxed);
+        self.shared.gain_bits.store(
+            (gain
+                * if matches!(source, CaptureSource::NativeEndpoint { .. }) {
+                    1.0
+                } else {
+                    preset_gain
+                })
+            .to_bits(),
+            Ordering::Relaxed,
+        );
         self.shared.preset.store(preset_id, Ordering::Relaxed);
-        if self.capture.is_none() {
+        if self.capture.is_none() || self.capture_source.as_ref() != Some(&source) {
+            self.shared.bridge_on.store(false, Ordering::Release);
+            self.shared
+                .capture_generation
+                .fetch_add(1, Ordering::AcqRel);
+            self.capture = None;
+            self.capture_source = None;
+            while self.shared.bridge.pop().is_some() {}
+            if let Ok(mut slot) = self.shared.capture_error.lock() {
+                *slot = None;
+            }
             self.shared.glitches.store(0, Ordering::Relaxed);
             self.shared.bridge_frames.store(0, Ordering::Relaxed);
-            self.capture = Some(build_loopback(self.shared.clone())?);
+            self.capture = Some(match &source {
+                CaptureSource::System => CaptureHandle::System {
+                    _stream: build_loopback(self.shared.clone(), None)?,
+                },
+                CaptureSource::NativeEndpoint { id } => CaptureHandle::System {
+                    _stream: build_loopback(self.shared.clone(), Some(id))?,
+                },
+                #[cfg(windows)]
+                CaptureSource::Process { pid } => CaptureHandle::Process {
+                    _worker: capture::process::ProcessCapture::start(self.shared.clone(), *pid)?,
+                },
+                #[cfg(not(windows))]
+                CaptureSource::Process { .. } => {
+                    return Err("Process audio capture requires Windows".into());
+                }
+            });
+            self.capture_source = Some(source);
         }
         self.shared.bridge_on.store(true, Ordering::Relaxed);
         Ok(format!(
@@ -696,7 +792,11 @@ impl AudioEngine {
         self.stop_timeline();
         self.shared.game.store(None);
         self.shared.bridge_on.store(false, Ordering::Relaxed);
+        self.shared
+            .capture_generation
+            .fetch_add(1, Ordering::AcqRel);
         self.capture = None;
+        self.capture_source = None;
         self.output = None;
         self.endpoint = None;
         self.shared.clip.store(None);
@@ -868,12 +968,26 @@ impl GripFilter {
     }
 }
 
+#[cfg(test)]
 fn record_audio_error(shared: &Shared, error: cpal::Error, route: &str) {
     if error.kind() == cpal::ErrorKind::Xrun {
         // CPAL continues streaming after a WASAPI discontinuity; a glitch is not a stopped stream.
         shared.glitches.fetch_add(1, Ordering::Relaxed);
     } else if let Ok(mut slot) = shared.error.lock() {
         *slot = Some(format!("{route} stopped: {error}"));
+    }
+}
+
+fn record_capture_error(shared: &Shared, generation: u64, error: cpal::Error) {
+    if shared.capture_generation.load(Ordering::Acquire) != generation {
+        return;
+    }
+    if error.kind() == cpal::ErrorKind::Xrun {
+        shared.glitches.fetch_add(1, Ordering::Relaxed);
+    } else if let Ok(mut slot) = shared.capture_error.lock()
+        && shared.capture_generation.load(Ordering::Acquire) == generation
+    {
+        *slot = Some(format!("Audio capture stopped: {error}"));
     }
 }
 
@@ -1117,12 +1231,14 @@ struct CaptureDsp {
     bass_gain: f32,
     transient_gain: f32,
     gate: f32,
+    native: bool,
 }
 
 impl CaptureDsp {
     fn new(rate: u32, gain: f32) -> Self {
         let mut dsp = Self {
             low: [0.0; 2],
+            native: false,
             high: [0.0; 2],
             previous_low: [0.0; 2],
             phase: 0.0,
@@ -1183,7 +1299,9 @@ impl CaptureDsp {
             self.envelope[channel] += alpha * (target - self.envelope[channel]);
             let transient = (target - self.envelope[channel]).max(0.0);
             let level_gain = (0.16 / (self.envelope[channel] + 0.02)).clamp(1.0, 3.5);
-            out[channel] = if self.envelope[channel] >= self.gate {
+            out[channel] = if self.native {
+                x * self.gain
+            } else if self.envelope[channel] >= self.gate {
                 (self.high[channel] * self.bass_gain + transient * self.transient_gain * carrier)
                     * self.gain
                     * level_gain
@@ -1202,10 +1320,29 @@ impl CaptureDsp {
     }
 }
 
-fn build_loopback(shared: Arc<Shared>) -> Result<Stream, String> {
-    let device = cpal::default_host()
-        .default_output_device()
-        .ok_or("No Windows default audio output is available for loopback.")?;
+#[cfg(windows)]
+fn push_capture_frame(shared: &Shared, dsp: &mut CaptureDsp, frame: [f32; 2]) {
+    let before = dsp.dropped;
+    let active = dsp.frame(frame, &shared.bridge);
+    shared
+        .bridge_frames
+        .fetch_add(u64::from(active), Ordering::Relaxed);
+    shared
+        .bridge_dropped
+        .fetch_add(dsp.dropped - before, Ordering::Relaxed);
+}
+
+fn build_loopback(shared: Arc<Shared>, source: Option<&str>) -> Result<Stream, String> {
+    let host = cpal::default_host();
+    let device = if let Some(id) = source {
+        host.output_devices()
+            .map_err(|e| e.to_string())?
+            .find(|d| d.id().is_ok_and(|key| key.to_string() == id))
+            .ok_or("Selected source endpoint is no longer available")?
+    } else {
+        host.default_output_device()
+            .ok_or("No Windows default audio output is available for loopback.")?
+    };
     let capture_name = device.to_string().to_ascii_lowercase();
     if capture_name.contains("dualsense") || capture_name.contains("wireless controller") {
         return Err("Set Windows system audio to your speakers or headphones before enabling the bridge; capturing the controller endpoint would create feedback.".into());
@@ -1213,6 +1350,11 @@ fn build_loopback(shared: Arc<Shared>) -> Result<Stream, String> {
     let format = device
         .default_output_config()
         .map_err(|e| format!("Could not inspect system audio: {e}"))?;
+    if source.is_some() && (format.channels() != 4 || format.sample_rate() != RATE) {
+        return Err("Native relay requires a four-channel, 48 kHz virtual source endpoint".into());
+    }
+    let native = source.is_some();
+    let offset = if native { 2 } else { 0 };
     let config = StreamConfig {
         channels: format.channels(),
         sample_rate: format.sample_rate(),
@@ -1220,40 +1362,43 @@ fn build_loopback(shared: Arc<Shared>) -> Result<Stream, String> {
     };
     let channels = config.channels as usize;
     let rate = config.sample_rate;
+    let generation = shared.capture_generation.load(Ordering::Acquire);
     let error_shared = shared.clone();
     let on_error = move |error: cpal::Error| {
-        record_audio_error(&error_shared, error, "System audio capture");
+        record_capture_error(&error_shared, generation, error);
     };
     let stream = match format.sample_format() {
         SampleFormat::F32 => {
-            let mut dsp = CaptureDsp::new(rate, 0.5);
+            let mut dsp = CaptureDsp::new(rate, 0.5);dsp.native=native;
             let shared = shared.clone();
             device.build_input_stream(config, move |data: &[f32], _| {
+                if shared.capture_generation.load(Ordering::Acquire)!=generation{return;}
                 dsp.gain = f32::from_bits(shared.gain_bits.load(Ordering::Relaxed));
                 dsp.set_preset(shared.preset.load(Ordering::Relaxed));
                 {
                     let before=dsp.dropped;
-                    let active = data.chunks_exact(channels).filter(|frame| dsp.frame([frame[0], frame[channels.min(2)-1]], &shared.bridge)).count();
+                    let active = data.chunks_exact(channels).filter(|frame| dsp.frame([frame[offset], frame[offset+channels.min(2)-1]], &shared.bridge)).count();
                     shared.bridge_frames.fetch_add(active as u64, Ordering::Relaxed);
                     shared.bridge_dropped.fetch_add(dsp.dropped-before,Ordering::Relaxed);
                 }
             }, on_error, None)
         }
         SampleFormat::I16 => {
-            let mut dsp = CaptureDsp::new(rate, 0.5);
+            let mut dsp = CaptureDsp::new(rate, 0.5);dsp.native=native;
             let shared = shared.clone();
             let error_shared = shared.clone();
             device.build_input_stream(config, move |data: &[i16], _| {
+                if shared.capture_generation.load(Ordering::Acquire)!=generation{return;}
                 dsp.gain = f32::from_bits(shared.gain_bits.load(Ordering::Relaxed));
                 dsp.set_preset(shared.preset.load(Ordering::Relaxed));
                 {
                     let before=dsp.dropped;
-                    let active = data.chunks_exact(channels).filter(|frame| dsp.frame([frame[0] as f32 / 32768.0, frame[channels.min(2)-1] as f32 / 32768.0], &shared.bridge)).count();
+                    let active = data.chunks_exact(channels).filter(|frame| dsp.frame([frame[offset] as f32 / 32768.0, frame[offset+channels.min(2)-1] as f32 / 32768.0], &shared.bridge)).count();
                     shared.bridge_frames.fetch_add(active as u64, Ordering::Relaxed);
                     shared.bridge_dropped.fetch_add(dsp.dropped-before,Ordering::Relaxed);
                 }
             }, move |error| {
-                record_audio_error(&error_shared, error, "System audio capture");
+                record_capture_error(&error_shared,generation,error);
             }, None)
         }
         other => return Err(format!("System audio uses unsupported sample format {other:?}. Choose a 16-bit or float output format in Windows.")),
@@ -1267,6 +1412,49 @@ fn build_loopback(shared: Arc<Shared>) -> Result<Stream, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn capture_failure_is_scoped_and_stale_errors_are_ignored() {
+        let mut engine = AudioEngine::default();
+        engine
+            .shared
+            .speaker_pcm
+            .store(Some(Arc::new(PcmStream::new(7, "grips", false, 0))));
+        engine.shared.bridge_on.store(true, Ordering::Relaxed);
+        engine.capture_source = Some(CaptureSource::Process { pid: 12345 });
+        engine.shared.capture_generation.store(2, Ordering::Relaxed);
+        record_capture_error(
+            &engine.shared,
+            1,
+            cpal::ErrorKind::DeviceNotAvailable.into(),
+        );
+        assert!(engine.take_capture_error().is_none());
+        assert!(engine.bridge_on());
+        *engine.shared.capture_error.lock().unwrap() = Some("Process ended".into());
+        assert_eq!(
+            engine.take_capture_error().as_deref(),
+            Some("Process ended")
+        );
+        assert!(!engine.bridge_on());
+        assert!(engine.capture_source.is_none());
+        assert!(engine.shared.speaker_pcm.load().is_some());
+    }
+    #[test]
+    fn native_relay_bypasses_music_conversion_and_keeps_stereo_bounded() {
+        let mut dsp = CaptureDsp::new(48_000, 0.5);
+        dsp.native = true;
+        let ring = ArrayQueue::new(4);
+        dsp.frame([0.25, -0.5], &ring);
+        assert_eq!(ring.pop(), Some([0.125, -0.25]));
+        dsp.frame([f32::NAN, f32::INFINITY], &ring);
+        assert_eq!(ring.pop(), Some([0.0; 2]));
+        let mut clip = VoiceClip::new("sine", 80, 2, 650, 25, 0);
+        clip.shape = Shape::LinkTest;
+        clip.attack = 0.0;
+        clip.release = 2.0;
+        assert_eq!(clip.sample(0.2), Some([0.0; 2]));
+        assert!(clip.sample(2.0).is_none());
+        assert!(clip.sample(0.05).unwrap().iter().all(|v| v.abs() <= 0.25));
+    }
     #[test]
     fn timeline_stereo_mix_obeys_personal_caps_and_raw_test_is_bounded() {
         let mut engine = AudioEngine::default();

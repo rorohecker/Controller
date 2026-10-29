@@ -8,7 +8,7 @@ pub const DUALSENSE_PID: u16 = 0x0ce6;
 pub const EDGE_PID: u16 = 0x0df2;
 pub const USB_OUTPUT_LEN: usize = 63;
 pub const BT_OUTPUT_LEN: usize = 78;
-pub const BT_HAPTIC_LEN: usize = 141;
+pub const BT_HAPTIC_LEN: usize = 142;
 pub const MAX_TRIGGER_LEVEL: u8 = 6; // conservative ceiling; firmware supports 0..8
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -596,18 +596,25 @@ pub fn bt_report(usb: &[u8; USB_OUTPUT_LEN], sequence: u8) -> [u8; BT_OUTPUT_LEN
 
 /// Experimental Bluetooth voice-coil frame, kept separate from 0x31 controls.
 /// Wire format and 3 kHz signed stereo PCM basis: egormanga/SAxense (MPL-2.0 research).
-/// This is a pure encoder; the app does not send 0x32 frames without hardware validation.
+/// Writes are restricted to an explicit, bounded experimental test.
 pub fn bt_haptic_report(pcm: &[i8; 64], sequence: u8) -> [u8; BT_HAPTIC_LEN] {
+    bt_haptic_report_sequences(pcm, sequence, sequence)
+}
+pub fn bt_haptic_report_sequences(
+    pcm: &[i8; 64],
+    sequence: u8,
+    audio_sequence: u8,
+) -> [u8; BT_HAPTIC_LEN] {
     let mut report = [0u8; BT_HAPTIC_LEN];
     report[0] = 0x32;
     report[1] = (sequence & 0x0f) << 4;
-    report[2..11].copy_from_slice(&[0x91, 7, 0xfe, 0, 0, 0, 0, 0xff, sequence]);
+    report[2..11].copy_from_slice(&[0x91, 7, 0xfe, 0, 0, 0, 0, 0xff, audio_sequence]);
     report[11..13].copy_from_slice(&[0x92, 64]);
     for (destination, sample) in report[13..77].iter_mut().zip(pcm.iter()) {
         *destination = *sample as u8;
     }
-    let crc = crc32_seeded(0xa2, &report[..137]);
-    report[137..141].copy_from_slice(&crc.to_le_bytes());
+    let crc = crc32_seeded(0xa2, &report[..138]);
+    report[138..142].copy_from_slice(&crc.to_le_bytes());
     report
 }
 
@@ -762,12 +769,23 @@ mod tests {
     #[test]
     fn experimental_bt_haptic_framing_matches_independent_crc() {
         let report = bt_haptic_report(&[0; 64], 3);
-        assert_eq!(report.len(), 141);
+        assert_eq!(report.len(), 142);
         assert_eq!(&report[..4], &[0x32, 0x30, 0x91, 7]);
         assert_eq!(&report[9..13], &[0xff, 3, 0x92, 64]);
         assert_eq!(
-            u32::from_le_bytes(report[137..141].try_into().unwrap()),
-            0x2d0f_ab86
+            u32::from_le_bytes(report[138..142].try_into().unwrap()),
+            0xd6f4c633
+        );
+    }
+    #[test]
+    fn bluetooth_transport_and_audio_counters_are_independent() {
+        let report = bt_haptic_report_sequences(&[-32; 64], 2, 255);
+        assert_eq!(report[1], 0x20);
+        assert_eq!(report[10], 255);
+        assert!(report[13..77].iter().all(|v| *v == 224));
+        assert_eq!(
+            u32::from_le_bytes(report[138..142].try_into().unwrap()),
+            crc32_seeded(0xa2, &report[..138])
         );
     }
 

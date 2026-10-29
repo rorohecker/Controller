@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "controller"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "aftertouch-protocol",
  "arc-swap",
@@ -655,6 +655,7 @@ dependencies = [
  "tauri-plugin-updater",
  "vigem-client",
  "wasapi",
+ "windows 0.62.2",
  "windows-sys 0.61.2",
 ]
 

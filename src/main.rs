@@ -8,6 +8,7 @@ mod game_actions;
 mod game_link;
 mod haptics;
 mod input_map;
+mod integrations;
 mod macros;
 #[cfg(not(windows))]
 mod native_input;
@@ -114,7 +115,7 @@ fn set_start_on_login(enabled: bool, app: tauri::AppHandle) -> Result<(), String
 
 #[tauri::command]
 fn platform_capabilities() -> Value {
-    json!({"os": std::env::consts::OS, "desktopInput":true, "nativeAudioFiles":true, "supportedKeys":(1..=254u16).filter(|k|input_map::supported_key(*k)).collect::<Vec<_>>(), "xinput": cfg!(windows), "screenColor": cfg!(windows), "systemAudioBridge": cfg!(windows), "updates": cfg!(windows)})
+    json!({"os": std::env::consts::OS, "desktopInput":integrations::environment()["desktopCandidate"], "nativeAudioFiles":true,"processAudioCapture":cfg!(windows)&&integrations::windows_build()>=20348, "supportedKeys":(1..=254u16).filter(|k|input_map::supported_key(*k)).collect::<Vec<_>>(), "xinput": cfg!(windows), "screenColor": cfg!(windows), "systemAudioBridge": cfg!(windows), "updates": cfg!(windows)})
 }
 
 #[cfg(windows)]
@@ -607,6 +608,8 @@ fn main() {
             set_close_to_tray,
             set_start_on_login,
             platform_capabilities,
+            integrations::integration_info,
+            integrations::inspect_native_report,
             desktop_access::desktop_access_status,
             desktop_access::request_desktop_access,
             desktop_access::open_desktop_access_settings,

@@ -10,6 +10,10 @@ use crate::input_map::{
     motion::{FactoryCalibration, MotionProcessor},
 };
 use crate::{
+    audio_haptics::capture::CaptureSource,
+    integrations::{DongleProbe, LinkExperiment},
+};
+use crate::{
     audio_haptics::{AudioEngine, VoiceClip},
     game_actions::{ActionMapper, ActionRule},
     game_link::{GameLink, LinkSettings},
@@ -33,6 +37,14 @@ use serde_json::json;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase")]
 pub enum DeviceCommand {
+    SetNativeHandoff {
+        enabled: bool,
+    },
+    CheckDesktopInput,
+    StartLinkExperiment {
+        strength: u8,
+    },
+    StopLinkExperiment,
     ProfileCheckpoint {
         #[serde(rename = "requestId")]
         request_id: u32,
@@ -196,6 +208,8 @@ pub enum DeviceCommand {
         enabled: bool,
         gain: f32,
         preset: String,
+        #[serde(default)]
+        source: CaptureSource,
     },
     SetTelemetry {
         enabled: bool,
@@ -360,6 +374,8 @@ struct Connected {
     motion: MotionProcessor,
     radial: RadialMapper,
     last_motion_event: Instant,
+    dongle: DongleProbe,
+    link_experiment: Option<LinkExperiment>,
     last_input_sent: Instant,
     last_input_buttons: [bool; 23],
     last_valid_report: Instant,
@@ -703,6 +719,63 @@ impl WeaponKind {
 }
 
 impl Connected {
+    fn stop_link_experiment(&mut self) -> Result<Option<serde_json::Value>, String> {
+        let Some(run) = self.link_experiment.take() else {
+            return Ok(None);
+        };
+        self.audio.cancel_cue();
+        if run.bluetooth {
+            let silence =
+                protocol::bt_haptic_report_sequences(&[0; 64], self.sequence, run.sequence);
+            self.sequence = self.sequence.wrapping_add(1) & 15;
+            let written = self.hid.write(&silence).map_err(|e| e.to_string())?;
+            if written != silence.len() {
+                return Err("Short Bluetooth experiment stop write".into());
+            }
+            self.write_rumble([0, 0])?;
+        }
+        Ok(Some(run.event(false)))
+    }
+    fn tick_link_experiment(&mut self) -> Result<Option<serde_json::Value>, String> {
+        let now = Instant::now();
+        if self
+            .link_experiment
+            .as_ref()
+            .is_some_and(|run| now >= run.deadline)
+        {
+            return self.stop_link_experiment();
+        }
+        let Some(run) = self.link_experiment.as_mut() else {
+            return Ok(None);
+        };
+        if !run.bluetooth {
+            run.sent = self
+                .audio
+                .callbacks()
+                .saturating_sub(run.callback_base)
+                .min(u64::from(u32::MAX)) as u32;
+        }
+        if let Some(mut pcm) = run.due(now) {
+            for (i, sample) in pcm.iter_mut().enumerate() {
+                *sample = (f32::from(*sample) * self.personal.side_limit(i % 2)).round() as i8;
+            }
+            let frame = protocol::bt_haptic_report_sequences(&pcm, self.sequence, run.sequence);
+            self.sequence = self.sequence.wrapping_add(1) & 15;
+            run.sequence = run.sequence.wrapping_add(1);
+            let start = Instant::now();
+            let n = self.hid.write(&frame).map_err(|e| e.to_string())?;
+            if n != frame.len() {
+                return Err("Short Bluetooth experiment write".into());
+            }
+            run.write_us = run.write_us.max(start.elapsed().as_micros() as u64);
+            run.sent += 1;
+        }
+        if now.duration_since(run.last_event) >= Duration::from_millis(100) {
+            run.last_event = now;
+            return Ok(Some(run.event(true)));
+        }
+        Ok(None)
+    }
     fn enable_pcm(&mut self) -> Result<(), String> {
         self.haptic = None;
         self.rumble_until = None;
@@ -1040,6 +1113,7 @@ impl Connected {
     }
 
     fn reset(&mut self) -> Result<(), String> {
+        let _ = self.stop_link_experiment();
         self.desktop.set_enabled(false);
         let _ = self.radial.set(Default::default());
         self.motion.reset();
@@ -1375,6 +1449,23 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     .unwrap_or_else(FactoryCalibration::fallback),
                     Err(_) => FactoryCalibration::default(),
                 };
+                let mut dongle = DongleProbe::default();
+                if !matches!(info.bus_type(), BusType::Bluetooth) {
+                    let mut version = [0u8; 64];
+                    version[0] = 0xf8;
+                    if let Ok(n) = hid.get_feature_report(&mut version) {
+                        let mut config = [0u8; 64];
+                        config[0] = 0xf7;
+                        if version.get(1).is_some_and(|b| b.is_ascii_alphanumeric())
+                            && let Ok(m) = hid.get_feature_report(&mut config)
+                        {
+                            dongle = crate::integrations::dongle_probe(
+                                &version[..n.min(64)],
+                                &config[..m.min(64)],
+                            );
+                        }
+                    }
+                }
                 let display = path_key(info);
                 let controller_id = controller_identity(info, &hid);
                 return Ok(Some(Connected {
@@ -1408,6 +1499,8 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     motion: MotionProcessor::with_factory(factory),
                     radial: RadialMapper::default(),
                     last_motion_event: Instant::now(),
+                    dongle,
+                    link_experiment: None,
                     last_input_sent: Instant::now() - Duration::from_secs(1),
                     last_input_buttons: [false; 23],
                     last_valid_report: Instant::now(),
@@ -1505,6 +1598,7 @@ fn emit_connected(proxy: &Sender<serde_json::Value>, found: &Connected) {
             "firmware": found.firmware,
             "path": found.path_display,
             "controllerId": found.controller_id,
+            "dongle":found.dongle,
             "motionFactory":{"valid":found.motion.factory.valid,"message":found.motion.factory.message},
             "productId": format!("{:04x}", found.product_id),
             "isEdge": found.product_id == protocol::EDGE_PID,
@@ -1529,7 +1623,40 @@ fn handle_command(
     api: &HidApi,
     preferred_path: &mut Option<String>,
 ) -> bool {
+    if device.as_ref().is_some_and(|d| d.link_experiment.is_some())
+        && !matches!(
+            command,
+            DeviceCommand::StopLinkExperiment
+                | DeviceCommand::Reset
+                | DeviceCommand::Shutdown
+                | DeviceCommand::SetUiFocused { .. }
+                | DeviceCommand::Scan
+                | DeviceCommand::ListDevices
+                | DeviceCommand::SelectDevice { .. }
+                | DeviceCommand::CheckDesktopInput
+                | DeviceCommand::ProfileCheckpoint { .. }
+        )
+    {
+        emit(
+            proxy,
+            json!({"type":"error","message":"Stop the link experiment before changing output settings"}),
+        );
+        return true;
+    }
     match command {
+        DeviceCommand::CheckDesktopInput => {
+            stop_input_mappers(mouse, gyro, remap, xinput, proxy);
+            if let Some(d) = device.as_mut() {
+                let _ = d.reset();
+            }
+            emit(proxy, json!({"type":"safetyReset"}));
+            let result = crate::input_map::prepare_desktop();
+            emit(
+                proxy,
+                json!({"type":"desktopInputStatus","ready":result.is_ok(),"message":result.err().unwrap_or_else(||"Desktop backend opened. No input was sent.".into()),"environment":crate::integrations::environment()}),
+            );
+            return true;
+        }
         DeviceCommand::ProfileCheckpoint { request_id } => {
             // FIFO marker: all preceding commands and their error events have
             // completed before this acknowledgement reaches the UI.
@@ -2100,6 +2227,23 @@ fn handle_command(
         _ => None,
     };
     let result: Result<&str, String> = match command {
+        DeviceCommand::StartLinkExperiment{strength}=>{
+            let run=LinkExperiment::new(Instant::now(),matches!(device.transport,BusType::Bluetooth),strength);
+            run.and_then(|mut run|{
+                stop_input_mappers(mouse,gyro,remap,xinput,proxy);
+                game_link.stop();let _=telemetry.set(false,0,false);*script=None;screen.set_enabled(false);
+                device.reset()?;emit(proxy,json!({"type":"safetyReset"}));
+                let start=Instant::now();
+                if run.bluetooth{device.write(protocol::audio_haptics_enable_report())?;}
+                else{device.enable_pcm()?;device.audio.play_link_test(strength)?;}
+                run.startup_us=start.elapsed().as_micros() as u64;run.callback_base=device.audio.callbacks();run.start=Instant::now();run.deadline=run.start+Duration::from_secs(2);
+                emit(proxy,run.event(true));device.link_experiment=Some(run);Ok("Two-second link experiment started")
+            })
+        }
+        DeviceCommand::StopLinkExperiment=>match device.stop_link_experiment(){
+            Ok(event)=>{if let Some(event)=event{emit(proxy,event);}Ok("Link experiment stopped")},
+            Err(error)=>{emit(proxy,json!({"type":"linkExperiment","running":false,"error":error}));Err(error)}
+        },
         DeviceCommand::SetControlProfile {settings} => {
             let result=settings.validate().map_err(str::to_string).and_then(|_|{
                 if settings.radial.enabled {crate::input_map::prepare_desktop()?;}
@@ -2508,20 +2652,22 @@ fn handle_command(
         DeviceCommand::SetAudioBridge {
             enabled,
             gain,
-            preset,
+            preset,source,
         } => {
             if enabled && !cfg!(windows) {
                 Err("System audio capture is currently available on Windows.".into())
             } else if enabled && !matches!(device.transport, BusType::Usb) {
                 Err("System audio haptics require USB. Bluetooth motor fallback remains available in Haptic Lab.".into())
             } else {
-                let result = if enabled { device.enable_pcm() } else { Ok(()) }
-                    .and_then(|_| device.audio.set_bridge(enabled, gain, &preset));
+                let result = if enabled { source.validate().and_then(|_|device.enable_pcm()) } else { Ok(()) }
+                    .and_then(|_| if source==CaptureSource::System {device.audio.set_bridge(enabled,gain,&preset)}else{device.audio.set_capture(enabled, gain, &preset,source.clone())});
                 if let Ok(message) = &result {
                     emit(
                         proxy,
-                        json!({"type":"audioStatus","route":if enabled {"voiceCoil"} else {"off"},"bridge":enabled,"endpoint":device.audio.endpoint(),"message":message}),
+                        json!({"type":"audioStatus","route":if enabled {"voiceCoil"} else {"off"},"bridge":enabled,"captureSource":if enabled{Some(&source)}else{None},"endpoint":device.audio.endpoint(),"message":message}),
                     );
+                } else if let Err(message) = &result {
+                    emit(proxy,json!({"type":"audioStatus","route":if device.audio.bridge_on(){"voiceCoil"}else{"off"},"bridge":device.audio.bridge_on(),"captureSource":device.audio.capture_source(),"captureError":true,"message":message}));
                 }
                 result.map(|_| {
                     if enabled {
@@ -2635,6 +2781,8 @@ fn handle_command(
             })
         }
         DeviceCommand::ProfileCheckpoint { .. }
+        | DeviceCommand::CheckDesktopInput
+        | DeviceCommand::SetNativeHandoff { .. }
         | DeviceCommand::Scan
         | DeviceCommand::Shutdown
         | DeviceCommand::ListDevices
@@ -2701,6 +2849,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     emit(&proxy, xinput.status_event());
     let mut preferred_path: Option<String> = None;
     let mut next_scan = Instant::now();
+    let mut native_handoff = false;
     let mut input_report = [0u8; 78];
     let mut next_process_check = Instant::now();
     #[cfg(windows)]
@@ -2756,6 +2905,13 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         let _ = connected.set_speaker_route(false);
                     }
                 }
+                if let Some(error) = connected.audio.take_capture_error() {
+                    emit(
+                        &proxy,
+                        json!({"type":"audioStatus","route":"off","bridge":false,"message":error}),
+                    );
+                    emit(&proxy, json!({"type":"error","message":error}));
+                }
                 emit(&proxy, connected.audio.diagnostics());
                 let now = Instant::now();
                 let trigger_source = if connected
@@ -2776,7 +2932,13 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 } else {
                     "Idle"
                 };
-                let motor_source = if connected.last_rumble.is_some_and(|v| v != [0, 0]) {
+                let motor_source = if connected
+                    .link_experiment
+                    .as_ref()
+                    .is_some_and(|run| run.bluetooth)
+                {
+                    "Bluetooth experiment"
+                } else if connected.last_rumble.is_some_and(|v| v != [0, 0]) {
                     if connected.haptic.is_some() {
                         "Motor cue"
                     } else if connected.game_rumble != [0, 0] {
@@ -2807,6 +2969,20 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
             next_audio_status = Instant::now() + Duration::from_millis(250);
         }
         if Instant::now() >= next_rate {
+            #[cfg(not(windows))]
+            if let Some(message) = crate::native_input::recheck() {
+                stop_input_mappers(&mut mouse, &mut gyro, &mut remap, &mut xinput, &proxy);
+                if let Some(d) = device.as_mut() {
+                    d.desktop.set_enabled(false);
+                    d.radial.cancel();
+                }
+                emit(&proxy, json!({"type":"pcMode","enabled":false}));
+                emit(
+                    &proxy,
+                    json!({"type":"desktopInputStatus","ready":false,"message":message,"environment":crate::integrations::environment()}),
+                );
+                emit(&proxy, json!({"type":"error","message":message}));
+            }
             if let Some(message) = crate::input_map::take_input_error() {
                 emit(
                     &proxy,
@@ -2882,6 +3058,41 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
         loop {
             match rx.try_recv() {
                 Ok(command) => {
+                    if let DeviceCommand::SetNativeHandoff { enabled } = command {
+                        native_handoff = enabled;
+                        if enabled {
+                            game_link.stop();
+                            let _ = telemetry.set(false, 0, false);
+                            script = None;
+                            screen.set_enabled(false);
+                            stop_input_mappers(
+                                &mut mouse,
+                                &mut gyro,
+                                &mut remap,
+                                &mut xinput,
+                                &proxy,
+                            );
+                            if let Some(mut active) = device.take() {
+                                let _ = active.reset();
+                            }
+                            emit(
+                                &proxy,
+                                json!({"type":"device","connected":false,"message":"Controller released for native game feedback"}),
+                            );
+                            emit(&proxy, json!({"type":"safetyReset"}));
+                        } else {
+                            next_scan = Instant::now();
+                        }
+                        emit(&proxy, json!({"type":"nativeHandoff","enabled":enabled}));
+                        continue;
+                    }
+                    if native_handoff && matches!(command, DeviceCommand::SelectDevice { .. }) {
+                        emit(
+                            &proxy,
+                            json!({"type":"error","message":"Resume controller monitoring before selecting a device"}),
+                        );
+                        continue;
+                    }
                     if matches!(command, DeviceCommand::Reset | DeviceCommand::Shutdown) {
                         game_link.stop();
                     }
@@ -3182,6 +3393,18 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
         }
         remap.tick();
         if let Some(connected) = device.as_mut() {
+            match connected.tick_link_experiment() {
+                Ok(Some(event)) => emit(&proxy, event),
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = connected.stop_link_experiment();
+                    emit(
+                        &proxy,
+                        json!({"type":"linkExperiment","running":false,"error":error}),
+                    );
+                    emit(&proxy, json!({"type":"error","message":error}));
+                }
+            }
             let feedback = if xinput.active() {
                 match xinput.take_feedback() {
                     Ok(motors) => motors,
@@ -3638,7 +3861,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 }
             }
         } else {
-            if Instant::now() >= next_scan {
+            if !native_handoff && Instant::now() >= next_scan {
                 let _ = api.refresh_devices();
                 match open_path(&api, preferred_path.as_deref()) {
                     Ok(Some(found)) => {

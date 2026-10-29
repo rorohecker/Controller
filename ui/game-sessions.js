@@ -8,7 +8,7 @@
   const text=(value,max)=>typeof value==='string'&&value.length<=max&&!/[\u0000-\u001f]/.test(value);
   function valid(p){
     const s={...sessionDefaults(),...p.session},m={...communityDefaults(),...p.community};
-    return typeof s.enabled==='boolean'&&['keep','native','xinput'].includes(s.inputRoute)&&['keep','off','system'].includes(s.audio)&&Number.isInteger(s.audioGain)&&s.audioGain>=0&&s.audioGain<=100&&typeof s.hideHint==='boolean'
+    return typeof s.enabled==='boolean'&&['keep','native','xinput'].includes(s.inputRoute)&&['keep','off','system','game'].includes(s.audio)&&Number.isInteger(s.audioGain)&&s.audioGain>=0&&s.audioGain<=100&&typeof s.hideHint==='boolean'
       &&['author','version','gameVersion','license'].every(key=>text(m[key],80))&&text(m.updatedAt,32)&&text(m.sourceUrl,1024)&&(!m.sourceUrl||/^https:\/\/[^\s]+$/.test(m.sourceUrl))
       &&Array.isArray(m.reports)&&m.reports.length<=20&&m.reports.every(r=>r&&['windows','macos','linux'].includes(r.platform)&&['usb','bluetooth'].includes(r.transport)&&['works','partial','broken'].includes(r.result)&&text(r.date,32)&&text(r.gameVersion,80)&&typeof r.notes==='string'&&r.notes.length<=300&&!r.notes.includes('\0'));
   }
@@ -56,7 +56,7 @@
     enqueue(task){const epoch=this.epoch;this.queue=this.queue.then(()=>epoch===this.epoch?task():undefined).catch(error=>{this.notice=String(error);this.a.toast(String(error));this.render();});return this.queue;}
     baseline(){
       const {state,profile}=this.a,p=profile(),baseline=new Map(this.current);
-      const defaults=[{action:'setControlProfile',settings:window.ControllerMotionStudio.defaults()},{action:'setXinput',enabled:state.xinput},{action:'setAudioBridge',enabled:state.audioBridge,gain:+$('bridge-gain').value/100,preset:$('bridge-preset').value},
+      const defaults=[{action:'setControlProfile',settings:window.ControllerMotionStudio.defaults()},{action:'setXinput',enabled:state.xinput},{action:'setAudioBridge',enabled:state.audioBridge,gain:+$('bridge-gain').value/100,preset:$('bridge-preset').value,source:copy(window.integrationStudio?.activeSource||{kind:'system'})},
         {action:'setGyroAim',...copy(p.gyroAim),enabled:state.gyroAim},{action:'setRemap',...copy(p.remap),enabled:state.remapArmed},
         {action:'setGameActions',enabled:false,rules:[]},{action:'setGameLink',settings:{enabled:false,port:6969,format:'json'}},
         {action:'setInputEffects',enabled:false,threshold:.82,strength:55},
@@ -85,7 +85,17 @@
         if(!await this.write({action:'setXinput',enabled:s.inputRoute==='xinput'},epoch))return this.restore();
       }
       if(s.audio!=='keep'&&window.controllerPlatform.systemAudioBridge){
-        if(!await this.write({action:'setAudioBridge',enabled:s.audio==='system',gain:s.audioGain/100,preset:'gentle'},epoch))return this.restore();
+        let source={kind:'system'};
+        if(s.audio==='game'){
+          try{
+            const info=await this.a.invoke('integration_info');
+            if(epoch!==this.epoch)return;
+            const candidates=(info?.processes||[]).filter(value=>value.name.toLowerCase()===p.matchExe.toLowerCase());
+            if(!info?.processCapture||!p.matchExe||candidates.length!==1)throw Error('Game audio needs one matching running executable and Windows process capture. Choose the process manually on Haptics if there are several.');
+            source={kind:'process',pid:candidates[0].pid};
+          }catch(error){await this.restore();this.notice=String(error);this.a.toast(this.notice);this.render();return;}
+        }
+        if(!await this.write({action:'setAudioBridge',enabled:s.audio!=='off',gain:s.audioGain/100,preset:'gentle',source},epoch))return this.restore();
       }
       if(epoch!==this.epoch)return;
       if(state.profileId!==p.id)await this.a.selectProfile(p.id,false);
@@ -142,7 +152,7 @@
       $('setup-pad').textContent=s.connected?`${s.name||'DualSense'} / ${s.transport}`:'Disconnected';
       $('setup-game').textContent=s.foregroundExe||'No external game focused';
       $('setup-route').textContent=window.controllerPlatform.xinput?(s.xinput?'Virtual Xbox 360':s.xinputStatus==='unavailable'?'Xbox driver unavailable':'Physical DualSense'):'Physical DualSense';
-      $('setup-source').textContent=[s.xinput?'Xbox rumble receiver':null,this.rulesActive?'Input actions':null,this.linkActive?'Game link':null,s.audioBridge?'System audio':null].filter(Boolean).join(' + ')||'Native game / no app effects';
+      $('setup-source').textContent=[s.xinput?'Xbox rumble receiver':null,this.rulesActive?'Input actions':null,this.linkActive?'Game link':null,s.audioBridge?(window.integrationStudio?.activeSource?.kind==='process'?'Game audio':window.integrationStudio?.activeSource?.kind==='nativeEndpoint'?'Native audio relay':'System audio'):null].filter(Boolean).join(' + ')||'Native game / no app effects';
       $('setup-profile').textContent=p.name;this.status.textContent=this.notice;this.eventStatus.textContent=this.last;
     }
     renderProfile(){
@@ -153,7 +163,7 @@
       grid.append(check('Manage settings while this game is focused','enabled'));
       if(window.controllerPlatform.xinput)grid.append(field('Input route',select([['keep','Keep current'],['native','Physical DualSense'],['xinput','Xbox 360 bridge']],s.inputRoute,v=>{s.inputRoute=v;save();})),check('Remind me to configure HidHide','hideHint'));
       if(window.controllerPlatform.systemAudioBridge){
-        grid.append(field('System audio haptics',select([['keep','Keep current'],['off','Off'],['system','On']],s.audio,v=>{s.audio=v;save();})));
+        grid.append(field('Audio haptics source',select([['keep','Keep current'],['off','Off'],['system','System audio'],['game','Matched game process']],s.audio,v=>{s.audio=v;save();})));
         const gain=n('input',{type:'number',min:0,max:100,value:s.audioGain});gain.addEventListener('change',()=>{s.audioGain=Math.round(Math.max(0,Math.min(100,Number(gain.value)||0)));gain.value=s.audioGain;save();});grid.append(field('Audio strength · %',gain));
       }
       this.sessionBody.replaceChildren(grid,n('p',{class:'pc-note',text:'Gyro, key remaps, triggers and action rules use this profile. Session changes restore when another app takes focus. Manual changes are kept. Xbox routing requires ViGEmBus on Windows. Hiding the physical pad remains a separate HidHide setup step.'}));

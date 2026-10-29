@@ -236,7 +236,7 @@
       $('footer-profile-state').textContent = this.saveError || this.loadError ? 'Profiles not saved' : this.writes.size ? 'Saving profiles' : !this.loadedOnce ? 'Loading profiles' : edited ? 'Profile edits not saved' : 'Profiles saved locally';
       this.bar.dataset.state = this.saveError || this.loadError ? 'error' : edited ? 'edited' : 'saved';
       const matching = this.applied?.id === p.id && stable(this.applied.settings) === stable(hardware(p));
-      const appliedText = this.pending ? 'Applying…' : !this.a.state.connected ? 'No controller' : this.applied && !this.uncertain ? matching ? 'Applied' : this.applied.id===p.id?'Changes not applied':'Another profile is applied' : this.applyMessage;
+      const appliedText = this.pending ? 'Applying…' : !this.a.state.connected ? this.handoff?'Released for native game':'No controller' : this.applied && !this.uncertain ? matching ? 'Applied' : this.applied.id===p.id?'Changes not applied':'Another profile is applied' : this.applyMessage;
       this.applyLabel.textContent = appliedText;
       this.changeList.textContent = this.saveError ? `Save failed: ${this.saveError}` : this.loadError ? `Profile load failed: ${this.loadError}. The editor contains defaults.` : changed.length ? `Unsaved: ${changed.join(', ')}.` : 'Saved profile matches the editor.';
       $('daily-revert').disabled = !saved || !edited || !!this.writes.size;
@@ -245,6 +245,7 @@
       this.renderSources();
     }
     renderSources() {
+      if(this.handoff){this.liveSources.textContent='Native game owns controller feedback outside this app. Resume monitoring to use app effects.';this.ruleSources.textContent='App input mappings and audio capture are stopped.';this.summary.textContent='Native game owns feedback';return;}
       const s = this.sources, now = performance.now(), audio = s.audio && now - s.audio.at < 4000 ? s.audio.value : null;
       const grips = [], speaker = [];
       if (audio) {
@@ -254,7 +255,7 @@
         if (audio.cueActive) grips.push('Haptic cue');
         if (audio.timelineActive) grips.push('Timeline');
         if (audio.gameActive) grips.push('Xbox rumble');
-        if (audio.bridge) grips.push('System audio');
+        if (audio.bridge) grips.push(audio.captureSource?.kind==='process'?'Selected app':audio.captureSource?.kind==='nativeEndpoint'?'Native audio relay':'System audio');
       }
       const report=s.report&&now-s.report.at<4000?s.report.value:null;
       if(report?.motorSource&&report.motorSource!=='Idle')grips.push(report.motorSource);
@@ -265,8 +266,10 @@
       this.summary.textContent = grips.length || speaker.length || timeline || report?.triggerSource&&report.triggerSource!=='Idle' || s.lease > now ? 'Changes · feedback active' : 'Changes and feedback';
     }
     event(e) {
+      if(e.type==='nativeHandoff'){this.handoff=!!e.enabled;this.changed();}
       if(e.type==='foreground')this.changed();
       if (e.type === 'device') {
+        if(e.connected)this.handoff=false;
         const owner = e.connected ? e.controllerId || e.path || `${e.name}/${e.transport}` : '';
         if (owner !== this.owner || !e.connected) { this.clearOutput(); this.owner = owner; this.applyMessage = 'Not applied'; }
         this.changed(); return;

@@ -1444,10 +1444,10 @@
     else if(!state.audioBridge)status.textContent='Bridge off';
     $('#haptic-route').textContent=!state.connected?'Route: PC audio preview':state.audioRoute==='voiceCoil'?'Route: USB voice coils':state.audioRoute==='motor'?'Route: motor fallback':state.transport==='Bluetooth'?'Route: Bluetooth motors':'Route: USB voice coils if available';
   }
-  $('#bridge-toggle').addEventListener('click',()=>send({action:'setAudioBridge',enabled:!state.audioBridge,gain:+$('#bridge-gain').value/100,preset:$('#bridge-preset').value}));
+  $('#bridge-toggle').addEventListener('click',()=>send({action:'setAudioBridge',enabled:!state.audioBridge,gain:+$('#bridge-gain').value/100,preset:$('#bridge-preset').value,source:window.integrationStudio?.commandSource()||{kind:'system'}}));
   $('#bridge-gain').addEventListener('input',e=>{$('#bridge-gain-value').textContent=`${e.target.value}%`;fillRange(e.target);});
-  $('#bridge-gain').addEventListener('change',()=>{if(state.audioBridge)send({action:'setAudioBridge',enabled:true,gain:+$('#bridge-gain').value/100,preset:$('#bridge-preset').value});});
-  $('#bridge-preset').addEventListener('change',()=>{if(state.audioBridge)send({action:'setAudioBridge',enabled:true,gain:+$('#bridge-gain').value/100,preset:$('#bridge-preset').value});});
+  $('#bridge-gain').addEventListener('change',()=>{if(state.audioBridge)send({action:'setAudioBridge',enabled:true,gain:+$('#bridge-gain').value/100,preset:$('#bridge-preset').value,source:window.integrationStudio?.commandSource()||{kind:'system'}});});
+  $('#bridge-preset').addEventListener('change',()=>{if(state.audioBridge)send({action:'setAudioBridge',enabled:true,gain:+$('#bridge-gain').value/100,preset:$('#bridge-preset').value,source:window.integrationStudio?.commandSource()||{kind:'system'}});});
 
   function renderAlerts(){
     const battery=$('#alert-low-battery');battery.textContent=`Low battery cue: ${state.lowBatteryAlert?'on':'off'}`;
@@ -1914,7 +1914,7 @@
   $('#battery-segments').innerHTML=Array.from({length:10},()=>'<i></i>').join('');
   function drawActivity(){const canvas=$('#activity-scope'),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);ctx.beginPath();state.activity.forEach((v,i)=>{const x=i/(state.activity.length-1)*w,y=h-8-v*(h-16);if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.lineWidth=3;ctx.strokeStyle='#d4a84b';ctx.stroke();ctx.fillStyle='#7ec9bc';const last=state.activity.at(-1);ctx.fillRect(w-5,h-8-last*(h-16)-4,8,8);}
   function handleEvent(event){
-    window.dailyUse?.event(event);window.motionStudio?.event(event);
+    window.integrationStudio?.event(event);window.dailyUse?.event(event);window.motionStudio?.event(event);
     window.hapticAuthoring?.event(event);
     window.gameSessions?.event(event);
     window.studioHooks?.event(event);
@@ -2123,6 +2123,7 @@
   window.motionStudio=new window.ControllerMotionStudio(window.controllerStudio);
   window.hapticAuthoring=new window.ControllerHapticAuthoring(window.controllerStudio);
   window.gameSessions=new window.ControllerGameSessions(window.controllerStudio);
+  window.integrationStudio=new window.ControllerIntegrations(window.controllerStudio);
   renderPlatform();
   start();
 })();
