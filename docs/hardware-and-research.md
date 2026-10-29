@@ -22,7 +22,7 @@ The GUI confirms “saved” only after the original snapshot is written. Backup
 
 The local editor supports the name, independent L2/R2 deadzones and grip/trigger strength fields of assigned revision-1 slots with a valid content CRC. The Fn + Triangle default remains read-only. Unknown bytes, stick curves, remaps, unique IDs and timestamps stay intact. Drafts have their own format and are not treated as original backups. **Writing a draft to the controller is not enabled.** No Edge was available to verify live reads or read-back after writing; this item remains experimental.
 
-Set both physical stops to full travel before calibration. Short stops reduce the travel available to your finger; onboard trigger deadzones and app calibration are separate. Sony documents the default shortcut as unchangeable and explains the interaction between trigger stops and adaptive effects in its [Edge setup guide](https://www.playstation.com/en-us/support/hardware/set-up-edge-controller/).
+Set both physical stops to full travel before calibration. Short stops reduce the travel available to your finger; onboard trigger deadzones and app calibration are separate. Sony documents the default shortcut as unchangeable in its [Edge setup guide](https://www.playstation.com/en-us/support/hardware/set-up-edge-controller/).
 
 Protocol reference: [DualSense Tester at 5bc7ece](https://github.com/daidr/dualsense-tester/tree/5bc7ecee9f9bd09c7a562b5f0f2cbc0c35c710f9), MIT, particularly `ProfileWidget.vue`, `_Profile/profile.ts` and `crc32.util.ts`. This app uses an original Rust implementation of the documented fields and content CRC; it does not copy controller artwork or the upstream writer.
 
