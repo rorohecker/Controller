@@ -36,13 +36,23 @@ impl ProcessCapture {
         }
     }
     pub(in crate::audio_haptics) fn start(shared: Arc<Shared>, pid: u32) -> Result<Self, String> {
-        WORKERS
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| {
-                (v < 2).then_some(v + 1)
-            })
-            .map_err(|_| {
-                "Previous process capture is still stopping. Try again shortly.".to_string()
-            })?;
+        let mut workers = WORKERS.load(Ordering::Acquire);
+        loop {
+            if workers >= 2 {
+                return Err(
+                    "Previous process capture is still stopping. Try again shortly.".into(),
+                );
+            }
+            match WORKERS.compare_exchange_weak(
+                workers,
+                workers + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(actual) => workers = actual,
+            }
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let signal = stop.clone();
         let state = Arc::new(AtomicU8::new(0));
