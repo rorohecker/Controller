@@ -412,3 +412,50 @@ input[type='range']:disabled { cursor: not-allowed; opacity: .65; }
 .radial-binding .check-row { min-width:0; }
 @media(max-width:900px){ .motion-stick-grid,.motion-radial-layout { grid-template-columns:minmax(0,1fr); } .radial-wheel { position:static; } }
 @media(max-width:500px){ .radial-binding { grid-template-columns:minmax(0,1fr); } .radial-binding>button { grid-row:auto; grid-column:1; } }
+
+/* Daily status uses functional colors; the existing art remains the backdrop. */
+.daily-bar { position:relative; z-index:4; display:grid; grid-template-columns:minmax(180px,1fr) auto auto; align-items:start; gap:14px; padding:12px 28px; border-bottom:1px solid #ad9884; color:#f2e6d4; background:linear-gradient(105deg,#383a3def,#4c3c47f2),url('./assets/observatory-pixel.png') center 60%/cover; }
+.daily-state { display:flex; gap:12px; flex-wrap:wrap; align-items:center; min-width:0; line-height:1.5; }
+.daily-state strong { color:#a3d9c0; }
+.daily-bar[data-state=edited] .daily-state strong { color:#f5d093; }
+.daily-bar[data-state=error] .daily-state strong { color:#ffb7a8; }
+.daily-state span { font-size:12px; overflow-wrap:anywhere; }
+.daily-details { min-width:0; font-size:12px; }
+.daily-details summary { cursor:pointer; padding:7px 4px; color:#e7d5ee; border-radius:3px; }
+.daily-details[open] { grid-column:2; }
+.daily-detail-content { position:absolute; z-index:8; right:28px; top:calc(100% - 1px); width:min(740px,calc(100% - 32px)); padding:18px; color:#293d43; background:linear-gradient(115deg,#fff7e8,#e7ebdf); border:1px solid #b29e87; border-radius:5px 5px 14px 5px; box-shadow:0 14px 30px #1b212f55; }
+.daily-detail-content p { margin:0 0 10px; line-height:1.6; overflow-wrap:anywhere; }
+.daily-detail-content small { display:block; line-height:1.5; margin-top:12px; color:#4c606a; }
+.daily-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.daily-actions button { color:#34434b; background:#e6d9c3; border:1px solid #b19c81; padding:9px 12px; }
+.stop-all { min-height:36px; padding:8px 16px; font:700 12px var(--body); color:#fff3e8; background:#754b4b; border:1px solid #d0a591; border-radius:4px; white-space:nowrap; }
+.stop-all:hover { background:#8f5550; }
+.daily-bar.is-away .stop-all { position:fixed; right:18px; bottom:18px; z-index:70; box-shadow:0 5px 20px #1b212f66; }
+.daily-bar[data-pulse=applied] { animation:daily-applied .65s ease-out; }
+.daily-bar[data-pulse=feedback] { animation:daily-feedback .65s ease-out; }
+@keyframes daily-applied { 35% { box-shadow:inset 0 -3px #abe5c6,0 3px 16px #75cfb566; } }
+@keyframes daily-feedback { 35% { box-shadow:inset 0 -3px #d8b8f0,0 3px 16px #d3a5e466; } }
+.range-with-tools { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; margin-block:4px 12px; min-width:0; }
+.range-with-tools>input[type=range] { flex:1 1 100px; width:0; min-width:60px; margin:0; }
+.range-tools { display:flex; align-items:center; justify-content:flex-end; flex:0 1 auto; gap:8px; margin:0; min-width:0; }
+.range-tools .range-number { width:72px; max-width:50%; min-width:0; padding:5px 8px; min-height:32px; color:#35464d; background:#fbf4e7; border:1px solid #a6b5b4; border-radius:4px; font:600 12px var(--body); font-variant-numeric:tabular-nums; }
+.range-tools button { min-height:32px; padding:5px 10px; font:600 11px var(--body); color:#35464d; background:#e7dcc8; border:1px solid #a6b5b4; border-radius:4px; }
+.hide-range-tools .range-tools { display:none; }
+#layout-preferences { min-width:0; }
+#layout-preferences .studio-body { display:grid; gap:14px; }
+:where(button,input,select,textarea,summary,[tabindex]):focus-visible { outline:3px solid #a45d37; outline-offset:3px; }
+.controls-panel :where(button,input,select,textarea):focus-visible,.daily-bar :focus-visible { outline-color:#f2ca89; }
+/* Small sections of the approved pixel art sit behind the panel headers. */
+.screen:not(#live) .framed>.panel-cap { background-size:cover,520px auto; background-blend-mode:normal,luminosity; }
+#triggers .framed>.panel-cap { background-position:center,22% 70%; }
+#haptics .framed>.panel-cap { background-position:center,70% 28%; }
+#profiles .framed>.panel-cap { background-position:center,10% 55%; }
+body[data-density=compact] .game-content,body[data-density=compact] .studio-body,body[data-density=compact] .controls-inner,body[data-density=compact] .settings-content { padding:16px; }
+body[data-density=compact] .page-heading { margin-bottom:12px; padding-bottom:12px; }
+body[data-density=compact] .game-form-grid { gap:10px; }
+body[data-density=compact] .radial-binding,body[data-density=compact] .motion-stick-card { padding:12px; }
+body[data-density=compact] .daily-bar { padding-block:8px; }
+body[data-density=compact] .range-tools { margin-bottom:8px; }
+body[data-density=compact] .work-panel,body[data-density=compact] .studio-card { margin-bottom:14px; }
+@media(max-width:800px){ .daily-bar { padding-inline:16px; grid-template-columns:minmax(0,1fr) auto; gap:6px 12px; } .daily-details,.daily-details[open] { grid-column:1; grid-row:2; } .daily-bar .stop-all { grid-column:2; grid-row:1/3; align-self:center; } .daily-state { gap:4px 12px; } }
+@media(prefers-reduced-motion:reduce){ .daily-bar { animation:none!important; } }

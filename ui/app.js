@@ -253,7 +253,7 @@
     item.append(time, detail); list.prepend(item);
     while (list.children.length > 11) list.lastChild.remove();
   }
-  async function send(command, sessionOwned=false) {
+  async function send(command, sessionOwned=false,applyTicket=null) {
     if (!native) { toast('Open the desktop app for hardware.'); return false; }
     const commandEpoch=window.gameSessions?.epoch;
     try { await invoke('send_command',{command});
@@ -261,8 +261,8 @@
       if(command.action==='applyTriggers')appliedTriggerState={profileId:state.profileId,triggers:clone({left:command.left,right:command.right}),inputEffects:clone(appliedTriggerState?.inputEffects||profile().inputEffects)};
       if(command.action==='setInputEffects'&&appliedTriggerState)appliedTriggerState.inputEffects=clone(command);
       if(command.action==='reset')appliedTriggerState=null;
-      window.gameSessions?.command(command,sessionOwned); window.studioHooks?.command(command); return true; }
-    catch (error) { toast(String(error)); log(`CORE ERROR / ${error}`); return false; }
+      window.gameSessions?.command(command,sessionOwned); window.studioHooks?.command(command); window.dailyUse?.command(command,applyTicket); return true; }
+    catch (error) { window.dailyUse?.commandFailed(error); toast(String(error)); log(`CORE ERROR / ${error}`); return false; }
   }
   function sendPcBindings(){
     if(state.connected)send({action:'setPcBindings',bindings:pcBindings.filter(b=>b.behavior!=='launch'||validAppPath(b.launchPath||'')),click_threshold:pcClickThreshold,pointer_sensitivity:pcPointerSensitivity,reverse_scroll:pcReverseScroll});
@@ -626,7 +626,7 @@
     if(!el)return;
     clearPadFocus();padFocus=el;el.classList.add('pad-focused');
     el.focus({preventScroll:true});
-    el.scrollIntoView({block:'nearest',behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'instant':'smooth'});
+    el.scrollIntoView({block:'nearest',behavior:(window.dailyUse?.reducedMotion()||matchMedia('(prefers-reduced-motion: reduce)').matches)?'instant':'smooth'});
   }
   function movePadFocus(direction){
     const controls=padControls();if(!controls.length)return;
@@ -758,6 +758,7 @@
       && new Set(bindings.map(b=>`${b.button}:${b.modifier??'base'}`)).size===bindings.length;
   }
   async function loadProfiles() {
+    let loaded=false,loadError='';
     try {
       const data = native ? await invoke('load_profiles') : JSON.parse(localStorage.getItem('aftertouch.profiles.v3') || localStorage.getItem('aftertouch.profiles.v2') || 'null');
       if (data && [1,2,3].includes(data.schemaVersion) && Array.isArray(data.profiles) && data.profiles.length && data.profiles.every(validProfile) && validLibrary(data.triggerPresets??[]) && window.ControllerHapticAuthoring.validLibrary(data.tactileClips??[])) {
@@ -765,23 +766,26 @@
         triggerPresets=Array.isArray(data.triggerPresets)?data.triggerPresets:[];
         window.hapticAuthoring.restore(data.tactileClips);
         state.profileId = state.profiles.some(p=>p.id===data.activeId) ? data.activeId : state.profiles[0].id;
-        state.autoApply = data.autoApply !== false;
+        state.autoApply = data.autoApply !== false;loaded=true;
       }
-    } catch (error) { log(`PROFILE LOAD / ${error}`); }
+      if(data&&!loaded){loadError='Invalid profile archive';log(`PROFILE LOAD / ${loadError}`);}
+    } catch (error) { loadError=String(error);log(`PROFILE LOAD / ${error}`); }
     renderAutoApply();
     renderAllProfileControls();
-    window.studioHooks?.loaded();
+    window.studioHooks?.loaded();window.dailyUse?.loaded(loaded,loadError);
   }
   function persistProfiles() {
     const data={schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles),triggerPresets:clone(triggerPresets),tactileClips:window.hapticAuthoring.archive()};
+    const saveId=window.dailyUse?.saving();
     saveChain=saveChain.catch(()=>{}).then(async()=>{
       if(native) await invoke('save_profiles',{data});
       else localStorage.setItem('aftertouch.profiles.v3',JSON.stringify(data));
+      window.dailyUse?.saved(data,saveId);
     });
-    return saveChain.then(()=>true).catch(error=>{toast(`Profile save failed: ${error}`);log(`PROFILE SAVE / ${error}`);return false;});
+    return saveChain.then(()=>true).catch(error=>{window.dailyUse?.saveFailed(saveId,error);toast(`Profile save failed: ${error}`);log(`PROFILE SAVE / ${error}`);return false;});
   }
   function saveProfiles(immediate=false) {
-    window.studioHooks?.capture();
+    window.studioHooks?.capture();window.dailyUse?.changed();
     clearTimeout(saveTimeout);
     if(immediate)return persistProfiles();
     saveTimeout=setTimeout(persistProfiles,180);
@@ -801,9 +805,9 @@
   $('#update-trigger-preset').addEventListener('click',async()=>{const p=triggerPresets.find(p=>p.id===$('#trigger-library').value);if(!p)return;const previous=clone(p);Object.assign(p,{name:$('#trigger-preset-name').value.trim()||p.name,triggers:clone(profile().triggers),inputEffects:clone(profile().inputEffects)});if(!await saveProfiles(true))Object.assign(p,previous);renderGameProfiles();});
   $('#load-trigger-preset').addEventListener('click',()=>{const p=triggerPresets.find(p=>p.id===$('#trigger-library').value);if(!p)return;profile().triggers=clone(p.triggers);profile().inputEffects=clone(p.inputEffects);renderTriggerControls();saveProfiles();toast(`Loaded ${p.name}. Press Apply to use it.`);});
   $('#delete-trigger-preset').addEventListener('click',async()=>{const id=$('#trigger-library').value;if(!id)return;const used=state.profiles.some(p=>p.weaponBindings.some(b=>b.presetId===id));if(used){toast('Remove this preset’s weapon mappings before deleting it.');return;}const previous=triggerPresets.slice();triggerPresets=triggerPresets.filter(p=>p.id!==id);if(!await saveProfiles(true))triggerPresets=previous;renderGameProfiles();});
-  async function applyGameRules(sessionOwned=false,epoch=window.gameSessions?.epoch){
-    const dispatch=command=>epoch===window.gameSessions?.epoch?send(command,sessionOwned):Promise.resolve(false);
-    const p=profile(),active=!state.pcMode&&!state.autoSuppressed&&(!p.matchExe||matchesForeground(p));
+  async function applyGameRules(sessionOwned=false,epoch=window.gameSessions?.epoch,p=profile(),applyTicket=null){
+    const dispatch=command=>epoch===window.gameSessions?.epoch?send(command,sessionOwned,applyTicket):Promise.resolve(false);
+    const active=!state.pcMode&&!state.autoSuppressed&&(!p.matchExe||matchesForeground(p));
     const a=await dispatch({action:'setGameActions',enabled:p.actionsEnabled&&active,rules:clone(p.actions)});
     const b=await dispatch({action:'setGameLink',settings:{...p.gameLink,enabled:p.gameLink.enabled&&active}});
     return a&&b;
@@ -860,22 +864,32 @@
   $('#add-weapon-binding').addEventListener('click',()=>{if(!triggerPresets.length){toast('Save a trigger preset on Triggers first.');return;}if(profile().weaponBindings.length>=100)return;let name='Weapon',i=1;while(profile().weaponBindings.some(b=>b.weapon===name))name=`Weapon ${++i}`;profile().weaponBindings.push({weapon:name,presetId:triggerPresets[0].id});saveProfiles();renderGameProfiles();});
   $('#apply-manual-weapon').addEventListener('click',()=>useWeapon($('#manual-weapon').value));
 
-  function renderAllProfileControls() { renderProfiles(); renderTriggerControls(); renderHapticControls(); renderRemapEditor(); renderGyroControls(); renderGameProfiles(); window.motionStudio?.renderProfile(); window.gameSessions?.renderProfile(); window.studioHooks?.renderProfile(); }
+  function renderAllProfileControls() { renderProfiles(); renderTriggerControls(); renderHapticControls(); renderRemapEditor(); renderGyroControls(); renderGameProfiles(); window.motionStudio?.renderProfile(); window.gameSessions?.renderProfile(); window.studioHooks?.renderProfile(); window.dailyUse?.changed(); }
 
-  async function applyProfileHardware(announce=true,sessionOwned=false,epoch=window.gameSessions?.epoch) {
-    const p = profile(), dispatch=command=>epoch===window.gameSessions?.epoch?send(command,sessionOwned):Promise.resolve(false);
+  let profileApplyQueue=Promise.resolve();
+  function applyProfileHardware(announce=true,sessionOwned=false,epoch=window.gameSessions?.epoch) {
+    const id=state.profileId;
+    const task=profileApplyQueue.catch(()=>{}).then(()=>id===state.profileId&&epoch===window.gameSessions?.epoch?applyProfileHardwareNow(announce,sessionOwned,epoch):false);
+    profileApplyQueue=task;return task;
+  }
+  async function applyProfileHardwareNow(announce,sessionOwned,epoch) {
+    const p = clone(profile()), dispatch=async command=>{
+      const ok=epoch===window.gameSessions?.epoch?await send(command,sessionOwned,requestId):false;
+      if(!ok)window.dailyUse?.abortApply(requestId);return ok;
+    };
     if(!announce&&state.autoSuppressed)return false;
     if (!state.connected) {
       if (announce) toast('Connect a controller.');
       return false;
     }
+    const requestId=window.dailyUse?.beginApply(p);
     if(!await dispatch({action:'setControlProfile',settings:clone(p.controls)}))return false;
     const ok = await dispatch({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right});
     if (!ok) return false;
     if (!await dispatch(inputEffectCommand(p.inputEffects))) return false;
     activeWeaponPreset='';
     if(announce)state.autoSuppressed=false;
-    if(!await applyGameRules(sessionOwned,epoch))return false;
+    if(!await applyGameRules(sessionOwned,epoch,p,requestId))return false;
     if (p.gyroAim) {
       if (!await dispatch({
         action:'setGyroAim',
@@ -897,6 +911,7 @@
         bindings: (p.remap.bindings||[]).map(b=>({button:+b.button,vk:+b.vk,modifier:b.modifier??null,behavior:b.behavior||'hold',sequence:b.sequence||[],chord:b.chord||[]}))
       })) return false;
     }
+    if(requestId!==undefined&&!await dispatch({action:'profileCheckpoint',requestId}))return false;
     if (announce) { state.autoSuppressed=false; toast(`Sent ${p.name} settings to controller`); log(`PROFILE / ${p.name} sent`); }
     return true;
   }
@@ -1657,7 +1672,7 @@
   }
 
   $('#diag-reset').addEventListener('click',()=>send({action:'reset'}));
-  $('#quick-reset').addEventListener('click',()=>send({action:'reset'}));
+  $('#quick-reset').addEventListener('click',()=>window.dailyUse.stopAll());
   function finishScan(){clearTimeout(scanTimeout);state.manualScan=false;$('#scan-button').setAttribute('aria-busy','false');$('#scan-button').setAttribute('aria-label','Scan for controllers');}
   async function manualScan(){
     if(state.manualScan)return;
@@ -1899,7 +1914,7 @@
   $('#battery-segments').innerHTML=Array.from({length:10},()=>'<i></i>').join('');
   function drawActivity(){const canvas=$('#activity-scope'),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);ctx.beginPath();state.activity.forEach((v,i)=>{const x=i/(state.activity.length-1)*w,y=h-8-v*(h-16);if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.lineWidth=3;ctx.strokeStyle='#d4a84b';ctx.stroke();ctx.fillStyle='#7ec9bc';const last=state.activity.at(-1);ctx.fillRect(w-5,h-8-last*(h-16)-4,8,8);}
   function handleEvent(event){
-    window.motionStudio?.event(event);
+    window.dailyUse?.event(event);window.motionStudio?.event(event);
     window.hapticAuthoring?.event(event);
     window.gameSessions?.event(event);
     window.studioHooks?.event(event);
@@ -2104,6 +2119,7 @@
     archive:()=>({schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles),triggerPresets:clone(triggerPresets),tactileClips:window.hapticAuthoring.archive()}),
     async replaceArchive(data){if(!data?.profiles?.length||!data.profiles.every(validProfile)||!validLibrary(data.triggerPresets||[])||!window.ControllerHapticAuthoring.validLibrary(data.tactileClips??[]))throw Error('Invalid archive');await send({action:'reset'});state.autoSuppressed=true;state.profiles=data.profiles.map(normalizeProfile);state.profileId=state.profiles.some(p=>p.id===data.activeId)?data.activeId:state.profiles[0].id;triggerPresets=data.triggerPresets||[];window.hapticAuthoring.restore(data.tactileClips);state.autoApply=data.autoApply!==false;renderAllProfileControls();return saveProfiles(true);}
   };
+  window.dailyUse=new window.ControllerDailyUse(window.controllerStudio);
   window.motionStudio=new window.ControllerMotionStudio(window.controllerStudio);
   window.hapticAuthoring=new window.ControllerHapticAuthoring(window.controllerStudio);
   window.gameSessions=new window.ControllerGameSessions(window.controllerStudio);

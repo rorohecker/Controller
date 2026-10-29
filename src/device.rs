@@ -33,6 +33,10 @@ use serde_json::json;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase")]
 pub enum DeviceCommand {
+    ProfileCheckpoint {
+        #[serde(rename = "requestId")]
+        request_id: u32,
+    },
     Scan,
     ListDevices,
     SelectDevice {
@@ -795,7 +799,7 @@ impl Connected {
         if timeline.last_event.elapsed() >= Duration::from_millis(50) {
             timeline.last_event = Instant::now();
             return Ok(Some(
-                json!({"type":"effectTimeline","playId":self.timeline_generation,"name":timeline.clip.name,"playing":true,"positionMs":elapsed,"durationMs":duration}),
+                json!({"type":"effectTimeline","playId":self.timeline_generation,"name":timeline.clip.name,"triggerMask":timeline.clip.trigger_mask(),"playing":true,"positionMs":elapsed,"durationMs":duration}),
             ));
         }
         Ok(None)
@@ -1526,6 +1530,16 @@ fn handle_command(
     preferred_path: &mut Option<String>,
 ) -> bool {
     match command {
+        DeviceCommand::ProfileCheckpoint { request_id } => {
+            // FIFO marker: all preceding commands and their error events have
+            // completed before this acknowledgement reaches the UI.
+            emit(
+                proxy,
+                json!({"type":"profileCheckpoint","requestId":request_id,
+                "connected":device.is_some(),"controllerId":device.as_ref().map(|d|&d.controller_id)}),
+            );
+            return true;
+        }
         DeviceCommand::SetGameRecording { enabled } => {
             game_link.record(enabled);
             return true;
@@ -2620,7 +2634,8 @@ fn handle_command(
                 "Effects reset"
             })
         }
-        DeviceCommand::Scan
+        DeviceCommand::ProfileCheckpoint { .. }
+        | DeviceCommand::Scan
         | DeviceCommand::Shutdown
         | DeviceCommand::ListDevices
         | DeviceCommand::SelectDevice { .. }
@@ -2742,6 +2757,52 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     }
                 }
                 emit(&proxy, connected.audio.diagnostics());
+                let now = Instant::now();
+                let trigger_source = if connected
+                    .timeline
+                    .as_ref()
+                    .is_some_and(|t| t.clip.trigger_mask() != 0)
+                {
+                    "Timeline"
+                } else if connected
+                    .input_effect_until
+                    .is_some_and(|until| until > now)
+                {
+                    "Weapon feedback"
+                } else if connected.action_until.is_some_and(|until| until > now) {
+                    "Game action"
+                } else if connected.trigger_active {
+                    "Profile preview"
+                } else {
+                    "Idle"
+                };
+                let motor_source = if connected.last_rumble.is_some_and(|v| v != [0, 0]) {
+                    if connected.haptic.is_some() {
+                        "Motor cue"
+                    } else if connected.game_rumble != [0, 0] {
+                        "Xbox rumble"
+                    } else {
+                        "Motor rumble"
+                    }
+                } else {
+                    "Idle"
+                };
+                let light_source = if connected.screen_light {
+                    "Screen color"
+                } else if connected.battery_light {
+                    "Battery"
+                } else if connected.sensor_light {
+                    "Sensor color"
+                } else if connected.light_active {
+                    "Custom color"
+                } else {
+                    "Released"
+                };
+                emit(
+                    &proxy,
+                    json!({"type":"feedbackState","controllerId":connected.controller_id,
+                    "triggerSource":trigger_source,"motorSource":motor_source,"lightSource":light_source}),
+                );
             }
             next_audio_status = Instant::now() + Duration::from_millis(250);
         }
@@ -3612,6 +3673,24 @@ mod tests {
     };
     use aftertouch_protocol as protocol;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn profile_checkpoints_preserve_bounded_request_ids() {
+        let command: DeviceCommand =
+            serde_json::from_str(r#"{"action":"profileCheckpoint","requestId":42}"#).unwrap();
+        assert!(matches!(
+            command,
+            DeviceCommand::ProfileCheckpoint { request_id: 42 }
+        ));
+        for value in [-1i64, i64::from(u32::MAX) + 1] {
+            assert!(
+                serde_json::from_value::<DeviceCommand>(
+                    serde_json::json!({"action":"profileCheckpoint","requestId":value})
+                )
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn bow_unloads_on_return_and_rearms_at_rest() {

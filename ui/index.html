@@ -14,6 +14,7 @@
   <script src="./game-sessions.js" defer></script>
   <script src="./haptic-authoring.js" defer></script>
   <script src="./motion-studio.js" defer></script>
+  <script src="./daily-use.js" defer></script>
   <script src="./app.js" defer></script>
   <script src="./studio.js" defer></script>
 </head>
@@ -40,7 +41,7 @@
       <div class="side-bottom">
         <div class="side-led"><span id="side-dot"></span><span id="side-state">Searching</span></div>
         <p>Local only</p>
-        <div class="side-code">0.17.0</div>
+        <div class="side-code">0.18.0</div>
       </div>
     </aside>
 
@@ -221,7 +222,7 @@
           <div class="diag-layout"><div class="work-panel framed"><div class="panel-cap"><span>Matrix</span><span id="diag-packet">—</span></div><div class="diag-device"><small>Connected</small><strong id="diag-device-name">Waiting</strong><span id="diag-transport">USB / Bluetooth</span><span id="diag-firmware">Firmware —</span></div><div class="device-picker"><div class="panel-cap sub"><span>Pads</span><span id="device-count">0</span></div><div id="device-list" class="device-list"></div></div><div class="button-matrix" id="button-matrix"></div><div class="diag-readouts"><div><span>L2</span><b id="diag-l2">0.00</b></div><div><span>R2</span><b id="diag-r2">0.00</b></div><div><span>Battery</span><b id="diag-battery">—</b></div><div><span>Health</span><b id="diag-health">—</b></div><div><span>Raw sensor</span><b id="diag-temp">—</b></div><div><span>Charge</span><b id="diag-charge">—</b></div><div data-feature="xinput"><span>XInput</span><b id="diag-xinput">Off</b></div><div><span>Rate</span><b id="diag-rate">—</b></div><div><span>Sequence gaps</span><b id="diag-gaps">—</b></div><div><span>Invalid</span><b id="diag-invalid">—</b></div></div><p class="diag-jack" id="diag-jack">Jack: —</p><div class="stick-checks"><div><strong>Center drift</strong><p>Leave both sticks still for five seconds to measure drift.</p><button id="start-drift" type="button" disabled>Measure drift</button><p id="drift-result" class="stick-result">No measurement yet.</p></div><div><strong>Circular travel</strong><p>Rotate both sticks around their rims for ten seconds.</p><button id="start-circularity" type="button" disabled>Check travel</button><p id="circularity-result" class="stick-result">No measurement yet.</p></div></div></div><aside class="controls-panel framed"><div class="panel-cap"><span>Output</span></div><div class="controls-inner diag-side"><div class="owner-status"><span class="status-square" id="owner-square"></span><div><small>Writer</small><strong id="owner-status">No pad</strong></div></div><p id="core-status" class="core-status">Core: starting</p><div class="update-panel" data-feature="updates"><strong>App updates</strong><p id="update-status" role="status">Checking release service…</p><div class="update-actions"><button id="check-update" class="quiet-action" type="button">Check now</button><button id="install-update" class="main-action" type="button" hidden>Install update</button></div></div><p id="conflict-message">Checking for other controller tools.</p><p class="diag-explainer">Gaps and invalid reports reset each second. Charge faults come from the status byte. Battery health and sensor temperature are not verified.</p><div class="diag-log-head">Log</div><ol id="event-log" class="event-log"></ol><button id="diag-reset" class="main-action" type="button" disabled>Reset output</button><button id="diag-scan" class="quiet-action" type="button">Scan</button><button id="copy-diagnostics" class="quiet-action" type="button">Copy diagnostics</button></div></aside></div>
         </section>
       </main>
-      <footer class="footer"><span>Game mode: games / PC control: desktop</span><span>Profiles saved locally</span></footer>
+      <footer class="footer"><span>Game mode: games / PC control: desktop</span><span id="footer-profile-state">Loading profiles</span></footer>
     </div>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>

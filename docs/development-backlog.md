@@ -44,11 +44,11 @@ Work in batches of five. Each batch includes regression checks, wording/layout r
 
 ## Batch 6 — Daily use and presentation
 
-26. Pending — Visible edited/saved/applied state, concise change summary and revert.
-27. Pending — Active feedback ownership display and accessible Stop all action.
-28. Pending — Functional color accents, event animations and approved pixel-art treatment.
-29. Pending — Compact/comfortable density, numeric/reset controls, reduced motion and keyboard focus.
-30. Pending — Layout checks at OS scaling levels and disconnected/loading/error/permission states.
+26. Complete — Visible edited/saved/applied state, concise change summary and revert.
+27. Complete — Active feedback ownership display and accessible Stop all action.
+28. Complete — Functional color accents, event animations and approved pixel-art treatment.
+29. Complete — Compact/comfortable density, numeric/reset controls, reduced motion and keyboard focus.
+30. Complete — Layout checks at OS scaling levels and disconnected/loading/error/permission states.
 
 ## Batch 7 — Platform and integration work
 
@@ -86,7 +86,7 @@ Batch 2 implementation is complete (0.15.5): native file picking/probing and wor
 
 The unpublished 0.15.4 candidate exposed an atomic API deprecation on CI's newer Rust toolchain. The counter now uses a compare/exchange loop compatible with both toolchains.
 
-Batch 3 is complete (0.15.7). Windows XInput notifications feed low/high grip waveforms over USB and motor rumble over Bluetooth, with explicit stops and a ten-second stale-command cutoff. The setup card shows actual route/receiver status and last received feedback. Opt-in game sessions restore routing, system-audio, gyro, remap, trigger and action settings while preserving manual overrides; HidHide remains manual. Rules add analog/digital input conditions, restart/ignore behavior, release cancellation and named cancel events. Exported profiles now retain author, version, source, reuse terms, maintenance date and up to 20 self-reported compatibility records. Old archives receive disabled session defaults. Regression coverage includes session exits/reset/manual overrides, platform visibility, conditional action timing, import validation and bounded/muted game-rumble mixing. Physical game vibration still needs validation with ViGEmBus and a game. Batches 4 and 5 are complete; Batch 6 is next. Driver/output calibration is item 46. Research claims and implementation status are tracked separately; experimental items must not be presented as supported features.
+Batch 3 is complete (0.15.7). Windows XInput notifications feed low/high grip waveforms over USB and motor rumble over Bluetooth, with explicit stops and a ten-second stale-command cutoff. The setup card shows actual route/receiver status and last received feedback. Opt-in game sessions restore routing, system-audio, gyro, remap, trigger and action settings while preserving manual overrides; HidHide remains manual. Rules add analog/digital input conditions, restart/ignore behavior, release cancellation and named cancel events. Exported profiles now retain author, version, source, reuse terms, maintenance date and up to 20 self-reported compatibility records. Old archives receive disabled session defaults. Regression coverage includes session exits/reset/manual overrides, platform visibility, conditional action timing, import validation and bounded/muted game-rumble mixing. Physical game vibration still needs validation with ViGEmBus and a game. Batches 4-6 are complete; Batch 7 is next. Driver/output calibration is item 46. Research claims and implementation status are tracked separately; experimental items must not be presented as supported features.
 
 The unpublished 0.15.6 candidate was stopped during final review: an external window-title change could rearm an active session's action mapper. The 0.15.7 correction preserves armed receivers and adds a regression check for this case.
 
@@ -95,3 +95,5 @@ Batch 4 implementation is complete (0.16.1): bounded eight-second timelines with
 The unpublished 0.16.0 candidate was stopped to include timeline playback in the audio source/routing panel. The 0.16.1 build includes native and browser regression checks for that status.
 
 Batch 5 implementation is complete (0.17.0): read-only factory IMU calibration, device timestamps, calibrated angular velocity and six-axis gravity fusion; native still-bias capture with per-controller storage; per-game counts-per-turn, aiming multiplier and opt-in flick stick; independent virtual Xbox stick curves and live raw/virtual values; and 4-8-sector touchpad shortcut menus with modal pointer capture, hysteresis, cancellation and optional grip cues. Factory/packet/timing tests, rate-independent aiming tests, stale-calibration ownership checks, native profile validation and portable browser roundtrips cover the changes. The nominal mouse gain and existing Xbox deadzone migrate without enabling new features. Stick shaping is Windows virtual-output only; native physical input is unaffected. Physical game aiming, radial feel and native desktop permissions on macOS/Linux remain unverified. See [motion and input](motion-input.md) for setup, evidence and limits. Progress: 25/46 items implemented.
+
+Batch 6 is complete (0.18.0): separate edited/saved/native-applied states, grouped change summaries and editor revert/restore; native output ownership with USB source inspection and an always-available Stop all; functional state accents, event animation and approved pixel-art header crops; local density/numeric/reset preferences, reduced motion and keyboard focus; and layout/state tests covering effective OS scaling from 100% to 200%. Profile application is serialized and uses a snapshot; native checkpoints are rejected after errors, manual interleaving, controller changes or Reset. Load/save failures remain explicit, and source reports expire. Browser checks include disconnected/loading/error and macOS permission-denied states; physical platform permissions remain unverified. See [daily use](daily-use.md). Progress: 30/46 items implemented.
