@@ -968,7 +968,7 @@ impl GripFilter {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, not(windows)))]
 fn record_audio_error(shared: &Shared, error: cpal::Error, route: &str) {
     if error.kind() == cpal::ErrorKind::Xrun {
         // CPAL continues streaming after a WASAPI discontinuity; a glitch is not a stopped stream.
