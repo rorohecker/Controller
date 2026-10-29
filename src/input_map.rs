@@ -1,4 +1,8 @@
-//! Gyro aim, touch gestures, and button→keyboard remapping via SendInput.
+#[path = "controls.rs"]
+pub mod controls;
+#[path = "motion.rs"]
+pub mod motion;
+// Gyro aim, touch gestures, and keyboard remapping.
 
 use aftertouch_protocol::{InputState, TouchPoint};
 use serde::Deserialize;
@@ -313,7 +317,11 @@ impl DesktopMapper {
         }
     }
 
-    fn release_all(&mut self) {
+    pub fn cancel_for_modal(&mut self) {
+        self.release_all();
+        self.wait_release = true;
+    }
+    pub fn release_all(&mut self) {
         self.stop_macros();
         if self.left_down {
             send_mouse(0, 0, 0, MOUSEEVENTF_LEFTUP);
@@ -455,7 +463,6 @@ pub struct GyroAimConfig {
     pub pitch_scale: f32,
     pub invert_y: bool,
     pub activation: GyroActivation,
-    pub bias: [i16; 3],
     pub deadzone: u16,
     pub smoothing: f32,
 }
@@ -501,7 +508,7 @@ pub struct GyroAimMapper {
     pub config: GyroAimConfig,
     remainder_x: f32,
     remainder_y: f32,
-    last_sample: Option<Instant>,
+    flick: controls::FlickState,
     filtered: [f32; 2],
 }
 
@@ -510,56 +517,98 @@ impl GyroAimMapper {
         self.config = config;
         self.remainder_x = 0.0;
         self.remainder_y = 0.0;
-        self.last_sample = None;
+        self.flick.reset();
         self.filtered = [0.0; 2];
     }
 
-    pub fn update(&mut self, input: &InputState) {
-        if !self.config.enabled || !input.full_report || !self.config.activation.active(input) {
-            self.last_sample = None;
+    pub fn compute(
+        &mut self,
+        input: &InputState,
+        motion: &motion::MotionReading,
+        settings: &controls::MotionSettings,
+        suspended: bool,
+    ) -> [i32; 2] {
+        if self.config.enabled
+            && motion.valid
+            && !suspended
+            && !input.panic_combo
+            && motion.clock == "duplicate"
+        {
+            return [0; 2];
+        }
+        if !self.config.enabled
+            || !motion.valid
+            || suspended
+            || input.panic_combo
+            || motion.dt <= 0.0
+        {
             self.remainder_x = 0.0;
             self.remainder_y = 0.0;
             self.filtered = [0.0; 2];
-            return;
+            self.flick.reset();
+            return [0; 2];
         }
-        let now = Instant::now();
-        let dt = self
-            .last_sample
-            .replace(now)
-            .map(|previous| now.duration_since(previous).as_secs_f32().min(0.025))
-            .unwrap_or(0.0);
-        if dt == 0.0 {
-            return;
-        }
-        // The Linux driver documents 1024 raw units per degree per second.
-        // Integrating with elapsed time keeps pointer speed stable across USB and BT rates.
-        let raw_yaw = (input.gyro[2] as i32 - self.config.bias[2] as i32) as f32;
-        let raw_pitch = (input.gyro[0] as i32 - self.config.bias[0] as i32) as f32;
-        let deadzone = self.config.deadzone.min(512) as f32;
-        let suppress_noise = |value: f32| value.signum() * (value.abs() - deadzone).max(0.0);
-        let target = [suppress_noise(raw_yaw), suppress_noise(raw_pitch)];
+        let dt = motion.dt;
+        let active = self.config.activation.active(input);
+        let axes = motion::aim_axes(motion, settings.space == "world");
+        let deadzone = f32::from(self.config.deadzone) / 1024.0;
+        let target = if active {
+            axes.map(|v| v.signum() * (v.abs() - deadzone).max(0.0))
+        } else {
+            [0.0; 2]
+        };
         let tau = 0.002 + self.config.smoothing.clamp(0.0, 0.85) * 0.065;
         let blend = 1.0 - (-dt / tau).exp();
-        for (filtered, target) in self.filtered.iter_mut().zip(target) {
-            *filtered += (target - *filtered) * blend;
+        if active {
+            for (filtered, target) in self.filtered.iter_mut().zip(target) {
+                *filtered += (target - *filtered) * blend;
+            }
+        } else {
+            self.filtered = [0.0; 2];
         }
-        let sens = self.config.sensitivity.clamp(0.05, 8.0);
-        let to_pixels = |raw: f32| raw / 1024.0 * dt * 18.0;
-        let dx = to_pixels(self.filtered[0]) * self.config.yaw_scale.clamp(0.0, 4.0) * sens;
-        let mut dy = to_pixels(self.filtered[1]) * self.config.pitch_scale.clamp(0.0, 4.0) * sens;
-        if self.config.invert_y {
-            dy = -dy;
-        }
-        self.remainder_x += dx;
-        self.remainder_y += dy;
-        self.remainder_x = self.remainder_x.clamp(-48.0, 48.0);
-        self.remainder_y = self.remainder_y.clamp(-48.0, 48.0);
-        let mx = self.remainder_x.trunc() as i32;
-        let my = self.remainder_y.trunc() as i32;
-        if mx != 0 || my != 0 {
-            self.remainder_x -= mx as f32;
-            self.remainder_y -= my as f32;
-            send_mouse(mx, my, 0, MOUSEEVENTF_MOVE);
+        let aim = if input.buttons[usize::from(settings.aim_button)] > 0.15 {
+            settings.aim_multiplier
+        } else {
+            1.0
+        };
+        let scale = settings.counts_per_turn / 360.0;
+        let flick = if settings.flick_enabled {
+            self.flick
+                .update([input.axes[2], input.axes[3]], dt, settings)
+        } else {
+            self.flick.reset();
+            0.0
+        };
+        let dx = (self.filtered[0] * dt * self.config.yaw_scale * self.config.sensitivity * aim
+            + flick)
+            * scale;
+        let dy = self.filtered[1]
+            * dt
+            * self.config.pitch_scale
+            * self.config.sensitivity
+            * aim
+            * scale
+            * if self.config.invert_y { -1.0 } else { 1.0 };
+        self.remainder_x = (self.remainder_x + dx).clamp(-100_000.0, 100_000.0);
+        self.remainder_y = (self.remainder_y + dy).clamp(-100_000.0, 100_000.0);
+        let output = [
+            self.remainder_x.trunc().clamp(-2000.0, 2000.0) as i32,
+            self.remainder_y.trunc().clamp(-2000.0, 2000.0) as i32,
+        ];
+        self.remainder_x -= output[0] as f32;
+        self.remainder_y -= output[1] as f32;
+        output
+    }
+    pub fn update(
+        &mut self,
+        input: &InputState,
+        motion: &motion::MotionReading,
+        settings: &controls::MotionSettings,
+        suspended: bool,
+    ) {
+        let [x, y] = self.compute(input, motion, settings, suspended);
+        if x != 0 || y != 0 {
+            send_mouse(x, y, 0, MOUSEEVENTF_MOVE);
         }
     }
 }
@@ -856,6 +905,19 @@ impl EdgeGesture {
 }
 
 impl MouseMapper {
+    pub fn cancel_pointer(&mut self) {
+        if self.left_down {
+            send_mouse(0, 0, 0, MOUSEEVENTF_LEFTUP);
+        }
+        self.left_down = false;
+        self.previous = None;
+        self.previous_scroll = None;
+        self.previous_angle = None;
+        self.edge_anchor = None;
+        self.previous_zone = None;
+        self.last_zone_tick = None;
+        self.wheel_remainder = 0.0;
+    }
     pub fn enabled(&self) -> bool {
         self.enabled
     }
@@ -1051,7 +1113,7 @@ fn send_mouse(dx: i32, dy: i32, wheel: i32, flags: u32) {
 }
 
 #[cfg(windows)]
-fn send_key(vk: u16, up: bool) {
+pub(super) fn send_key(vk: u16, up: bool) {
     let input = INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -1076,7 +1138,7 @@ fn send_mouse(dx: i32, dy: i32, wheel: i32, flags: u32) {
     crate::native_input::mouse(dx, dy, wheel, flags);
 }
 #[cfg(not(windows))]
-fn send_key(vk: u16, up: bool) {
+pub(super) fn send_key(vk: u16, up: bool) {
     crate::native_input::key(vk, up);
 }
 
@@ -1099,6 +1161,85 @@ fn tap_key(vk: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn calibrated_gyro_counts_match_across_sample_rates_and_zero_axis_scales() {
+        let run = |ticks, axis_scale| {
+            let mut input = aftertouch_protocol::parse_input(&[1; 64]).unwrap();
+            input.buttons = [0.0; 23];
+            input.axes = [0.0; 4];
+            input.gyro = [0, 0, 1440];
+            input.accel = [0, 0, 8192];
+            let mut processor = motion::MotionProcessor::default();
+            let mut mapper = GyroAimMapper::default();
+            mapper.set_config(GyroAimConfig {
+                enabled: true,
+                sensitivity: 1.0,
+                yaw_scale: axis_scale,
+                pitch_scale: 1.0,
+                ..Default::default()
+            });
+            let settings = controls::MotionSettings {
+                counts_per_turn: 3600.0,
+                ..Default::default()
+            };
+            let mut counts = 0;
+            for tick in (0..=3_000_000u32).step_by(ticks) {
+                input.sensor_timestamp = Some(tick);
+                let reading = processor.update(&input, Instant::now());
+                counts += mapper.compute(&input, &reading, &settings, false)[0];
+            }
+            counts
+        };
+        assert!((895..=901).contains(&run(3000, 1.0)));
+        assert!((895..=901).contains(&run(12000, 1.0)));
+        assert_eq!(run(3000, 0.0), 0);
+    }
+    #[test]
+    fn duplicate_sensor_reports_do_not_cancel_a_flick_but_focus_changes_do() {
+        let mut input = aftertouch_protocol::parse_input(&[1; 64]).unwrap();
+        input.buttons = [0.0; 23];
+        input.axes = [0.0; 4];
+        input.gyro = [0; 3];
+        input.accel = [0, 0, 8192];
+        let mut processor = motion::MotionProcessor::default();
+        let mut mapper = GyroAimMapper::default();
+        mapper.set_config(GyroAimConfig {
+            enabled: true,
+            sensitivity: 1.0,
+            yaw_scale: 1.0,
+            pitch_scale: 1.0,
+            ..Default::default()
+        });
+        let settings = controls::MotionSettings {
+            counts_per_turn: 3600.0,
+            flick_enabled: true,
+            ..Default::default()
+        };
+        input.sensor_timestamp = Some(0);
+        let r = processor.update(&input, Instant::now());
+        mapper.compute(&input, &r, &settings, false);
+        input.sensor_timestamp = Some(30000);
+        let r = processor.update(&input, Instant::now());
+        mapper.compute(&input, &r, &settings, false);
+        input.axes[2] = 1.0;
+        input.sensor_timestamp = Some(60000);
+        let r = processor.update(&input, Instant::now());
+        let mut total = mapper.compute(&input, &r, &settings, false)[0];
+        let duplicate = processor.update(&input, Instant::now());
+        assert_eq!(mapper.compute(&input, &duplicate, &settings, false), [0; 2]);
+        input.axes[2] = 0.0;
+        for i in 3..=15 {
+            input.sensor_timestamp = Some(i * 30000);
+            let r = processor.update(&input, Instant::now());
+            total += mapper.compute(&input, &r, &settings, false)[0];
+        }
+        assert!((899..=901).contains(&total));
+        input.axes[2] = 1.0;
+        input.sensor_timestamp = Some(480000);
+        let r = processor.update(&input, Instant::now());
+        assert_eq!(mapper.compute(&input, &r, &settings, true), [0; 2]);
+        assert_eq!(mapper.compute(&input, &r, &settings, false), [0; 2]);
+    }
 
     #[test]
     fn measured_ranges_adjust_trigger_stick_and_touch_readouts() {
@@ -1106,7 +1247,11 @@ mod tests {
         input.axes = [0.1, -0.5, 0.7, 0.0];
         input.buttons[6] = 0.65;
         input.buttons[7] = 0.55;
-        input.touch[0] = Some(TouchPoint { x: 0.8, y: 0.2 });
+        input.touch[0] = Some(TouchPoint {
+            id: 0,
+            x: 0.8,
+            y: 0.2,
+        });
         let calibration = InputCalibration {
             axis_centers: [0.1, 0.0, 0.0, 0.0],
             axis_mins: [-0.8; 4],
@@ -1244,7 +1389,11 @@ mod tests {
 
     #[test]
     fn edge_tap_does_not_fire_but_inward_swipe_does() {
-        let start = TouchPoint { x: 0.04, y: 0.5 };
+        let start = TouchPoint {
+            id: 0,
+            x: 0.04,
+            y: 0.5,
+        };
         let mut gesture = EdgeGesture {
             started: Instant::now(),
             left: true,
@@ -1275,8 +1424,16 @@ mod tests {
     #[test]
     fn touch_zone_tick_only_fires_on_a_new_zone() {
         let mut mapper = MouseMapper::default();
-        let centre = TouchPoint { x: 0.5, y: 0.5 };
-        let left = TouchPoint { x: 0.05, y: 0.5 };
+        let centre = TouchPoint {
+            id: 0,
+            x: 0.5,
+            y: 0.5,
+        };
+        let left = TouchPoint {
+            id: 0,
+            x: 0.05,
+            y: 0.5,
+        };
         assert_eq!(mapper.update_zone([Some(centre), None]), None);
         assert_eq!(mapper.update_zone([Some(left), None]), Some(TouchCue::Left));
         assert_eq!(mapper.update_zone([Some(left), None]), None);
@@ -1301,10 +1458,12 @@ mod tests {
             let y = angle.sin() * 0.15;
             input.touch = [
                 Some(TouchPoint {
+                    id: 0,
                     x: 0.5 - x,
                     y: 0.5 - y,
                 }),
                 Some(TouchPoint {
+                    id: 0,
                     x: 0.5 + x,
                     y: 0.5 + y,
                 }),

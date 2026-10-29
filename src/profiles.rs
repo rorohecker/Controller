@@ -45,6 +45,8 @@ struct Profile {
     #[serde(default)]
     gyro_aim: GyroAimSettings,
     #[serde(default)]
+    controls: crate::input_map::controls::ControlProfile,
+    #[serde(default)]
     remap: RemapSettings,
     #[serde(default)]
     input_effects: InputEffectSettings,
@@ -411,6 +413,7 @@ fn validate(data: Value) -> Result<Archive, String> {
     }
     let mut ids = std::collections::HashSet::new();
     for p in &archive.profiles {
+        p.controls.validate().map_err(str::to_string)?;
         if !matches!(p.session.input_route.as_str(), "keep" | "native" | "xinput")
             || !matches!(p.session.audio.as_str(), "keep" | "off" | "system")
             || p.session.audio_gain > 100
@@ -891,6 +894,35 @@ mod tests {
     fn archive_rejects_out_of_range_trigger() {
         let mut value = sample_profile();
         value["profiles"][0]["triggers"]["left"]["strength"] = 101.into();
+        assert!(validate(value).is_err());
+    }
+
+    #[test]
+    fn motion_controls_roundtrip_and_legacy_defaults() {
+        let mut value = sample_profile();
+        let legacy = serde_json::to_value(validate(value.clone()).unwrap()).unwrap();
+        let controls = &legacy["profiles"][0]["controls"];
+        assert_eq!(controls["motion"]["countsPerTurn"], 101.25);
+        assert_eq!(controls["motion"]["flickEnabled"], false);
+        assert_eq!(controls["radial"]["enabled"], false);
+        value["profiles"][0]["controls"] = controls.clone();
+        value["profiles"][0]["controls"]["motion"]["countsPerTurn"] = 3600.into();
+        value["profiles"][0]["controls"]["sticks"]["left"]["mode"] = "radial".into();
+        value["profiles"][0]["controls"]["radial"]["sectors"][0]["chord"] =
+            serde_json::json!([18, 9]);
+        let saved = serde_json::to_value(validate(value.clone()).unwrap()).unwrap();
+        assert_eq!(
+            saved["profiles"][0]["controls"]["motion"]["countsPerTurn"],
+            3600.0
+        );
+        assert_eq!(
+            saved["profiles"][0]["controls"]["radial"]["sectors"][0]["chord"],
+            serde_json::json!([18, 9])
+        );
+        value["profiles"][0]["controls"]["motion"]["countsPerTurn"] = 0.into();
+        assert!(validate(value.clone()).is_err());
+        value["profiles"][0]["controls"]["motion"]["countsPerTurn"] = 3600.into();
+        value["profiles"][0]["controls"]["radial"]["activationButton"] = 1.into();
         assert!(validate(value).is_err());
     }
 

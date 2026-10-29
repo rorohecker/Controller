@@ -21,7 +21,7 @@ def mock_core(page):
           if (name === 'set_close_to_tray') { window.mockAppSettings.closeToTray=args.enabled; return null; }
           if (name === 'set_start_on_login') { window.mockAppSettings.startOnLogin=args.enabled; return null; }
           if (name === 'platform_capabilities') return {os:'windows',desktopInput:true,xinput:true,screenColor:true,systemAudioBridge:true};
-          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.16.1'}; }
+          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.17.0'}; }
           if (name === 'install_update') { window.installedUpdate=true; return null; }
           if (name === 'send_demo_telemetry') { window.demoPort=args.port; return null; }
           if (name === 'open_driver_setup') { window.driverOpened=args.kind; return 'Driver setup opened'; }
@@ -97,7 +97,7 @@ def main():
         assert not page.evaluate("window.sent.some(c=>c.action==='playHaptic')")
         page.locator('[data-view="diagnostics"]').click()
         page.locator("#check-update").click()
-        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.16.1 is current')")
+        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.17.0 is current')")
         assert page.locator("#install-update").is_hidden()
         page.locator('[data-view="settings"]').click()
         assert page.locator('#close-to-tray').is_checked()
@@ -106,9 +106,9 @@ def main():
         page.locator('#start-on-login').check()
         page.wait_for_function("window.mockAppSettings.startOnLogin===true")
         page.locator('[data-view="diagnostics"]').click()
-        page.evaluate("window.mockUpdateVersion='0.16.1'")
+        page.evaluate("window.mockUpdateVersion='0.17.0'")
         page.locator("#check-update").click()
-        page.wait_for_function("document.querySelector('#install-update').textContent.includes('0.16.1')")
+        page.wait_for_function("document.querySelector('#install-update').textContent.includes('0.17.0')")
         assert page.locator("#install-update").is_visible()
         page.locator("#install-update").click()
         page.wait_for_function("window.installedUpdate===true")
@@ -472,11 +472,10 @@ def main():
         page.locator('[data-view="touch"]').click()
         assert "circle" in page.locator("#touch-gesture-toggle").locator("xpath=..//p").inner_text().lower()
         page.locator("#gyro-calibrate").click()
-        for _ in range(28):
-            page.evaluate("window.coreHandler({type:'input',input:{buttons:Array(23).fill(0),axes:[0,0,0,0],touch:[null,null],gyro:[12,-5,35],battery:75,charging:false,fullReport:true}})")
-        page.wait_for_timeout(2300)
-        assert "12 / -5 / 35" in page.locator("#gyro-calibration-status").inner_text()
-        assert page.evaluate("window.sent.some(c=>c.action==='setGyroAim' && c.bias?.[2]===35)")
+        assert page.evaluate("window.sent.some(c=>c.action==='calibrateMotion'&&c.enabled)")
+        page.evaluate("window.coreHandler({type:'motionCalibration',status:'complete',biasDps:[.75,-.3125,2.1875]})")
+        assert "Still bias saved" in page.locator("#gyro-calibration-status").inner_text()
+        assert page.evaluate("Object.values(JSON.parse(localStorage.getItem('controller.motionBias.v1'))).some(b=>b[2]===2.1875)")
         page.locator('[data-view="diagnostics"]').click()
         page.evaluate("window.coreHandler({type:'rate',reportsPerSecond:249,sequenceGaps:2,invalidReports:1})")
         assert page.locator("#diag-rate").inner_text() == "249 / S"

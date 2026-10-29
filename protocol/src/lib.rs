@@ -172,6 +172,7 @@ impl TriggerSetting {
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 pub struct TouchPoint {
+    pub id: u8,
     pub x: f32,
     pub y: f32,
 }
@@ -284,6 +285,8 @@ pub struct InputState {
     pub battery_info: BatteryInfo,
     pub touch: [Option<TouchPoint>; 2],
     pub gyro: [i16; 3],
+    pub accel: [i16; 3],
+    pub sensor_timestamp: Option<u32>,
     /// Incrementing report sequence in full USB/Bluetooth reports.
     pub sequence: Option<u8>,
     pub panic_combo: bool,
@@ -301,6 +304,7 @@ fn touch_point(bytes: &[u8]) -> Option<TouchPoint> {
     let x = bytes[1] as u16 | (((bytes[2] & 0x0f) as u16) << 8);
     let y = ((bytes[2] >> 4) as u16) | ((bytes[3] as u16) << 4);
     Some(TouchPoint {
+        id: bytes[0] & 0x7f,
         x: (x as f32 / 1920.0).clamp(0.0, 1.0),
         y: (y as f32 / 1080.0).clamp(0.0, 1.0),
     })
@@ -348,6 +352,8 @@ pub fn parse_input(data: &[u8]) -> Option<InputState> {
             battery_info,
             touch: [None, None],
             gyro: [0; 3],
+            accel: [0; 3],
+            sensor_timestamp: None,
             sequence: None,
             panic_combo: data[7] & 1 != 0 && data[6] & 0x20 != 0,
             full_report: false,
@@ -389,6 +395,8 @@ pub fn parse_input(data: &[u8]) -> Option<InputState> {
         battery_info,
         touch: [touch_point(&body[32..36]), touch_point(&body[36..40])],
         gyro,
+        accel: std::array::from_fn(|i| i16::from_le_bytes([body[21 + i * 2], body[22 + i * 2]])),
+        sensor_timestamp: Some(u32::from_le_bytes(body[27..31].try_into().ok()?)),
         sequence: Some(body[6]),
         panic_combo: b2 & 1 != 0 && b1 & 0x20 != 0, // PS + Options
         full_report: true,
@@ -617,6 +625,37 @@ pub fn crc32_seeded(seed: u8, data: &[u8]) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn motion_and_contact_fields_match_on_usb_and_bluetooth() {
+        let mut usb = [0u8; 64];
+        usb[0] = 1;
+        let body = &mut usb[1..];
+        for (index, value) in [123i16, -456, 789, -234, 567, 8192].into_iter().enumerate() {
+            body[15 + index * 2..17 + index * 2].copy_from_slice(&value.to_le_bytes());
+        }
+        body[27..31].copy_from_slice(&0xffff_ff00u32.to_le_bytes());
+        body[32..36].copy_from_slice(&[37, 0xc0, 0x43, 0x02]); // (960, 36), contact 37
+        body[36] = 0x80;
+        let mut bluetooth = [0u8; 78];
+        bluetooth[0] = 0x31;
+        bluetooth[2..65].copy_from_slice(&usb[1..]);
+        let crc = crc32_seeded(0xa1, &bluetooth[..74]);
+        bluetooth[74..].copy_from_slice(&crc.to_le_bytes());
+        for packet in [usb.as_slice(), bluetooth.as_slice()] {
+            let input = parse_input(packet).unwrap();
+            assert_eq!(input.gyro, [123, -456, 789]);
+            assert_eq!(input.accel, [-234, 567, 8192]);
+            assert_eq!(input.sensor_timestamp, Some(0xffff_ff00));
+            let point = input.touch[0].unwrap();
+            assert_eq!(point.id, 37);
+            assert_eq!(point.x, 0.5);
+            assert!((point.y - 36.0 / 1080.0).abs() < 0.0001);
+            assert!(input.touch[1].is_none());
+        }
+        bluetooth[24] ^= 1;
+        assert!(parse_input(&bluetooth).is_none());
+    }
 
     #[test]
     fn full_motor_power_clears_reduction_and_survives_bluetooth_framing() {

@@ -5,6 +5,10 @@ use std::{
 };
 
 use crate::audio_haptics::authoring::{EffectClip, PersonalSettings, limit_trigger};
+use crate::input_map::{
+    controls::{ControlProfile, RadialMapper},
+    motion::{FactoryCalibration, MotionProcessor},
+};
 use crate::{
     audio_haptics::{AudioEngine, VoiceClip},
     game_actions::{ActionMapper, ActionRule},
@@ -39,6 +43,17 @@ pub enum DeviceCommand {
         right: TriggerSetting,
     },
     RenewTriggers,
+    SetControlProfile {
+        settings: ControlProfile,
+    },
+    SetMotionBias {
+        #[serde(rename = "biasDps")]
+        bias_dps: [f32; 3],
+    },
+    CalibrateMotion {
+        enabled: bool,
+    },
+    CancelRadial,
     PlayEffectClip {
         clip: EffectClip,
         #[serde(rename = "playId")]
@@ -337,6 +352,10 @@ struct Connected {
     microphone_muted: Option<bool>,
     desktop: DesktopMapper,
     calibration: InputCalibration,
+    controls: ControlProfile,
+    motion: MotionProcessor,
+    radial: RadialMapper,
+    last_motion_event: Instant,
     last_input_sent: Instant,
     last_input_buttons: [bool; 23],
     last_valid_report: Instant,
@@ -1018,6 +1037,9 @@ impl Connected {
 
     fn reset(&mut self) -> Result<(), String> {
         self.desktop.set_enabled(false);
+        let _ = self.radial.set(Default::default());
+        self.motion.reset();
+        self.controls = ControlProfile::default();
         self.haptic = None;
         self.audio.stop();
         self.game_rumble = [0, 0];
@@ -1339,11 +1361,16 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     }
                     _ => (None, None),
                 };
-                if matches!(info.bus_type(), BusType::Bluetooth) {
-                    let mut feature = [0u8; 41];
-                    feature[0] = 0x05;
-                    let _ = hid.get_feature_report(&mut feature);
-                }
+                let mut feature = [0u8; 41];
+                feature[0] = 5;
+                let factory = match hid.get_feature_report(&mut feature) {
+                    Ok(length) => FactoryCalibration::parse(
+                        &feature[..length.min(feature.len())],
+                        matches!(info.bus_type(), BusType::Bluetooth),
+                    )
+                    .unwrap_or_else(FactoryCalibration::fallback),
+                    Err(_) => FactoryCalibration::default(),
+                };
                 let display = path_key(info);
                 let controller_id = controller_identity(info, &hid);
                 return Ok(Some(Connected {
@@ -1373,6 +1400,10 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     microphone_muted: None,
                     desktop: DesktopMapper::default(),
                     calibration: InputCalibration::default(),
+                    controls: ControlProfile::default(),
+                    motion: MotionProcessor::with_factory(factory),
+                    radial: RadialMapper::default(),
+                    last_motion_event: Instant::now(),
                     last_input_sent: Instant::now() - Duration::from_secs(1),
                     last_input_buttons: [false; 23],
                     last_valid_report: Instant::now(),
@@ -1470,6 +1501,7 @@ fn emit_connected(proxy: &Sender<serde_json::Value>, found: &Connected) {
             "firmware": found.firmware,
             "path": found.path_display,
             "controllerId": found.controller_id,
+            "motionFactory":{"valid":found.motion.factory.valid,"message":found.motion.factory.message},
             "productId": format!("{:04x}", found.product_id),
             "isEdge": found.product_id == protocol::EDGE_PID,
         }),
@@ -1640,6 +1672,7 @@ fn handle_command(
         DeviceCommand::SetUiFocused { focused } => {
             if let Some(device) = device.as_mut() {
                 device.desktop.set_ui_focused(focused);
+                device.radial.focus(focused);
                 remap.set_suspended(focused || device.desktop.enabled());
             } else {
                 remap.set_suspended(focused);
@@ -1870,7 +1903,6 @@ fn handle_command(
                 pitch_scale,
                 invert_y,
                 activation: activation_mode,
-                bias,
                 deadzone,
                 smoothing,
             });
@@ -2054,6 +2086,25 @@ fn handle_command(
         _ => None,
     };
     let result: Result<&str, String> = match command {
+        DeviceCommand::SetControlProfile {settings} => {
+            let result=settings.validate().map_err(str::to_string).and_then(|_|{
+                if settings.radial.enabled {crate::input_map::prepare_desktop()?;}
+                device.radial.set(settings.radial.clone()).map_err(str::to_string)?;
+                device.controls=settings;gyro.set_config(gyro.config.clone());
+                emit(proxy,json!({"type":"controlProfile","applied":true,"settings":device.controls}));
+                Ok("Input profile applied")
+            });
+            if let Err(message)=&result{emit(proxy,json!({"type":"controlProfile","applied":false,"message":message}));}
+            result
+        }
+        DeviceCommand::SetMotionBias {bias_dps} => device.motion.set_bias(bias_dps).map(|_|"Still bias restored").map_err(str::to_string),
+        DeviceCommand::CalibrateMotion {enabled} => {
+            device.motion.calibrate(enabled);
+            emit(proxy,json!({"type":"motionCalibration","status":if enabled{"measuring"}else{"cancelled"}}));
+            Ok(if enabled{"Waiting for two steady seconds"}else{"Still calibration cancelled"})
+        }
+        DeviceCommand::CancelRadial => {device.radial.cancel();Ok("Radial menu cancelled")}
+
         DeviceCommand::PlayPersonalTest {side,strength} => {
             if side>1 || strength>100 || !matches!(device.transport,BusType::Usb) {Err("Choose a grip and 0?100% strength over USB".into())}
             else { device.stop_action();let mut voice=VoiceClip::new("sine",90,10,180,strength,if side==0{-100}else{100});voice.raw_test=true;device.play_voice(voice).map(|_|"Raw grip test") }
@@ -3130,6 +3181,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 }
             }
             connected.desktop.tick();
+            connected.radial.tick();
             if !xinput.active() {
                 connected.audio.release_idle_output();
             }
@@ -3335,11 +3387,69 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                                 );
                             }
                         }
+                        let raw_axes = input.axes;
+                        let motion = connected.motion.update(&input, Instant::now());
+                        if motion.calibration_complete {
+                            emit(
+                                &proxy,
+                                json!({"type":"motionCalibration","status":"complete","controllerId":connected.controller_id,"biasDps":motion.bias_dps}),
+                            );
+                        }
+                        if connected.last_motion_event.elapsed() >= Duration::from_millis(100)
+                            || motion.calibration_complete
+                        {
+                            emit(&proxy, json!({"type":"motion","reading":motion}));
+                            connected.last_motion_event = Instant::now();
+                        }
                         connected.calibration.apply(&mut input);
-                        let touch_cue = mouse.update(&input);
-                        gyro.update(&input);
+                        let (radial, radial_cue) = connected.radial.update(
+                            &input,
+                            connected.desktop.enabled(),
+                            connected.desktop.ui_focused(),
+                        );
+                        if radial.changed || radial.committed.is_some() || radial.cancelled {
+                            emit(
+                                &proxy,
+                                json!({"type":"radialMenu","open":connected.radial.state.open,"selected":radial.selected,"committed":radial.committed,"cancelled":radial.cancelled,"consume":radial.consume,"preview":connected.desktop.ui_focused()}),
+                            );
+                        }
+                        if radial_cue {
+                            connected.play_feedback("sine", 170, 2, 35, 12, 0);
+                        }
+                        let touch_cue = if radial.consume {
+                            mouse.cancel_pointer();
+                            connected.desktop.cancel_for_modal();
+                            None
+                        } else {
+                            let cue = mouse.update(&input);
+                            connected.desktop.update(&input);
+                            cue
+                        };
+                        gyro.update(
+                            &input,
+                            &motion,
+                            &connected.controls.motion,
+                            connected.desktop.ui_focused()
+                                || connected.desktop.enabled()
+                                || radial.consume,
+                        );
+                        remap.set_suspended(
+                            connected.desktop.ui_focused()
+                                || connected.desktop.enabled()
+                                || radial.consume,
+                        );
                         remap.update(&input);
-                        connected.desktop.update(&input);
+                        let mut game_input = input.clone();
+                        game_input.axes = connected.controls.sticks.apply(input.axes);
+                        if gyro.config.enabled
+                            && motion.valid
+                            && connected.controls.motion.flick_enabled
+                            && !connected.desktop.enabled()
+                        {
+                            game_input.axes[2] = 0.0;
+                            game_input.axes[3] = 0.0;
+                        }
+                        let virtual_axes = game_input.axes;
                         if let Some(message) = connected.desktop.take_launch_error() {
                             emit(&proxy, json!({"type":"error","message":message}));
                         }
@@ -3349,6 +3459,9 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                                 .update(&input.buttons, Instant::now());
                             connected.cancel_actions();
                             for rule in rules {
+                                if radial.consume {
+                                    continue;
+                                }
                                 match connected.play_action(&rule) {
                                     Ok(()) => {
                                         emit(&proxy, json!({"type":"gameAction","name":rule.name}))
@@ -3359,7 +3472,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                                 }
                             }
                         }
-                        if let Some(event) = xinput.update(&input) {
+                        if let Some(event) = xinput.update(&game_input) {
                             emit(&proxy, event.clone());
                             if let Some(message) = event["message"].as_str() {
                                 emit(&proxy, json!({ "type": "error", "message": message }));
@@ -3438,7 +3551,10 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         if button_changed
                             || connected.last_input_sent.elapsed() >= Duration::from_millis(32)
                         {
-                            emit(&proxy, json!({ "type": "input", "input": input }));
+                            emit(
+                                &proxy,
+                                json!({ "type": "input", "input": input,"rawAxes":raw_axes,"virtualAxes":virtual_axes }),
+                            );
                             connected.last_input_sent = Instant::now();
                         }
                     } else if matches!(input_report[0], 0x01 | 0x31) {

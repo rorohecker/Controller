@@ -211,16 +211,12 @@ mod windows_impl {
     }
 
     fn axis_to_thumb(value: f32) -> i16 {
-        // Small center deadzone so resting DualSense sticks don't drift XInput.
-        const DEAD: f32 = 0.08;
-        let clamped = value.clamp(-1.0, 1.0);
-        let rescaled = if clamped.abs() <= DEAD {
-            0.0
+        let rescaled = value.clamp(-1.0, 1.0);
+        if rescaled < 0.0 {
+            (rescaled * 32768.0).round() as i16
         } else {
-            clamped.signum() * (clamped.abs() - DEAD) / (1.0 - DEAD)
-        };
-        let scaled = (rescaled * 32767.0).round() as i32;
-        scaled.clamp(i16::MIN as i32, i16::MAX as i32) as i16
+            (rescaled * 32767.0).round() as i16
+        }
     }
 
     fn map_gamepad(input: &InputState) -> XGamepad {

@@ -4,7 +4,7 @@
   const copy=value=>structuredClone(value), $=id=>document.getElementById(id);
   const sessionDefaults=()=>({enabled:false,inputRoute:'keep',audio:'keep',audioGain:50,hideHint:false});
   const communityDefaults=()=>({author:'',version:'',gameVersion:'',sourceUrl:'',license:'',updatedAt:'',reports:[]});
-  const tracked=new Set(['setXinput','setAudioBridge','setGyroAim','setRemap','applyTriggers','setInputEffects','setGameActions','setGameLink','setAudioMixer']);
+  const tracked=new Set(['setControlProfile','setXinput','setAudioBridge','setGyroAim','setRemap','applyTriggers','setInputEffects','setGameActions','setGameLink','setAudioMixer']);
   const text=(value,max)=>typeof value==='string'&&value.length<=max&&!/[\u0000-\u001f]/.test(value);
   function valid(p){
     const s={...sessionDefaults(),...p.session},m={...communityDefaults(),...p.community};
@@ -56,7 +56,7 @@
     enqueue(task){const epoch=this.epoch;this.queue=this.queue.then(()=>epoch===this.epoch?task():undefined).catch(error=>{this.notice=String(error);this.a.toast(String(error));this.render();});return this.queue;}
     baseline(){
       const {state,profile}=this.a,p=profile(),baseline=new Map(this.current);
-      const defaults=[{action:'setXinput',enabled:state.xinput},{action:'setAudioBridge',enabled:state.audioBridge,gain:+$('bridge-gain').value/100,preset:$('bridge-preset').value},
+      const defaults=[{action:'setControlProfile',settings:window.ControllerMotionStudio.defaults()},{action:'setXinput',enabled:state.xinput},{action:'setAudioBridge',enabled:state.audioBridge,gain:+$('bridge-gain').value/100,preset:$('bridge-preset').value},
         {action:'setGyroAim',...copy(p.gyroAim),enabled:state.gyroAim},{action:'setRemap',...copy(p.remap),enabled:state.remapArmed},
         {action:'setGameActions',enabled:false,rules:[]},{action:'setGameLink',settings:{enabled:false,port:6969,format:'json'}},
         {action:'setInputEffects',enabled:false,threshold:.82,strength:55},

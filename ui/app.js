@@ -67,7 +67,7 @@
     currentView:'live',playUntil:0,playStart:0,playDuration:0,lastExternalExe:'',
     leaseUntil:0,leaseDuration:0,fullReport:false,manualScan:false,
     autoApply:true,coreStatus:'ready',foregroundExe:'',foregroundTitle:'',foregroundPath:'',lastExternalPath:'',autoMatchId:'',autoSuppressed:false,
-    sequenceGaps:0,invalidReports:0,stickTest:null,batteryHistory:[],audioBridge:false,bridgeFrames:0,audioRoute:'off',telemetryOn:false,telemetryLast:0,scriptEnabled:false,inputEffectsActive:false,gyroCalibration:null,lowBatteryAlert:false,timerUntil:0,platformDesktopInput:platform.desktopInput,platformOS:platform.os
+    sequenceGaps:0,invalidReports:0,stickTest:null,batteryHistory:[],audioBridge:false,bridgeFrames:0,audioRoute:'off',telemetryOn:false,telemetryLast:0,scriptEnabled:false,inputEffectsActive:false,lowBatteryAlert:false,timerUntil:0,platformDesktopInput:platform.desktopInput,platformOS:platform.os
   };
   const pcButtons=[0,1,2,3,4,5,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22];
   const defaultPcBindings=()=>[
@@ -162,6 +162,7 @@
     n.matchTitle = n.matchTitle || '';
     n.matchPath = n.matchPath || '';
     n.autoApply = n.autoApply !== false;
+    n.controls=window.ControllerMotionStudio.normalize(n.controls);
     n.gyroAim = Object.assign(defaultGyro(), n.gyroAim || {});
     n.remap = Object.assign(defaultRemap(), n.remap || {});
     n.inputEffects = Object.assign(defaultInputEffects(), n.inputEffects || {});
@@ -564,7 +565,7 @@
     $$('.nav-link').forEach(b => { const active = b.dataset.view === view; b.classList.toggle('is-current',active); active ? b.setAttribute('aria-current','page') : b.removeAttribute('aria-current'); });
     if (location.hash !== '#' + view) history.replaceState(null,'','#' + view);
     window.scrollTo({top:window.studioHooks?.scrollTop(view)||0,behavior:'instant'});
-    window.studioHooks?.navigate(view);
+    window.studioHooks?.navigate(view);window.motionStudio?.navigate(view);
     if (view === 'triggers') renderCurve();
   }
   $('#nav').addEventListener('click',e => { const b = e.target.closest('[data-view]'); if (b) navigate(b.dataset.view); });
@@ -594,10 +595,10 @@
     $('#profile-match').placeholder=platform.os==='windows'?'game.exe':'Game executable or app name';
     $('#profile-match-path').placeholder=platform.appPathPlaceholder;
     renderPcMode();renderGyroControls();renderPcBindings();renderRemapEditor();
-    platform.apply();window.gameSessions?.renderProfile();window.studioHooks?.platform();
+    platform.apply();window.motionStudio?.renderProfile();window.gameSessions?.renderProfile();window.studioHooks?.platform();
   }
   document.addEventListener('controller-platform',renderPlatform);
-  if(native)invoke('platform_capabilities').then(cap=>{if(!cap)return;platform.update(cap);if(Array.isArray(cap.supportedKeys))supportedKeys=new Set(cap.supportedKeys);renderPcBindings();}).catch(()=>{});
+  if(native)invoke('platform_capabilities').then(cap=>{if(!cap)return;platform.update(cap);if(Array.isArray(cap.supportedKeys))supportedKeys=new Set(cap.supportedKeys);renderPcBindings();window.motionStudio?.renderProfile();}).catch(()=>{});
   let padNavPrev = null, padFocus = null;
   function renderPcMode(){
     const enabled=state.pcMode;
@@ -650,6 +651,7 @@
     return false;
   }
   function handlePadNavigation(buttons){
+    if(window.motionStudio?.radialCapture){padNavPrev=null;clearPadFocus();return;}
     if(!state.pcMode)return;
     if(!Array.isArray(buttons)||buttons.length<18)return;
     if(!document.hasFocus()||document.hidden){padNavPrev=null;return;}
@@ -707,7 +709,7 @@
   function validProfile(p) {
     const g=p?.gyroAim || defaultGyro(), r=p?.remap || defaultRemap(),c=p?.inputEffects || defaultInputEffects();
     const bindings=Array.isArray(r.bindings)?r.bindings:[];
-    return p && window.ControllerGameSessions.valid(p) && validGameFields(p) && typeof p.id==='string' && p.id.length>0 && p.id.length<=80
+    return p && window.ControllerMotionStudio.valid(p.controls) && window.ControllerGameSessions.valid(p) && validGameFields(p) && typeof p.id==='string' && p.id.length>0 && p.id.length<=80
       && typeof p.name === 'string' && p.name.trim().length>0 && p.name.length<=40
       && typeof p.description==='string' && p.description.length<=180 && typeof p.tag==='string' && p.tag.length<=40
       && (!p.matchExe || (typeof p.matchExe==='string' && p.matchExe.length<=80 && !/[\\/]/.test(p.matchExe)))
@@ -858,7 +860,7 @@
   $('#add-weapon-binding').addEventListener('click',()=>{if(!triggerPresets.length){toast('Save a trigger preset on Triggers first.');return;}if(profile().weaponBindings.length>=100)return;let name='Weapon',i=1;while(profile().weaponBindings.some(b=>b.weapon===name))name=`Weapon ${++i}`;profile().weaponBindings.push({weapon:name,presetId:triggerPresets[0].id});saveProfiles();renderGameProfiles();});
   $('#apply-manual-weapon').addEventListener('click',()=>useWeapon($('#manual-weapon').value));
 
-  function renderAllProfileControls() { renderProfiles(); renderTriggerControls(); renderHapticControls(); renderRemapEditor(); renderGyroControls(); renderGameProfiles(); window.gameSessions?.renderProfile(); window.studioHooks?.renderProfile(); }
+  function renderAllProfileControls() { renderProfiles(); renderTriggerControls(); renderHapticControls(); renderRemapEditor(); renderGyroControls(); renderGameProfiles(); window.motionStudio?.renderProfile(); window.gameSessions?.renderProfile(); window.studioHooks?.renderProfile(); }
 
   async function applyProfileHardware(announce=true,sessionOwned=false,epoch=window.gameSessions?.epoch) {
     const p = profile(), dispatch=command=>epoch===window.gameSessions?.epoch?send(command,sessionOwned):Promise.resolve(false);
@@ -867,6 +869,7 @@
       if (announce) toast('Connect a controller.');
       return false;
     }
+    if(!await dispatch({action:'setControlProfile',settings:clone(p.controls)}))return false;
     const ok = await dispatch({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right});
     if (!ok) return false;
     if (!await dispatch(inputEffectCommand(p.inputEffects))) return false;
@@ -878,8 +881,8 @@
         action:'setGyroAim',
         enabled: !!p.gyroAim.enabled,
         sensitivity: Number(p.gyroAim.sensitivity)||1,
-        yawScale: Number(p.gyroAim.yawScale)||1,
-        pitchScale: Number(p.gyroAim.pitchScale)||1,
+        yawScale: p.gyroAim.yawScale??1,
+        pitchScale: p.gyroAim.pitchScale??1,
         invertY: !!p.gyroAim.invertY,
         activation: p.gyroAim.activation || 'always',
         bias: p.gyroAim.bias || [0,0,0],
@@ -1591,8 +1594,8 @@
         action:'setGyroAim',
         enabled: state.gyroAim,
         sensitivity: g.sensitivity,
-        yawScale: g.yawScale || 1,
-        pitchScale: g.pitchScale || 1,
+        yawScale: g.yawScale ?? 1,
+        pitchScale: g.pitchScale ?? 1,
         invertY: g.invertY,
         activation: g.activation,
         bias: g.bias || [0,0,0],deadzone:g.deadzone,smoothing:g.smoothing
@@ -1616,8 +1619,7 @@
     b.classList.toggle('is-active', state.gyroAim);
     b.setAttribute('aria-pressed', String(state.gyroAim));
     b.textContent = state.gyroAim ? 'On' : 'Off';
-    $('#gyro-calibrate').disabled=!state.connected||!state.fullReport||!!state.gyroCalibration;
-    if(!state.gyroCalibration)$('#gyro-calibration-status').textContent=(g.bias||[]).some(n=>n!==0)?`Saved still bias: ${(g.bias||[]).join(' / ')}. Calibrate again if the pad drifts.`:'Set the pad down for two seconds. Saves to this profile.';
+    $('#gyro-calibrate').disabled=!state.connected||!state.fullReport||!!window.motionStudio?.measuring;
   }
   $('#gyro-aim-toggle').addEventListener('click', () => {
     if (!state.connected) { toast('Connect a controller.'); return; }
@@ -1630,26 +1632,7 @@
   for(const [id,label] of [['gyro-deadzone','gyro-deadzone-value'],['gyro-smoothing','gyro-smoothing-value']]){$(`#${id}`).addEventListener('input',()=>{$(`#${label}`).textContent=$(`#${id}`).value+(id==='gyro-smoothing'?'%':'');fillRange($(`#${id}`));});$(`#${id}`).addEventListener('change',syncGyroCommand);}
   $('#gyro-activation').addEventListener('change', syncGyroCommand);
   $('#gyro-invert').addEventListener('change', syncGyroCommand);
-  $('#gyro-calibrate').addEventListener('click',()=>{
-    if(!state.connected||!state.fullReport){toast('Connect a controller with full motion reports first.');return;}
-    if(state.gyroCalibration)return;
-    const calibration={count:0,sum:[0,0,0],sumSq:[0,0,0],timer:null};
-    state.gyroCalibration=calibration;
-    $('#gyro-calibration-status').textContent='Keep the controller still… sampling for two seconds.';
-    $('#gyro-calibrate').disabled=true;
-    calibration.timer=setTimeout(()=>{
-      if(state.gyroCalibration!==calibration)return;
-      state.gyroCalibration=null;
-      $('#gyro-calibrate').disabled=!state.connected||!state.fullReport;
-      if(calibration.count<25){$('#gyro-calibration-status').textContent='Too few motion reports. Try again with the controller connected.';return;}
-      const bias=calibration.sum.map(n=>Math.round(n/calibration.count));
-      const moving=calibration.sumSq.some((n,i)=>Math.sqrt(Math.max(0,n/calibration.count-(calibration.sum[i]/calibration.count)**2))>250);
-      if(moving||bias.some(n=>Math.abs(n)>4096)){$('#gyro-calibration-status').textContent='The controller moved during calibration. Set it down and retry.';return;}
-      profile().gyroAim.bias=bias;
-      saveProfiles();syncGyroCommand();
-      $('#gyro-calibration-status').textContent=`Calibrated · bias ${bias.join(' / ')} saved to this profile.`;
-    },2200);
-  });
+  $('#gyro-calibrate').addEventListener('click',()=>window.motionStudio.calibrate(true));
 
   function renderXinput() {
     const b = $('#xinput-toggle');
@@ -1752,7 +1735,7 @@
     if(!connected)musicPlayer.stop('Controller disconnected');
     musicPlayer.render();
     if(!connected)audioMixer.clear();
-    if(!connected){clearPadFocus();calibrationRun=null;if(state.gyroCalibration)clearTimeout(state.gyroCalibration.timer);state.gyroCalibration=null;state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.pcMode=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.temperatureLight=false;state.screenLight=false;state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderTemperatureLight();renderScreenLight();renderInput();}
+    if(!connected){clearPadFocus();calibrationRun=null;state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.pcMode=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.temperatureLight=false;state.screenLight=false;state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderTemperatureLight();renderScreenLight();renderInput();}
     renderPcMode();
     if(!connected){state.lowBatteryAlert=false;state.timerUntil=0;}
     renderAlerts();renderBridge();
@@ -1916,6 +1899,7 @@
   $('#battery-segments').innerHTML=Array.from({length:10},()=>'<i></i>').join('');
   function drawActivity(){const canvas=$('#activity-scope'),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);ctx.beginPath();state.activity.forEach((v,i)=>{const x=i/(state.activity.length-1)*w,y=h-8-v*(h-16);if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.lineWidth=3;ctx.strokeStyle='#d4a84b';ctx.stroke();ctx.fillStyle='#7ec9bc';const last=state.activity.at(-1);ctx.fillRect(w-5,h-8-last*(h-16)-4,8,8);}
   function handleEvent(event){
+    window.motionStudio?.event(event);
     window.hapticAuthoring?.event(event);
     window.gameSessions?.event(event);
     window.studioHooks?.event(event);
@@ -1924,7 +1908,7 @@
       if(changed)padNavPrev=null;
       if(changed&&event.connected)selectControllerCalibration(event);
       setConnected(!!event.connected,event.name||'',event.transport||'',event.firmware||'',event.path||'');
-      if(changed && event.connected){window.hapticAuthoring?.device(event);sendPcBindings();sendCalibration();audioMixer.apply();applyGameRules();}
+      if(changed && event.connected){window.motionStudio?.device(event);window.hapticAuthoring?.device(event);sendPcBindings();sendCalibration();audioMixer.apply();applyGameRules();}
       if(event.path) state.selectedPath = event.path;
       if(changed||state.manualScan){const msg=event.connected?`${event.name} · ${event.transport}`:(event.message||'Disconnected');log(msg);toast(msg);}
       if(state.manualScan)finishScan();
@@ -1938,10 +1922,6 @@
       sampleCalibration(event.input);
       handlePadNavigation(event.input.buttons);
       state.buttons=event.input.buttons;state.axes=event.input.axes;state.touch=event.input.touch;state.gyro=event.input.gyro;
-      if(state.gyroCalibration&&event.input.fullReport&&Array.isArray(event.input.gyro)){
-        const c=state.gyroCalibration;c.count++;
-        event.input.gyro.forEach((n,i)=>{c.sum[i]+=n;c.sumSq[i]+=n*n;});
-      }
       state.battery=event.input.battery;state.charging=event.input.charging;state.batteryInfo=event.input.batteryInfo||null;
       recordBattery();sampleStickTest();
       const reportChanged=state.fullReport!==!!event.input.fullReport;
@@ -2120,10 +2100,11 @@
   window.controllerStudio={state,profile,trigger,clone,native,invoke,send,toast,names,vkChoices,validPcKey,gameNode,gameSelect,gameField,saveProfiles,commitProfileDraft,normalizeProfile,validProfile,validLibrary,renderProfiles,renderAllProfileControls,renderTriggerControls,renderPcBindings,savePcBindings,navigate,useWeapon,applyProfileHardware,applyGameRules,renderGameProfiles,getPlayer:()=>musicPlayer,
     getPresets:()=>triggerPresets,getPcBindings:()=>pcBindings,
     async selectProfile(id,apply=false){if(!state.profiles.some(p=>p.id===id))return;state.profileId=id;renderAllProfileControls();await saveProfiles(true);if(apply&&state.connected)await applyProfileHardware(true);},
-    setSupportedKeys(keys){if(Array.isArray(keys)){supportedKeys=new Set(keys);renderPcBindings();}},
+    setSupportedKeys(keys){if(Array.isArray(keys)){supportedKeys=new Set(keys);renderPcBindings();window.motionStudio?.renderProfile();}},
     archive:()=>({schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles),triggerPresets:clone(triggerPresets),tactileClips:window.hapticAuthoring.archive()}),
     async replaceArchive(data){if(!data?.profiles?.length||!data.profiles.every(validProfile)||!validLibrary(data.triggerPresets||[])||!window.ControllerHapticAuthoring.validLibrary(data.tactileClips??[]))throw Error('Invalid archive');await send({action:'reset'});state.autoSuppressed=true;state.profiles=data.profiles.map(normalizeProfile);state.profileId=state.profiles.some(p=>p.id===data.activeId)?data.activeId:state.profiles[0].id;triggerPresets=data.triggerPresets||[];window.hapticAuthoring.restore(data.tactileClips);state.autoApply=data.autoApply!==false;renderAllProfileControls();return saveProfiles(true);}
   };
+  window.motionStudio=new window.ControllerMotionStudio(window.controllerStudio);
   window.hapticAuthoring=new window.ControllerHapticAuthoring(window.controllerStudio);
   window.gameSessions=new window.ControllerGameSessions(window.controllerStudio);
   renderPlatform();
