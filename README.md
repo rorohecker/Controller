@@ -137,3 +137,10 @@ Geist Sans, Mono, and Pixel are bundled for offline typography under the SIL Ope
 Profiles now include search, favorites, local backup history, restore, import previews, individual export, Steam game assignment, and controller shortcuts. The trigger editor adds undo/redo, side copying and swapping, preset comparison, and a force/timing guide. PC macros support editable steps, waits, repeats, mouse actions, and app arguments with explicit cancellation. Diagnostics adds local packet recording/replay, a receiver test, measured DSX battery status, player/mic LED compatibility, and platform/input error checks. Ctrl/Cmd+K opens quick search. The macOS download is universal for Intel and Apple Silicon. See [Game profiles](docs/game-profiles.md) for details and limits.
 
 Controller names, explicit USB audio pairing and player lights are available in Settings. Profiles adds read-only Edge backups/local drafts and confidence-gated weapon adapter settings; optional reference tools accept documented telemetry or user-supplied HUD templates. No generic gun model or Edge hardware writer is bundled. Static DSX findings and an offline learned-haptic evaluation are documented in [hardware and research](docs/hardware-and-research.md).
+
+
+### Runtime checks (0.21)
+
+Diagnostics adds opt-in raw-input capture and read-only replay analysis, software timing/round-trip checks, and core resource sampling. Audio startup and process discovery run outside the HID reader. Live widgets skip hidden/unchanged updates; moving card reflections pause offscreen and when hidden. Programmatic slider changes update their fills without a polling loop. Haptics adds seeded, exportable X/Y comparison trials for the same audio excerpt. See [runtime checks and comparisons](docs/runtime-reliability.md) for limits and the measurement procedure.
+
+Run the complete browser/offline gate with `python tests/run_ui_checks.py`. After `cargo build --bin controller`, run `python tests/run_core_checks.py`; both core checks explicitly disable HID discovery. These runners fail if any child check fails.

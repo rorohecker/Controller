@@ -68,11 +68,11 @@ Work in batches of five. Each batch includes regression checks, wording/layout r
 
 ## Batch 9 — Reliability and maintenance
 
-41. Pending — Raw HID record/replay for reconnect, malformed reports and timing regressions.
-42. Pending — Profile and isolate process discovery/audio startup from HID input work.
-43. Pending — Render visible dirty widgets and measure idle/background resource use.
-44. Pending — Software latency diagnostics and optional external measurement procedure.
-45. Pending — Refresh outdated planning/compatibility documents and add reproducible haptic A/B evaluation.
+41. Complete — Raw HID record/replay for reconnect, malformed reports and timing regressions.
+42. Complete — Profile and isolate process discovery/audio startup from HID input work.
+43. Complete — Render visible dirty widgets and measure idle/background resource use.
+44. Complete — Software latency diagnostics and optional external measurement procedure.
+45. Complete — Refresh outdated planning/compatibility documents and add reproducible haptic A/B evaluation.
 
 ## Batch 10 - Calibration at the output layer
 
@@ -101,3 +101,6 @@ Batch 6 is complete (0.18.0): separate edited/saved/native-applied states, group
 Batch 7 software work is addressed (0.19.2). Items 31/32/35 are implemented: Windows process-tree capture with explicit source selection and per-game PID resolution; scoped failures/termination and stale-source protection; macOS event-posting checks and runtime input invalidation; honest X11/Wayland environment/probe state; and read-only DS5Dongle F7/F8 interface recognition. Item 33 is experimental: native-game HID/audio handoff, a four-channel raw grip relay and read-only control-frame prototype, with no virtual DualSense driver installed or emulated. Item 34 is experimental: an explicit two-second 142-byte Bluetooth haptic stream with bounded strength, skipped-deadline metrics and USB callback/startup comparison; physical latency and feel are unverified. Ordinary Bluetooth control and USB playback remain separate from this lab. Native/backend/browser checks cover the software boundaries without running hardware experiments. See [platform integrations](platform-integrations.md). Progress: 33/46 complete, 2 experimental prototypes, 11 pending.
 
 Batch 8 is addressed (0.20.0): saved controller names, exact endpoint pairing and player lights; confidence-gated telemetry/HUD adapters with manual ownership and stale fallback; static REA evidence for public DualSenseX 1.4.9; and a reproducible four-waveform learned-haptics inspection with separate reuse findings. Edge software supports read-only USB snapshots, atomic original backups and local field editing; hardware writes are not enabled and item 36 remains experimental. Regression work fixes rapid weapon/reset races, alias changes that looked like reconnects, startup-worker cancellation, and renamed-output self-capture. Physical Edge reads, real HUD accuracy and learned perceptual quality remain unverified. See [hardware and research](hardware-and-research.md). Progress: 37/46 complete, 3 experimental, 6 pending.
+
+
+Batch 9 is implemented (0.21.0): opt-in bounded raw-input capture and pure replay analysis; cached process discovery and asynchronous audio/loopback startup; visible/dirty live widgets, reactive slider fills and paused offscreen decoration; software timing/core-resource checks; updated coverage records and seeded haptic A/B trials. Regression work preserves preview motor fallback, scoped pending Stop, panic/reset cancellation and shutdown with stdin still open. Real core smoke tests now disable HID explicitly, and the release smoke runners propagate every failed child. No physical latency/force result or macOS/Linux hardware certification is claimed. See [runtime reliability](runtime-reliability.md). Progress: 42/46 complete, 3 experimental, 1 pending (46).

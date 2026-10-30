@@ -51,6 +51,8 @@
       document.addEventListener('controller-platform', () => {
         this.stopButton.title = `${window.controllerPlatform.primaryLabel} + Shift + Backspace: stop output and input mappings`;
       });
+      document.addEventListener('controller-view',()=>this.renderSources());
+      document.addEventListener('visibilitychange',()=>this.renderSources());
       this.timer = setInterval(() => { if (this.sources.lease || this.sources.audio || this.sources.report || this.sources.timeline) this.renderSources(); }, 1000);
     }
     node(tag, props, children = []) { return this.a.gameNode(tag, props, children); }
@@ -245,7 +247,9 @@
       this.renderSources();
     }
     renderSources() {
-      if(this.handoff){this.liveSources.textContent='Native game owns controller feedback outside this app. Resume monitoring to use app effects.';this.ruleSources.textContent='App input mappings and audio capture are stopped.';this.summary.textContent='Native game owns feedback';return;}
+      if(document.hidden)return;
+      const write=(el,text)=>{if(!el.closest('.screen')?.hidden&&el.textContent!==text)el.textContent=text;};
+      if(this.handoff){write(this.liveSources,'Native game owns controller feedback outside this app. Resume monitoring to use app effects.');write(this.ruleSources,'App input mappings and audio capture are stopped.');write(this.summary,'Native game owns feedback');return;}
       const s = this.sources, now = performance.now(), audio = s.audio && now - s.audio.at < 4000 ? s.audio.value : null;
       const grips = [], speaker = [];
       if (audio) {
@@ -261,9 +265,9 @@
       if(report?.motorSource&&report.motorSource!=='Idle')grips.push(report.motorSource);
       const timeline=s.timelineUntil>now?s.timeline:'';
       const trigger = report?.triggerSource || (timeline&&s.timelineTrigger ? `Timeline: ${timeline}` : s.lease > now ? 'Profile preview' : 'Idle');
-      this.liveSources.textContent = `Triggers: ${trigger} · Grips: ${grips.join(' + ') || 'Idle'} · Speaker: ${speaker.join(' + ') || 'Idle'}${report?' \u00b7 Lightbar: '+report.lightSource:''}`;
-      this.ruleSources.textContent = this.armed.size ? `Armed: ${[...this.armed].join(', ')}. Armed effects wait for input.` : 'No input effects armed.';
-      this.summary.textContent = grips.length || speaker.length || timeline || report?.triggerSource&&report.triggerSource!=='Idle' || s.lease > now ? 'Changes · feedback active' : 'Changes and feedback';
+      write(this.liveSources,`Triggers: ${trigger} · Grips: ${grips.join(' + ') || 'Idle'} · Speaker: ${speaker.join(' + ') || 'Idle'}${report?' \u00b7 Lightbar: '+report.lightSource:''}`);
+      write(this.ruleSources,this.armed.size ? `Armed: ${[...this.armed].join(', ')}. Armed effects wait for input.` : 'No input effects armed.');
+      write(this.summary,grips.length || speaker.length || timeline || report?.triggerSource&&report.triggerSource!=='Idle' || s.lease > now ? 'Changes · feedback active' : 'Changes and feedback');
     }
     event(e) {
       if(e.type==='nativeHandoff'){this.handoff=!!e.enabled;this.changed();}

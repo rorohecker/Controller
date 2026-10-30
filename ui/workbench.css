@@ -483,3 +483,32 @@ body[data-density=compact] .work-panel,body[data-density=compact] .studio-card {
 .hardware-edge-editor[hidden] { display:none; }
 .hardware-card .panel-cap > span { min-width:0; white-space:normal; overflow-wrap:anywhere; }
 .hardware-roster-row { border-color:color-mix(in srgb,var(--panel-accent) 35%,transparent); }
+
+/* Diagnostic and listening tools share the existing pixel trim and panel glow. */
+.runtime-lab,.evaluation-lab{margin-top:20px;--panel-accent:#d4b4d7;}
+.runtime-lab .game-content,.evaluation-lab .game-content{padding:20px;display:grid;gap:16px;min-width:0;}
+.runtime-times{display:grid;gap:8px;}
+.runtime-time{display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:10px 12px;border-left:3px solid #c1a3cc;background:linear-gradient(100deg,#e9cbb526,#b5e0d51a);}
+.runtime-time span{font-variant-numeric:tabular-nums;overflow-wrap:anywhere;}
+.runtime-trace{display:grid;gap:12px;border-top:1px solid #c5abce70;padding-top:16px;min-width:0;}
+.runtime-trace input[type=file]{max-width:100%;}
+.evaluation-scores{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(180px,100%),1fr));gap:12px;}
+.evaluation-lab input,.evaluation-lab select{max-width:100%;min-width:0;}
+.evaluation-setup{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(180px,100%),1fr));gap:12px;}
+.evaluation-setup .game-field,.evaluation-scores .game-field{display:grid;gap:6px;font-size:13px;font-weight:600;}
+.runtime-lab .game-content>p,.evaluation-lab .game-content>p,.runtime-trace>p,.runtime-trace>h3{margin:0;line-height:1.5;}
+.runtime-lab .game-buttons,.evaluation-lab .game-buttons{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}
+.runtime-trace input[type=file]{font:inherit;min-height:40px;}
+.runtime-trace input[type=file]::file-selector-button{font:600 12px var(--body);color:#3e454e;background:#e9e6dc;border:1px solid #929a9d;border-radius:4px;padding:10px 12px;margin-right:12px;cursor:pointer;}
+
+/* Composite the reflection separately; keep the inner frame and pixel corners still. */
+.framed::before{background:none;animation:none;}
+.framed > .card-reflection{position:absolute;inset:4px;z-index:0;pointer-events:none;overflow:hidden;border-radius:4px;opacity:.45;}
+.card-reflection::before{content:'';position:absolute;inset:0 auto 0 0;width:60%;background:linear-gradient(110deg,transparent 15%,#ffffff29 36%,#c9f9f366 50%,#ffddda38 64%,transparent 85%);transform:translateX(-120%);animation:card-reflection-travel 13s ease-in-out infinite;will-change:transform;}
+@keyframes card-reflection-travel{0%,15%{transform:translateX(-120%)}55%,100%{transform:translateX(270%)}}
+.visual-outside,.visual-outside *,.visual-outside::before,.visual-outside::after,.visual-outside *::before,.visual-outside *::after,
+.presentation-paused *,.presentation-paused *::before,.presentation-paused *::after{animation-play-state:paused!important;}
+.visual-outside .card-reflection::before,.presentation-paused .card-reflection::before,.studio-reduced-motion .card-reflection::before{will-change:auto;}
+@media(prefers-reduced-motion:reduce){.card-reflection::before{animation:none;will-change:auto;}}
+
+.evaluation-lab>.panel-cap{background:linear-gradient(90deg,#342b3ded,#333c46c9),url('./assets/observatory-pixel.png') 68% 28%/cover;color:#fae8c9;}

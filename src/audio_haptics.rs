@@ -5,7 +5,6 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
 };
-#[cfg(windows)]
 use std::{sync::mpsc, thread, time::Duration};
 
 #[path = "audio_haptics/authoring.rs"]
@@ -15,6 +14,8 @@ pub mod capture;
 #[path = "audio_haptics/file.rs"]
 pub mod file;
 use capture::{CaptureHandle, CaptureSource};
+#[path = "audio_haptics/io_runtime.rs"]
+mod io_runtime;
 #[path = "audio_haptics/stream.rs"]
 mod stream;
 use arc_swap::{ArcSwap, ArcSwapOption};
@@ -243,10 +244,10 @@ impl Default for Shared {
 }
 
 pub struct AudioEngine {
-    #[cfg(not(windows))]
-    output: Option<Stream>,
-    #[cfg(windows)]
-    output: Option<ExclusiveOutput>,
+    output: Option<io_runtime::OutputWorker>,
+    retired_outputs: Vec<Arc<AtomicBool>>,
+    output_startup_ms: Option<u64>,
+    output_failure: Option<(String, std::time::Instant)>,
     capture: Option<CaptureHandle>,
     capture_source: Option<CaptureSource>,
     shared: Arc<Shared>,
@@ -260,6 +261,9 @@ impl Default for AudioEngine {
     fn default() -> Self {
         Self {
             output: None,
+            retired_outputs: Vec::new(),
+            output_startup_ms: None,
+            output_failure: None,
             capture: None,
             capture_source: None,
             shared: Arc::new(Shared::default()),
@@ -277,23 +281,22 @@ impl Drop for AudioEngine {
     }
 }
 
-#[cfg(windows)]
-struct ExclusiveOutput {
-    stop: Arc<AtomicBool>,
-    thread: Option<thread::JoinHandle<()>>,
-}
-
-#[cfg(windows)]
-impl Drop for ExclusiveOutput {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
+impl AudioEngine {
+    fn retire_output(&mut self) {
+        self.retired_outputs
+            .retain(|done| !done.load(Ordering::Acquire));
+        if let Some(worker) = self.output.take() {
+            self.retired_outputs.push(worker.completion());
+            drop(worker);
         }
     }
-}
-
-impl AudioEngine {
+    fn fresh_output_state(&mut self) {
+        self.shared = Arc::new(Shared {
+            personal: ArcSwap::from(self.shared.personal.load_full()),
+            mixer: ArcSwap::from(self.shared.mixer.load_full()),
+            ..Shared::default()
+        });
+    }
     pub fn set_personal(&self, settings: PersonalSettings) -> Result<(), String> {
         settings.validate().map_err(str::to_string)?;
         self.shared.personal.store(Arc::new(settings));
@@ -318,6 +321,9 @@ impl AudioEngine {
         self.stop_timeline();
     }
 
+    pub fn has_sources(&self) -> bool {
+        !self.sources_idle()
+    }
     fn sources_idle(&self) -> bool {
         let frame = self.shared.rendered_frames.load(Ordering::Relaxed);
         !self.bridge_on()
@@ -344,8 +350,8 @@ impl AudioEngine {
     /// Give native games their exclusive endpoint back after app feedback ends.
     /// Keep paused tracks and live bridges intact.
     pub fn release_idle_output(&mut self) {
-        if self.output.is_some() && self.sources_idle() {
-            self.output = None;
+        if self.output_ready() && self.sources_idle() {
+            self.retire_output();
             self.endpoint = None;
             self.shared.clip.store(None);
             self.stop_timeline();
@@ -403,149 +409,65 @@ impl AudioEngine {
         self.shared.error.lock().ok()?.take()
     }
 
-    #[cfg(windows)]
-    pub fn start_output(&mut self) -> Result<&str, String> {
-        if let Some(error) = &self.endpoint_error {
-            return Err(error.clone());
-        }
-        if self.output.is_some() {
-            return Ok(self.endpoint.as_deref().unwrap_or("DualSense"));
-        }
-        self.shared.rendered_frames.store(0, Ordering::Relaxed);
-        let shared = self.shared.clone();
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = stop.clone();
-        let endpoint_id = self.endpoint_id.clone();
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let thread = thread::Builder::new()
-            .name("dualsense-exclusive-audio".into())
-            .spawn(move || {
-                let result =
-                    run_exclusive_output(shared.clone(), thread_stop.clone(), sender, endpoint_id);
-                if let Err(error) = result
-                    && !thread_stop.load(Ordering::Acquire)
-                    && let Ok(mut slot) = shared.error.lock()
-                    && !thread_stop.load(Ordering::Acquire)
-                {
-                    *slot = Some(format!("USB haptic audio stopped: {error}"));
-                }
-            })
-            .map_err(|e| format!("Could not start USB audio thread: {e}"))?;
-        let name = match receiver.recv_timeout(Duration::from_secs(4)) {
-            Ok(Ok(name)) => name,
-            other => {
-                stop.store(true, Ordering::Release);
-                return Err(match other {
-                    Ok(Err(error)) => error,
-                    Err(error) => format!("DualSense audio did not open: {error}"),
-                    _ => unreachable!(),
-                });
-            }
-        };
-        self.output = Some(ExclusiveOutput {
-            stop,
-            thread: Some(thread),
-        });
-        self.endpoint = Some(name);
-        Ok(self.endpoint.as_deref().unwrap())
+    /// Opening and closing the OS stream never wait on this caller.
+    pub fn remember_output_failure(&mut self, error: String) {
+        self.output_failure = Some((error, std::time::Instant::now()));
     }
-
-    #[cfg(not(windows))]
+    pub fn allow_output_retry(&mut self) {
+        self.output_failure = None;
+    }
+    pub fn output_failed(&self) -> bool {
+        self.output_failure.is_some()
+    }
     pub fn start_output(&mut self) -> Result<&str, String> {
+        if let Some((error, failed_at)) = &self.output_failure
+            && failed_at.elapsed() < Duration::from_secs(5)
+        {
+            return Err(error.clone());
+        }
+        self.output_failure = None;
         if let Some(error) = &self.endpoint_error {
             return Err(error.clone());
         }
-        if self.output.is_some() {
-            return Ok(self.endpoint.as_deref().unwrap_or("DualSense"));
+        if self.output.is_none() {
+            // A cancelled worker retains its old shared state. It cannot consume a
+            // replacement stream's cues, frames, errors, or file queues.
+            self.fresh_output_state();
+            self.retired_outputs
+                .retain(|done| !done.load(Ordering::Acquire));
+            self.output_startup_ms = None;
+            self.output = Some(io_runtime::OutputWorker::start(
+                self.shared.clone(),
+                self.endpoint_id.clone(),
+                self.retired_outputs.clone(),
+            )?);
         }
-        self.shared.rendered_frames.store(0, Ordering::Relaxed);
-        let host = cpal::default_host();
-        let mut candidate = None;
-        let mut eligible_endpoints = 0usize;
-        for device in host.output_devices().map_err(|e| e.to_string())? {
-            let name = device.to_string();
-            let lower = name.to_ascii_lowercase();
-            if let Some(id) = &self.endpoint_id {
-                if !device.id().is_ok_and(|d| d.to_string() == *id) {
-                    continue;
-                }
-            } else if !lower.contains("dualsense") && !lower.contains("wireless controller") {
-                continue;
-            }
-            let configs = device
-                .supported_output_configs()
-                .map_err(|e| e.to_string())?;
-            let mut selected_format = None;
-            for config in configs {
-                if config.channels() == 4
-                    && config.min_sample_rate() <= RATE
-                    && config.max_sample_rate() >= RATE
-                {
-                    if config.sample_format() == SampleFormat::F32 {
-                        selected_format = Some(SampleFormat::F32);
-                        break;
-                    }
-                    if config.sample_format() == SampleFormat::I16 && selected_format.is_none() {
-                        selected_format = Some(SampleFormat::I16);
-                    }
-                }
-            }
-            if let Some(format) = selected_format {
-                eligible_endpoints += 1;
-                if candidate.is_none() {
-                    candidate = Some((device, name, format));
+        Ok(self
+            .endpoint
+            .as_deref()
+            .unwrap_or("Opening controller audio"))
+    }
+    pub fn output_ready(&self) -> bool {
+        self.output.is_some() && self.endpoint.is_some()
+    }
+    pub fn output_opening(&self) -> bool {
+        self.output.is_some() && self.endpoint.is_none()
+    }
+    pub fn poll_output(&mut self) -> Result<(), String> {
+        if let Some(worker) = self.output.as_mut()
+            && let Some(result) = worker.poll()
+        {
+            self.output_startup_ms = Some(worker.elapsed_ms());
+            match result {
+                Ok(name) => self.endpoint = Some(name),
+                Err(error) => {
+                    self.retire_output();
+                    self.endpoint = None;
+                    return Err(error);
                 }
             }
         }
-        if eligible_endpoints > 1 {
-            return Err("More than one DualSense USB audio endpoint is connected. Keep one USB pad connected for haptic PCM, or use motor fallback.".into());
-        }
-        let (device,name,format)=candidate.ok_or_else(||if self.endpoint_id.is_some(){"The paired audio endpoint is unavailable or its format changed. Refresh the pairing in Settings > Controllers.".to_string()}else{"No four-channel DualSense USB audio endpoint at 48 kHz. Connect by USB and enable its audio output in system settings.".to_string()})?;
-        let config = StreamConfig {
-            channels: 4,
-            sample_rate: RATE,
-            buffer_size: BufferSize::Default,
-        };
-        let shared = self.shared.clone();
-        let error_shared = shared.clone();
-        let on_error = move |error: cpal::Error| {
-            record_audio_error(&error_shared, error, "USB haptic audio");
-        };
-        let mut frame_position = 0u64;
-        let mut duty = RenderState::default();
-        let stream = match format {
-            SampleFormat::F32 => device.build_output_stream(
-                config,
-                move |data: &mut [f32], _| {
-                    render_output(data, &shared, &mut frame_position, &mut duty);
-                },
-                on_error,
-                None,
-            ),
-            SampleFormat::I16 => {
-                let shared = self.shared.clone();
-                let error_shared = shared.clone();
-                device.build_output_stream(
-                    config,
-                    move |data: &mut [i16], _| {
-                        // Four-channel PCM conversion is done in place without a temporary buffer.
-                        render_output_i16(data, &shared, &mut frame_position, &mut duty);
-                    },
-                    move |error| {
-                        record_audio_error(&error_shared, error, "USB haptic audio");
-                    },
-                    None,
-                )
-            }
-            _ => unreachable!(),
-        }
-        .map_err(|e| format!("Could not open DualSense haptic endpoint: {e}"))?;
-        stream
-            .play()
-            .map_err(|e| format!("Could not start DualSense haptic endpoint: {e}"))?;
-        self.endpoint = Some(name);
-        self.output = Some(stream);
-        Ok(self.endpoint.as_deref().unwrap())
+        Ok(())
     }
 
     pub fn play(&mut self, mut clip: VoiceClip) -> Result<&str, String> {
@@ -711,7 +633,7 @@ impl AudioEngine {
             .iter()
             .map(|p| f32::from_bits(p.swap(0, Ordering::Relaxed)))
             .collect();
-        serde_json::json!({"type":"audioMeters","endpoint":self.endpoint,"sampleRate":RATE,
+        serde_json::json!({"type":"audioMeters","outputStage":if self.output_ready(){"ready"}else if self.output_opening(){"starting"}else{"off"},"outputStartupMs":self.output_startup_ms,"personal":&**self.shared.personal.load(),"mixer":&**self.shared.mixer.load(),"endpoint":self.endpoint,"sampleRate":RATE,
             "active":self.output.is_some(),"captureSource":self.capture_source,"captureState":self.capture.as_ref().map(|c|c.state()).unwrap_or("off"),"bridge":self.bridge_on(),"file":self.file_status(),"cueActive":cue_active,
             "timelineActive":self.shared.timeline.load().as_ref().is_some_and(|t|now.saturating_sub(t.start_frame)<u64::from(t.clip.duration_ms())*48),
             "gameActive":self.shared.game.load().as_ref().is_some_and(|g| now.saturating_sub(g.start_frame) < 10 * u64::from(RATE)),
@@ -801,19 +723,19 @@ impl AudioEngine {
             self.shared.bridge_frames.store(0, Ordering::Relaxed);
             self.capture = Some(match &source {
                 CaptureSource::System => CaptureHandle::System {
-                    _stream: build_loopback(
+                    _worker: io_runtime::CaptureWorker::start(
                         self.shared.clone(),
                         None,
-                        self.endpoint.as_deref(),
-                        self.endpoint_id.as_deref(),
+                        self.endpoint.clone(),
+                        self.endpoint_id.clone(),
                     )?,
                 },
                 CaptureSource::NativeEndpoint { id } => CaptureHandle::System {
-                    _stream: build_loopback(
+                    _worker: io_runtime::CaptureWorker::start(
                         self.shared.clone(),
-                        Some(id),
-                        self.endpoint.as_deref(),
-                        self.endpoint_id.as_deref(),
+                        Some(id.clone()),
+                        self.endpoint.clone(),
+                        self.endpoint_id.clone(),
                     )?,
                 },
                 #[cfg(windows)]
@@ -835,6 +757,7 @@ impl AudioEngine {
     }
 
     pub fn stop(&mut self) {
+        self.output_failure = None;
         self.stop_timeline();
         self.shared.game.store(None);
         self.shared.bridge_on.store(false, Ordering::Relaxed);
@@ -843,7 +766,7 @@ impl AudioEngine {
             .fetch_add(1, Ordering::AcqRel);
         self.capture = None;
         self.capture_source = None;
-        self.output = None;
+        self.retire_output();
         if let Ok(mut error) = self.shared.error.lock() {
             *error = None;
         }
@@ -852,6 +775,108 @@ impl AudioEngine {
         self.stop_speaker_pcm();
         while self.shared.bridge.pop().is_some() {}
     }
+}
+
+#[cfg(not(windows))]
+fn run_portable_output(
+    shared: Arc<Shared>,
+    stop: Arc<AtomicBool>,
+    ready: mpsc::SyncSender<Result<String, String>>,
+    endpoint_id: Option<String>,
+) -> Result<(), String> {
+    let host = cpal::default_host();
+    let mut candidate = None;
+    let mut eligible_endpoints = 0usize;
+    for device in host.output_devices().map_err(|e| e.to_string())? {
+        let name = device.to_string();
+        let lower = name.to_ascii_lowercase();
+        if let Some(id) = &endpoint_id {
+            if !device.id().is_ok_and(|d| d.to_string() == *id) {
+                continue;
+            }
+        } else if !lower.contains("dualsense") && !lower.contains("wireless controller") {
+            continue;
+        }
+        let configs = device
+            .supported_output_configs()
+            .map_err(|e| e.to_string())?;
+        let mut selected_format = None;
+        for config in configs {
+            if config.channels() == 4
+                && config.min_sample_rate() <= RATE
+                && config.max_sample_rate() >= RATE
+            {
+                if config.sample_format() == SampleFormat::F32 {
+                    selected_format = Some(SampleFormat::F32);
+                    break;
+                }
+                if config.sample_format() == SampleFormat::I16 && selected_format.is_none() {
+                    selected_format = Some(SampleFormat::I16);
+                }
+            }
+        }
+        if let Some(format) = selected_format {
+            eligible_endpoints += 1;
+            if candidate.is_none() {
+                candidate = Some((device, name, format));
+            }
+        }
+    }
+    if eligible_endpoints > 1 {
+        return Err("More than one DualSense USB audio endpoint is connected. Keep one USB pad connected for haptic PCM, or use motor fallback.".into());
+    }
+    let (device,name,format)=candidate.ok_or_else(||if endpoint_id.is_some(){"The paired audio endpoint is unavailable or its format changed. Refresh the pairing in Settings > Controllers.".to_string()}else{"No four-channel DualSense USB audio endpoint at 48 kHz. Connect by USB and enable its audio output in system settings.".to_string()})?;
+    let config = StreamConfig {
+        channels: 4,
+        sample_rate: RATE,
+        buffer_size: BufferSize::Default,
+    };
+    let shared = shared.clone();
+    let error_shared = shared.clone();
+    let on_error = move |error: cpal::Error| {
+        record_audio_error(&error_shared, error, "USB haptic audio");
+    };
+    let mut frame_position = 0u64;
+    let mut duty = RenderState::default();
+    let stream = match format {
+        SampleFormat::F32 => device.build_output_stream(
+            config,
+            move |data: &mut [f32], _| {
+                render_output(data, &shared, &mut frame_position, &mut duty);
+            },
+            on_error,
+            None,
+        ),
+        SampleFormat::I16 => {
+            let shared = shared.clone();
+            let error_shared = shared.clone();
+            device.build_output_stream(
+                config,
+                move |data: &mut [i16], _| {
+                    // Four-channel PCM conversion is done in place without a temporary buffer.
+                    render_output_i16(data, &shared, &mut frame_position, &mut duty);
+                },
+                move |error| {
+                    record_audio_error(&error_shared, error, "USB haptic audio");
+                },
+                None,
+            )
+        }
+        _ => unreachable!(),
+    }
+    .map_err(|e| format!("Could not open DualSense haptic endpoint: {e}"))?;
+    stream
+        .play()
+        .map_err(|e| format!("Could not start DualSense haptic endpoint: {e}"))?;
+    if stop.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    let _ = ready.send(Ok(name));
+    while !stop.load(Ordering::Acquire) {
+        thread::sleep(Duration::from_millis(10));
+    }
+    drop(stream);
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -940,6 +965,9 @@ fn run_exclusive_output(
             .write_to_device(frames, &bytes, None)
             .map_err(|e| format!("DualSense USB audio write failed: {e}"))
     };
+    if stop.load(Ordering::Acquire) {
+        return Ok(());
+    }
     if let Err(error) = write_available().and_then(|_| {
         client
             .start_stream()
@@ -1479,6 +1507,35 @@ fn build_loopback(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cached_start_failure_allows_motor_fallback_without_reopening_audio() {
+        let mut engine = AudioEngine::default();
+        engine.remember_output_failure("endpoint unavailable".into());
+        assert_eq!(engine.start_output().unwrap_err(), "endpoint unavailable");
+        assert!(!engine.output_opening());
+        engine.allow_output_retry();
+        assert!(!engine.output_failed());
+    }
+    #[test]
+    fn retired_audio_callbacks_cannot_touch_replacement_cues_or_counters() {
+        let mut engine = AudioEngine::default();
+        let old = engine.shared.clone();
+        let personal = engine.shared.personal.load_full();
+        engine.fresh_output_state();
+        assert!(std::sync::Arc::ptr_eq(
+            &personal,
+            &engine.shared.personal.load_full()
+        ));
+        *old.error.lock().unwrap() = Some("stale endpoint failure".into());
+        let mut samples = [0f32; 192];
+        let mut position = 0;
+        let mut render = RenderState::default();
+        render_output(&mut samples, &old, &mut position, &mut render);
+        assert_eq!(engine.callbacks(), 0);
+        assert!(engine.take_error().is_none());
+        assert_eq!(old.callbacks.load(Ordering::Relaxed), 1);
+    }
+
     use super::*;
     #[test]
     fn renamed_paired_output_cannot_be_its_own_loopback_source() {

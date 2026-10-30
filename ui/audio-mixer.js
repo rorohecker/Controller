@@ -26,6 +26,8 @@
       }
       $('grip-audition').addEventListener('change',()=>{this.settings.solo=$('grip-audition').value;this.save();});
       $('audio-mixer-reset').addEventListener('click',()=>{this.settings=defaults();this.save();this.render();});
+      document.addEventListener('controller-view',()=>{if(this.latest)this.event(this.latest);});
+      document.addEventListener('visibilitychange',()=>{if(this.latest)this.event(this.latest);});
       this.render();this.clear();
     }
     render(){
@@ -42,9 +44,10 @@
       $('audio-buffer-status').textContent='File queue: 0 ms';$('audio-buffer-counts').textContent='No buffer gaps recorded';
     }
     event(status){
+      this.latest=status;if(document.hidden||$('haptics').hidden)return;
       const peaks=Array.isArray(status.peaks)?status.peaks:[];
       ['speaker','left','right'].forEach((side,i)=>$('audio-meter-'+side).value=Math.max(0,Math.min(1,Number(peaks[i])||0)));
-      $('audio-output-state').textContent=status.active?'USB ready':'Not playing';
+      $('audio-output-state').textContent=status.outputStage==='starting'?'Opening audio':status.active?'USB ready':'Not playing';
       $('audio-endpoint').textContent=status.endpoint||'No audio endpoint open';
       const file=status.file,active=file&&['playing','starting','buffering'].includes(file.mode);
       const sources=[];if(active)sources.push('Track');if(status.bridge)sources.push(status.captureSource?.kind==='process'?'Selected app':status.captureSource?.kind==='nativeEndpoint'?'Native audio relay':'System audio');if(status.cueActive)sources.push('Haptic cue');if(status.timelineActive)sources.push('Timeline');if(status.gameActive)sources.push('Xbox rumble');

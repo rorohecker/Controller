@@ -27,3 +27,8 @@ Native audio files offer Full soundtrack (the existing broad conversion), Bass (
 Capture a song position and use Play A/Play B to replay the same five seconds through the grips at the same mixer settings. This matches time and configured gain, not perceived loudness. Other active sources remain part of the mix. Rapid comparisons cancel superseded requests, and a comparison ending does not shorten the song's saved duration. Normal Play/Pause/Stop/seek remain available above.
 
 Windows, Linux and universal macOS builds are checked in release CI. Actual trigger feel, comfortable settings and physical audio quality still need controller checks on each OS.
+
+
+## Seeded comparison trials
+
+Haptics includes a four-trial X/Y comparison for audio conversion modes, with a fixed source excerpt, explicit playback, balanced seeded assignment, 0-5 strength/clarity ratings and export. Preparing a session is silent. Source/controller/settings changes and interrupted playback cancel it. Results include actual playback order/repetitions; no unentered score is generated. See [comparison protocol and limitations](runtime-reliability.md#reproducible-haptic-ab-trials).

@@ -30,7 +30,8 @@
       seek.addEventListener('change', () => this.seek(+seek.value));
       seek.addEventListener('blur', () => { this.scrubbing = false; this.render(); });
       window.addEventListener('pointerup', () => { this.scrubbing = false; });
-      setInterval(() => { this.render(); this.pump(); }, 100);
+      document.addEventListener('controller-view',()=>this.render());
+      document.addEventListener('visibilitychange',()=>this.render());
       this.render();
     }
     current() {
@@ -104,16 +105,17 @@
       for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
       return {pcmBase64: btoa(binary), duration: count / 48_000};
     }
-    async audition(kind,position,seconds=5){
+    async audition(kind,position,seconds=5,onStart=null){
       if(!this.nativeFile||!this.connected()||!['music','bass','impact','texture'].includes(kind))return;
       const pendingStop=this.stop(),stopped=this.trackId;await pendingStop;
       if(stopped!==this.trackId)return;
       position=Math.max(0,Math.min(this.duration,position));
       if(position>=this.duration){$('speaker-file-status').textContent='Capture a position before the end of the track.';return;}
-      return this.startAt(position,{kind,end:Math.min(this.duration,position+seconds)});
+      return this.startAt(position,{kind,end:Math.min(this.duration,position+seconds),onStart});
     }
     async startAt(position,comparison=null) {
       const id = ++this.trackId;
+      comparison?.onStart?.(id);
       this.previewEnd=comparison?.end??null;
       this.route = comparison?'grips':$('speaker-route').value; this.base = position; this.position = position;
       this.mode = 'starting'; this.next = position; this.hasStream = false;
@@ -197,6 +199,12 @@
       }
     }
     render() {
+      const visible=!document.hidden&&!$('haptics').hidden;
+      const ticking=['playing','buffering','starting'].includes(this.mode)&&(!this.nativeFile||visible);
+      if(this.lastMode!==this.mode){this.lastMode=this.mode;document.dispatchEvent(new Event('controller-player-state'));}
+      if(!ticking&&this.tickTimer){clearTimeout(this.tickTimer);this.tickTimer=0;}
+      if(ticking&&!this.tickTimer)this.tickTimer=setTimeout(()=>{this.tickTimer=0;this.pump();this.render();},100);
+      if(!visible)return;
       const current = this.current(), ready = !!this.decoded && this.connected();
       if (!this.nativeFile && this.mode === 'playing' && current >= this.duration) {
         this.stop('Finished'); this.position = this.duration;
@@ -209,7 +217,7 @@
       $('speaker-start').disabled = !this.decoded || this.mode === 'loading';
       $('speaker-start').max = String(this.duration); $('speaker-progress').max = Math.max(1, this.duration);
       if (!this.scrubbing) {
-        $('speaker-start').value = String(current); $('speaker-progress').value = current;
+        $('speaker-start').value = String(current); $('speaker-start').style.setProperty('--fill',`${this.duration?current/this.duration*100:0}%`); $('speaker-progress').value = current;
         $('speaker-start-value').textContent = format(current);
         $('speaker-time').textContent = `${format(current)} / ${format(this.duration)}`;
       }

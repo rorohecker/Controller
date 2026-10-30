@@ -34,7 +34,11 @@ jobs:
           for size in 16 32 128 256; do pixels=$((size * 2)); sips -z "$pixels" "$pixels" icons/icon.png --out "icons/App.iconset/icon_${size}x${size}@2x.png" >/dev/null; done
           iconutil -c icns icons/App.iconset -o icons/icon.icns
       - name: Check and test
-        run: cargo test --workspace && cargo check --workspace && cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo test --workspace --all-targets && cargo check --workspace && cargo clippy --workspace --all-targets -- -D warnings
+      - name: Controller-free core checks
+        run: |
+          cargo build --bin controller
+          python3 tests/run_core_checks.py target/debug/controller
       - name: Add Intel and Apple Silicon targets
         if: runner.os == 'macOS'
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin

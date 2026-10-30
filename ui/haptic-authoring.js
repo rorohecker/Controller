@@ -25,6 +25,8 @@
     constructor(api){
       this.a=api;this.library=builtins();this.draft=copy(this.library[0]);this.selected=0;this.personal=defaults();this.owner='';this.playId=Date.now()*1000;this.personalRequest=Date.now()*1000;this.previewId=0;this.triggerRequest=0;this.playing=false;
       this.build();this.draw();this.personalForm();
+      document.addEventListener('controller-view',()=>this.renderPlayback());
+      document.addEventListener('visibilitychange',()=>this.renderPlayback());
     }
     panel(title,id,host){const n=this.a.gameNode,box=n('section',{class:'work-panel framed tactile-panel',id}),body=n('div',{class:'game-content'});box.append(n('div',{class:'panel-cap',text:title}),body);host.append(box);return body;}
     button(text,run,id){const b=this.a.gameNode('button',{type:'button',class:'quiet-action',text,id:id||''});b.addEventListener('click',run);return b;}
@@ -126,9 +128,13 @@
       step.textContent='1/4 · '+stages[0];guide.append(step,n('p',{class:'pc-note',text:'Each test briefly solos one grip at raw strength, bypassing personal and mixer levels. The app’s fixed peak protection remains active. Use USB. Nothing plays until you press Test.'}),strength,test,next);this.personalBody.append(guide);
     }
     compare(kind){const player=this.a.getPlayer();if(!player.nativeFile)return this.a.toast('Choose a native audio file above to compare conversion modes.');if(this.compareAt==null){this.compareAt=player.current();this.anchor.textContent=`Comparison starts at ${this.compareAt.toFixed(1)} s`;}player.audition(kind,this.compareAt,5);}
+    renderPlayback(){
+      const e=this.lastPlayback;if(!e||e.playId!==this.playId||document.hidden||this.a.state.currentView!=='haptics')return;
+      this.progress.max=e.durationMs;this.progress.value=e.positionMs;this.status.textContent=e.error||(e.playing?`${e.name||'Clip'} \u00b7 ${e.positionMs}/${e.durationMs} ms`:'Clip finished');
+    }
     event(e){
       if(e.type==='personalHapticsStatus'&&e.requestId===this.personalRequest)this.personalStatus.textContent=e.applied?'Personal limits applied.':'Controller update failed: '+(e.message||'Reconnect and try again.');
-      if(e.type==='effectTimeline'&&e.playId===this.playId){this.playing=!!e.playing;this.progress.max=e.durationMs;this.progress.value=e.positionMs;this.status.textContent=e.error|| (e.playing?`${e.name||'Clip'} · ${e.positionMs}/${e.durationMs} ms`:'Clip finished');}
+      if(e.type==='effectTimeline'&&e.playId===this.playId){this.lastPlayback=e;this.playing=!!e.playing;this.renderPlayback();}
       if(e.type==='safetyReset'||e.type==='device'&&!e.connected){this.playId++;this.playing=false;this.progress.value=0;this.status.textContent='Stopped';if(e.type==='device')this.owner='';}
     }
   }

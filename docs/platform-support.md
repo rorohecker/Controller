@@ -33,3 +33,8 @@ Desktop permission controls show separate macOS Accessibility (sending desktop i
 Calibration is stored per controller identity, including motor-zone measurements. A controller address is used internally to derive an opaque local identifier; a connection path is the fallback when the controller cannot provide a stable identity. Legacy shared calibration is assigned once to the first controller connected after migration. Calibration correction currently runs in this app; driver/output-level persistence is tracked in the development backlog.
 
 Native file playback uses the system file picker, Symphonia decoding and Rubato resampling on worker threads on all desktop targets. Supported formats include WAV/AIFF PCM, MP3, FLAC, Ogg/Vorbis, and supported AAC/ALAC tracks in M4A containers. Opus and multichannel surround assets are not supported by this decoder path. Native streams accept mono/stereo audio at 8-192 kHz, up to one hour / 512 MB. Four-channel controller output remains 48 kHz; speaker audio is mono and the rear grip channels preserve stereo. Hardware audio routes still require one USB pad and a compatible four-channel endpoint. Web preview uses its existing limited browser decoder; installed builds select native playback.
+
+
+## Runtime diagnostics (0.21)
+
+All platforms compile the bounded audio-opening/capture workers, input trace analyzer and software timing checks. Core CPU counters are available on Windows/macOS/Linux; resident memory is currently reported on Windows/Linux. The portable CI also runs the real stdio integration checks in `--no-hid` mode. Physical endpoints and output feel after the scheduling change remain unverified. See [runtime reliability](runtime-reliability.md).

@@ -1,5 +1,23 @@
 # Compatibility and test record
 
+## Current software coverage: 0.21.0
+
+Windows USB input, RGB/player lights, desktop controls and speaker/grip playback have prior physical test reports. This batch changes scheduling and presentation; physical output has not been revalidated for 0.21.0. macOS/Linux builds remain previews until their endpoints, permissions and controller behavior are physically checked. Bazzite has no dedicated runtime test in CI.
+
+| Area | Automated coverage | Physical limit |
+| --- | --- | --- |
+| Raw input | USB/basic/full-BT fixtures, CRC, lengths, wrap, reconnect/stale markers, bounded imports and maximum-size stdio replay | Analysis never simulates a physical HID device or actuates hardware |
+| Runtime | Nonblocking startup/cancellation, bounded workers/queues, stale callback isolation, preview fallback, scoped Stop and shutdown with stdin open | OS HID calls still have platform-dependent behavior |
+| UI/QoL | All tabs/scaling, rendered slider alignment, visible/hidden updates, background PCM, idle draws, source/state transitions | Headless Chromium is not a native desktop visual/hardware test |
+| Haptic comparison | Deterministic balanced assignment, explicit playback/completion, scores, interruption/cancellation and export | Subjective scores require a person; no new feel ratings are fabricated |
+| Platforms | Release CI runs Rust tests/check/strict Clippy and bundles Windows, macOS universal and Linux; core integration checks disable HID | CI does not certify Bluetooth feel, game compatibility, platform permissions or audio endpoints |
+
+Current [implementation coverage](docs/implementation-coverage.md) and feature boundaries are in [platform support](docs/platform-support.md), [integrations](docs/platform-integrations.md), [hardware/research](docs/hardware-and-research.md) and [runtime checks](docs/runtime-reliability.md). Driver/output calibration remains backlog item 46. Native relay, Bluetooth haptic streaming and Edge draft support remain experimental.
+
+## Historical test notes
+
+The versioned records below describe those releases, not verification of every later build.
+
 ## 0.15.5 audio streaming batch
 
 Native file playback decodes and resamples on Rust workers with a one-second queue. Tests cover 22.05/44.1/48/96 kHz WAV sources, stereo isolation, seek duration, queue bounds, cancellation, underrun recovery, sample-position pause, output muting, ducking and meter reset. The callback does not acquire PCM/source/capture mutexes. Browser tests cover native file commands, output routes, mixer persistence and responsive layout. The new physical sound and grip feel have not been checked by the user yet; macOS/Linux audio hardware remains unverified. Supported compressed formats use Symphonia; they have not all been physically tested in this app.

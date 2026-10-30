@@ -360,8 +360,8 @@ pub fn parse_input(data: &[u8]) -> Option<InputState> {
         });
     }
     let start = match (data.first().copied()?, data.len()) {
-        (0x01, 64..) => 1,
-        (0x31, 78..) => {
+        (0x01, 64) => 1,
+        (0x31, 78) => {
             let expected = u32::from_le_bytes(data[74..78].try_into().ok()?);
             if crc32_seeded(0xa1, &data[..74]) != expected {
                 return None;
@@ -631,6 +631,20 @@ pub fn crc32_seeded(seed: u8, data: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn input_framing_rejects_trailing_or_truncated_usb_bytes() {
+        let mut report = vec![0u8; 64];
+        report[0] = 1;
+        assert!(super::parse_input(&report).is_some());
+        report.push(0);
+        assert!(super::parse_input(&report).is_none());
+        report.truncate(63);
+        assert!(super::parse_input(&report).is_none());
+        report.truncate(10);
+        assert!(super::parse_input(&report).is_some());
+        report.push(0);
+        assert!(super::parse_input(&report).is_none());
+    }
     use super::*;
 
     #[test]

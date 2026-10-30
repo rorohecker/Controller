@@ -37,6 +37,21 @@ use serde_json::json;
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase")]
 pub enum DeviceCommand {
+    SetHidRecording {
+        enabled: bool,
+    },
+    GetHidTrace,
+    InspectHidTrace {
+        json: String,
+        #[serde(default, rename = "requestId")]
+        request_id: u32,
+    },
+    SetRuntimeDiagnostics {
+        enabled: bool,
+    },
+    LatencyProbe {
+        id: u32,
+    },
     SetNativeHandoff {
         enabled: bool,
     },
@@ -274,6 +289,154 @@ pub enum DeviceCommand {
     Shutdown,
 }
 
+impl DeviceCommand {
+    fn primes_audio(&self) -> bool {
+        match self {
+            Self::PlayEffectClip { clip, .. } => clip.has_grips(),
+            Self::PlayHaptic { .. }
+            | Self::PlaySpeakerChirp
+            | Self::PlayAudioFile { .. }
+            | Self::PlaySpeakerSound { .. }
+            | Self::PlayPersonalTest { .. }
+            | Self::TestGameAction { .. }
+            | Self::StartLinkExperiment { .. } => true,
+            Self::SetAudioBridge { enabled, .. } => *enabled,
+            _ => false,
+        }
+    }
+    fn motor_fallback(&self) -> bool {
+        matches!(self, Self::PlayHaptic { .. } | Self::TestGameAction { .. })
+    }
+    fn cancels_audio_wait(&self) -> bool {
+        matches!(
+            self,
+            Self::ReadEdgeProfiles { .. }
+                | Self::Reset
+                | Self::Shutdown
+                | Self::Scan
+                | Self::SelectDevice { .. }
+                | Self::SetNativeHandoff { .. }
+        )
+    }
+    fn bypasses_audio_wait(&self) -> bool {
+        matches!(
+            self,
+            Self::SetMicrophoneMute { .. }
+                | Self::SetPersonalHaptics { .. }
+                | Self::SetAudioMixer { .. }
+                | Self::SetInputEffects { enabled: false, .. }
+                | Self::SetGameActions { enabled: false, .. }
+                | Self::SetRemap { enabled: false, .. }
+                | Self::SetXinput { enabled: false }
+                | Self::SetTouchMouse { enabled: false, .. }
+                | Self::SetGyroAim { enabled: false, .. }
+                | Self::SetUiFocused { .. }
+                | Self::SetPcMode { .. }
+                | Self::StopMacros
+                | Self::StopEffectClip { .. }
+                | Self::StopLinkExperiment
+                | Self::StopSpeakerSound { .. }
+                | Self::SetAudioBridge { enabled: false, .. }
+        )
+    }
+    fn cancels_queued(&self, queued: &Self) -> bool {
+        match (self, queued) {
+            (
+                Self::StopSpeakerSound { track_id: stop },
+                Self::PlayAudioFile { track_id, .. }
+                | Self::PlaySpeakerSound { track_id, .. }
+                | Self::SetSpeakerPaused { track_id, .. },
+            ) => *stop == 0 || stop == track_id,
+            (Self::StopEffectClip { play_id: stop }, Self::PlayEffectClip { play_id, .. }) => {
+                *stop == 0 || stop == play_id
+            }
+            (Self::StopLinkExperiment, Self::StartLinkExperiment { .. }) => true,
+            (
+                Self::SetAudioBridge { enabled: false, .. },
+                Self::SetAudioBridge { enabled: true, .. },
+            ) => true,
+            _ => false,
+        }
+    }
+}
+fn audio_failure(
+    connected: &mut Connected,
+    queue: &mut std::collections::VecDeque<DeviceCommand>,
+    proxy: &Sender<serde_json::Value>,
+    error: &str,
+) {
+    if let Some(status) = connected.audio.file_status() {
+        emit(
+            proxy,
+            json!({"type":"speakerStatus","source":"error","trackId":status["trackId"],"message":error}),
+        );
+    }
+    connected.audio.stop();
+    connected.audio.remember_output_failure(error.to_owned());
+    let _ = connected.set_speaker_route(false);
+    fail_audio_sources(queue, proxy, error);
+    emit(
+        proxy,
+        json!({"type":"audioStatus","route":"off","bridge":false,"message":error}),
+    );
+    if !queue.iter().any(DeviceCommand::motor_fallback) {
+        emit(proxy, json!({"type":"error","message":error}));
+    }
+}
+fn fail_audio_sources(
+    queue: &mut std::collections::VecDeque<DeviceCommand>,
+    proxy: &Sender<serde_json::Value>,
+    message: &str,
+) {
+    let mut preserved = std::collections::VecDeque::new();
+    let mut failed = std::collections::VecDeque::new();
+    for command in queue.drain(..) {
+        if command.primes_audio() && !command.motor_fallback() {
+            failed.push_back(command);
+        } else {
+            preserved.push_back(command);
+        }
+    }
+    cancel_audio_commands(&mut failed, proxy, message);
+    *queue = preserved;
+}
+fn cancel_audio_commands(
+    queue: &mut std::collections::VecDeque<DeviceCommand>,
+    proxy: &Sender<serde_json::Value>,
+    message: &str,
+) {
+    if queue.is_empty() {
+        return;
+    }
+    emit(proxy, json!({"type":"error","message":message}));
+    for command in queue.drain(..) {
+        match command {
+            DeviceCommand::ProfileCheckpoint { request_id } => emit(
+                proxy,
+                json!({"type":"profileCheckpoint","requestId":request_id,"connected":false,"error":message}),
+            ),
+            DeviceCommand::PlayAudioFile { track_id, .. }
+            | DeviceCommand::PlaySpeakerSound { track_id, .. } => emit(
+                proxy,
+                json!({"type":"speakerStatus","source":"error","trackId":track_id,"message":message}),
+            ),
+            DeviceCommand::PlayEffectClip { play_id, .. } => emit(
+                proxy,
+                json!({"type":"effectTimeline","playing":false,"playId":play_id,"durationMs":0,"positionMs":0,"error":message}),
+            ),
+            DeviceCommand::StartLinkExperiment { .. } => emit(
+                proxy,
+                json!({"type":"linkExperiment","running":false,"error":message}),
+            ),
+            DeviceCommand::SetAudioBridge { .. } => emit(
+                proxy,
+                json!({"type":"audioStatus","route":"off","bridge":false,"message":message}),
+            ),
+            _ => {}
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct RemapBindingDto {
     pub button: u8,
@@ -370,6 +533,7 @@ struct Connected {
     rumble_flags: (u8, u8),
     sequence: u8,
     input_sequence: Option<u8>,
+    write_timing: crate::runtime_diagnostics::Rolling,
     trigger_active: bool,
     light_active: bool,
     player_leds_active: bool,
@@ -393,6 +557,7 @@ struct Connected {
     last_input_sent: Instant,
     last_input_buttons: [bool; 23],
     last_valid_report: Instant,
+    opened_at: Instant,
     panic_latched: bool,
     firmware: Option<String>,
     last_trigger: Option<([u8; 11], [u8; 11])>,
@@ -1082,7 +1247,14 @@ impl Connected {
         Ok(())
     }
 
-    fn write(&mut self, mut report: [u8; protocol::USB_OUTPUT_LEN]) -> Result<(), String> {
+    fn write(&mut self, report: [u8; protocol::USB_OUTPUT_LEN]) -> Result<(), String> {
+        let started = Instant::now();
+        let result = self.write_report(report);
+        self.write_timing
+            .record(crate::runtime_diagnostics::elapsed_us(started));
+        result
+    }
+    fn write_report(&mut self, mut report: [u8; protocol::USB_OUTPUT_LEN]) -> Result<(), String> {
         if self.personal.enabled {
             for (flag, offset) in [(4, 11), (8, 22)] {
                 if report[1] & flag != 0 {
@@ -1519,6 +1691,7 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     ),
                     sequence: 0,
                     input_sequence: None,
+                    write_timing: crate::runtime_diagnostics::Rolling::default(),
                     trigger_active: false,
                     light_active: false,
                     player_leds_active: false,
@@ -1542,6 +1715,7 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     last_input_sent: Instant::now() - Duration::from_secs(1),
                     last_input_buttons: [false; 23],
                     last_valid_report: Instant::now(),
+                    opened_at: Instant::now(),
                     panic_latched: false,
                     firmware,
                     last_trigger: None,
@@ -2863,6 +3037,7 @@ fn handle_command(
                 "Effects reset"
             })
         }
+        DeviceCommand::SetHidRecording{..}|DeviceCommand::GetHidTrace|DeviceCommand::InspectHidTrace{..}|DeviceCommand::SetRuntimeDiagnostics{..}|DeviceCommand::LatencyProbe{..} => unreachable!(),
         DeviceCommand::ProfileCheckpoint { .. }
         | DeviceCommand::CheckDesktopInput
         | DeviceCommand::SetNativeHandoff { .. }
@@ -2915,7 +3090,7 @@ fn handle_command(
     true
 }
 
-pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
+pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disable_hid: bool) {
     let mut api = match HidApi::new() {
         Ok(api) => api,
         Err(error) => {
@@ -2958,7 +3133,65 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
     let mut next_rate = Instant::now() + Duration::from_secs(1);
     let mut next_audio_status = Instant::now();
     let mut telemetry_stale_latched = false;
+    let mut recorder = crate::hid_trace::Recorder::default();
+    let mut last_recording = false;
+    let mut metrics = crate::runtime_diagnostics::Metrics::default();
+    let mut diagnostics_until: Option<Instant> = None;
+    let mut next_metrics = Instant::now();
+    let mut last_loop = Instant::now();
+    let mut deferred_audio = std::collections::VecDeque::<DeviceCommand>::new();
+    let mut deferred_owner: Option<String> = None;
     loop {
+        let now = Instant::now();
+        let diagnostics = diagnostics_until.is_some_and(|until| until > now);
+        if diagnostics {
+            metrics
+                .loop_period
+                .record(crate::runtime_diagnostics::elapsed_us(last_loop));
+        }
+        last_loop = now;
+        recorder.tick();
+        if last_recording && !recorder.active() {
+            emit(
+                &proxy,
+                json!({"type":"hidRecording","active":false,"events":recorder.len()}),
+            );
+        }
+        last_recording = recorder.active();
+        if recorder.active() {
+            recorder.connection(device.as_ref().map(|d| {
+                (
+                    format!("{}:{:?}", d.controller_id, d.opened_at),
+                    if matches!(d.transport, BusType::Bluetooth) {
+                        "Bluetooth"
+                    } else {
+                        "USB"
+                    }
+                    .into(),
+                )
+            }));
+        }
+        if let Some(connected) = device.as_mut()
+            && let Err(error) = connected.audio.poll_output()
+        {
+            audio_failure(connected, &mut deferred_audio, &proxy, &error);
+        }
+        if !deferred_audio.is_empty()
+            && device.as_ref().map(|d| &d.controller_id) != deferred_owner.as_ref()
+        {
+            cancel_audio_commands(
+                &mut deferred_audio,
+                &proxy,
+                "Controller changed before audio was ready.",
+            );
+        }
+        if diagnostics && now >= next_metrics {
+            emit(
+                &proxy,
+                json!({"type":"runtimeStats","softwareOnly":true,"hidEnabled":!disable_hid,"metrics":metrics.report(),"write":device.as_ref().map(|d|d.write_timing.report()),"processDiscovery":processes::diagnostics(),"core":crate::runtime_diagnostics::resources(),"recording":recorder.active()}),
+            );
+            next_metrics = now + Duration::from_secs(1);
+        }
         #[cfg(windows)]
         if let Some(gui_pid) = gui_pid
             && Instant::now() >= next_focus_check
@@ -3003,7 +3236,10 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     );
                     emit(&proxy, json!({"type":"error","message":error}));
                 }
-                emit(&proxy, connected.audio.diagnostics());
+                let mut audio_status = connected.audio.diagnostics();
+                audio_status["controllerId"] = json!(connected.controller_id);
+                audio_status["firmware"] = json!(connected.firmware);
+                emit(&proxy, audio_status);
                 let now = Instant::now();
                 let trigger_source = if connected
                     .timeline
@@ -3092,18 +3328,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
             }
             if let Some(connected) = device.as_mut() {
                 if let Some(error) = connected.audio.take_error() {
-                    if let Some(status) = connected.audio.file_status() {
-                        emit(
-                            &proxy,
-                            json!({"type":"speakerStatus","source":"error","trackId":status["trackId"],"message":error}),
-                        );
-                    }
-                    connected.audio.stop();
-                    emit(
-                        &proxy,
-                        json!({"type":"audioStatus","route":"off","bridge":false,"message":error}),
-                    );
-                    emit(&proxy, json!({"type":"error","message":error}));
+                    audio_failure(connected, &mut deferred_audio, &proxy, &error);
                 } else if connected.audio.bridge_on() {
                     emit(
                         &proxy,
@@ -3144,11 +3369,167 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 );
                 last_foreground = foreground;
             }
-            next_process_check = Instant::now() + Duration::from_secs(2);
+            next_process_check = Instant::now() + Duration::from_millis(250);
         }
-        loop {
-            match rx.try_recv() {
+        // Bound command work per pass so UI/file bursts cannot starve HID reads.
+        for _ in 0..32 {
+            let from_deferred = !deferred_audio.is_empty()
+                && device.as_ref().is_some_and(|d| !d.audio.output_opening());
+            let command = if from_deferred {
+                Ok(deferred_audio.pop_front().unwrap())
+            } else {
+                rx.try_recv()
+            };
+            match command {
                 Ok(command) => {
+                    if disable_hid
+                        && matches!(
+                            command,
+                            DeviceCommand::Scan
+                                | DeviceCommand::ListDevices
+                                | DeviceCommand::SelectDevice { .. }
+                        )
+                    {
+                        emit_device_list(&api, &proxy, None);
+                        emit(
+                            &proxy,
+                            json!({"type":"device","connected":false,"message":"HID disabled for this core session"}),
+                        );
+                        continue;
+                    }
+                    match &command {
+                        DeviceCommand::SetHidRecording { enabled } => {
+                            if *enabled {
+                                recorder.start();
+                            } else {
+                                recorder.stop();
+                            }
+                            recorder.connection(device.as_ref().map(|d| {
+                                (
+                                    format!("{}:{:?}", d.controller_id, d.opened_at),
+                                    if matches!(d.transport, BusType::Bluetooth) {
+                                        "Bluetooth"
+                                    } else {
+                                        "USB"
+                                    }
+                                    .into(),
+                                )
+                            }));
+                            last_recording = recorder.active();
+                            emit(
+                                &proxy,
+                                json!({"type":"hidRecording","active":recorder.active(),"events":recorder.len()}),
+                            );
+                            continue;
+                        }
+                        DeviceCommand::GetHidTrace => {
+                            if let Err(error) = crate::hid_trace::export_background(
+                                recorder.snapshot(),
+                                proxy.clone(),
+                            ) {
+                                emit(&proxy, json!({"type":"hidTrace","error":error}));
+                            }
+                            continue;
+                        }
+                        DeviceCommand::InspectHidTrace { json, request_id } => {
+                            if let Err(error) = crate::hid_trace::analyze_background(
+                                json.clone(),
+                                *request_id,
+                                proxy.clone(),
+                            ) {
+                                emit(
+                                    &proxy,
+                                    json!({"type":"hidReplay","requestId":request_id,"error":error}),
+                                );
+                            }
+                            continue;
+                        }
+                        DeviceCommand::SetRuntimeDiagnostics { enabled } => {
+                            diagnostics_until =
+                                enabled.then(|| Instant::now() + Duration::from_secs(30));
+                            if *enabled {
+                                next_metrics = Instant::now();
+                            }
+                            continue;
+                        }
+                        DeviceCommand::LatencyProbe { id } => {
+                            emit(&proxy, json!({"type":"latencyEcho","id":id}));
+                            continue;
+                        }
+                        _ => {}
+                    }
+                    if !from_deferred
+                        && command.primes_audio()
+                        && let Some(d) = device.as_mut()
+                    {
+                        d.audio.allow_output_retry();
+                    }
+                    let opening = device.as_ref().is_some_and(|d| d.audio.output_opening());
+                    if opening && command.bypasses_audio_wait() {
+                        let before = deferred_audio.len();
+                        deferred_audio.retain(|queued| !command.cancels_queued(queued));
+                        if deferred_audio.len() != before
+                            && !deferred_audio.iter().any(DeviceCommand::primes_audio)
+                            && let Some(d) = device.as_mut()
+                            && !d.audio.has_sources()
+                        {
+                            d.audio.stop();
+                        }
+                    }
+
+                    if opening && command.cancels_audio_wait() {
+                        cancel_audio_commands(
+                            &mut deferred_audio,
+                            &proxy,
+                            "Audio startup cancelled.",
+                        );
+                        if let Some(d) = device.as_mut() {
+                            d.audio.stop();
+                        }
+                    } else if opening && !command.bypasses_audio_wait() {
+                        deferred_owner = device.as_ref().map(|d| d.controller_id.clone());
+                        if deferred_audio.len() < 64 {
+                            deferred_audio.push_back(command);
+                        } else {
+                            // Reject the incoming command with its own track/clip/checkpoint ID too.
+                            deferred_audio.push_back(command);
+                            cancel_audio_commands(
+                                &mut deferred_audio,
+                                &proxy,
+                                "Too many commands arrived during audio startup. Try again.",
+                            );
+                            if let Some(d) = device.as_mut() {
+                                d.audio.stop();
+                            }
+                        }
+                        continue;
+                    } else if command.primes_audio()
+                        && device.as_ref().is_some_and(|d| {
+                            matches!(d.transport, BusType::Usb)
+                                && !d.audio.output_ready()
+                                && !(from_deferred
+                                    && command.motor_fallback()
+                                    && d.audio.output_failed())
+                        })
+                    {
+                        let d = device.as_mut().unwrap();
+                        match d.audio.start_output() {
+                            Ok(_) => {
+                                deferred_owner = Some(d.controller_id.clone());
+                                deferred_audio.push_back(command);
+                                emit(&proxy, json!({"type":"audioStartup","stage":"starting"}));
+                                continue;
+                            }
+                            Err(error) if command.motor_fallback() => {
+                                d.audio.remember_output_failure(error);
+                            }
+                            Err(error) => {
+                                deferred_audio.push_back(command);
+                                cancel_audio_commands(&mut deferred_audio, &proxy, &error);
+                                continue;
+                            }
+                        }
+                    }
                     if let DeviceCommand::SetNativeHandoff { enabled } = command {
                         native_handoff = enabled;
                         if enabled {
@@ -3187,6 +3568,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     if matches!(command, DeviceCommand::Reset | DeviceCommand::Shutdown) {
                         game_link.stop();
                     }
+                    let output_was_ready = device.as_ref().is_some_and(|d| d.audio.output_ready());
                     if !handle_command(
                         command,
                         &mut device,
@@ -3204,6 +3586,14 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                         &mut preferred_path,
                     ) {
                         return;
+                    }
+                    if output_was_ready && !device.as_ref().is_some_and(|d| d.audio.output_ready())
+                    {
+                        cancel_audio_commands(
+                            &mut deferred_audio,
+                            &proxy,
+                            "Controller output reset before pending audio started.",
+                        );
                     }
                 }
                 Err(TryRecvError::Disconnected) => {
@@ -3438,7 +3828,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 }
             }
         }
-        if device.is_some() && Instant::now() >= next_scan {
+        if !disable_hid && device.is_some() && Instant::now() >= next_scan {
             next_scan = Instant::now() + Duration::from_secs(2);
             if api.refresh_devices().is_ok()
                 && let Some(current) = device.as_ref()
@@ -3671,12 +4061,27 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
             {
                 connected.rumble_until = None;
             }
-            match connected.hid.read_timeout(
+            let read_started = Instant::now();
+            let read_result = connected.hid.read_timeout(
                 &mut input_report,
                 if connected.timeline.is_some() { 5 } else { 20 },
-            ) {
+            );
+            if diagnostics {
+                metrics
+                    .read_wait
+                    .record(crate::runtime_diagnostics::elapsed_us(read_started));
+            }
+            match read_result {
                 Ok(length) if length > 0 => {
-                    if let Some(mut input) = protocol::parse_input(&input_report[..length]) {
+                    recorder.input(&input_report[..length]);
+                    let input_started = Instant::now();
+                    let parsed = protocol::parse_input(&input_report[..length]);
+                    if diagnostics {
+                        metrics
+                            .decode
+                            .record(crate::runtime_diagnostics::elapsed_us(input_started));
+                    }
+                    if let Some(mut input) = parsed {
                         connected.last_battery = input.battery;
                         if connected.microphone_muted.is_none() {
                             connected.microphone_muted = Some(input.battery_info.microphone_muted);
@@ -3866,6 +4271,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                             }
                         }
                         if input.panic_combo && !connected.panic_latched {
+                            cancel_audio_commands(
+                                &mut deferred_audio,
+                                &proxy,
+                                "Controller reset cancelled pending audio.",
+                            );
                             game_link.stop();
                             screen.set_enabled(false);
                             let _ = telemetry.set(false, 0, false);
@@ -3947,9 +4357,17 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                     } else if matches!(input_report[0], 0x01 | 0x31) {
                         invalid_reports += 1;
                     }
+                    if diagnostics {
+                        metrics
+                            .dispatch
+                            .record(crate::runtime_diagnostics::elapsed_us(input_started));
+                    }
                 }
-                Ok(_) => {}
+                Ok(_) => {
+                    recorder.timeout();
+                }
                 Err(error) => {
+                    recorder.read_error();
                     drop_device(
                         &mut device,
                         &mut mouse,
@@ -3964,7 +4382,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
                 }
             }
         } else {
-            if !native_handoff && Instant::now() >= next_scan {
+            if !disable_hid && !native_handoff && Instant::now() >= next_scan {
                 let _ = api.refresh_devices();
                 match open_path(&api, preferred_path.as_deref()) {
                     Ok(Some(found)) => {
@@ -3993,6 +4411,49 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reset_rejects_pending_playback_and_checkpoint_before_they_can_restart() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut queue = std::collections::VecDeque::from([
+            super::DeviceCommand::PlayAudioFile {
+                path: "test.wav".into(),
+                position: 0.0,
+                duration: 5.0,
+                route: "grips".into(),
+                kind: "music".into(),
+                track_id: 77,
+            },
+            super::DeviceCommand::ProfileCheckpoint { request_id: 78 },
+        ]);
+        super::cancel_audio_commands(&mut queue, &sender, "Controller reset");
+        assert!(queue.is_empty());
+        let events: Vec<_> = receiver.try_iter().collect();
+        assert!(
+            events.iter().any(|e| e["type"] == "speakerStatus"
+                && e["trackId"] == 77
+                && e["source"] == "error")
+        );
+        assert!(events.iter().any(|e| e["type"] == "profileCheckpoint"
+            && e["requestId"] == 78
+            && e["connected"] == false));
+    }
+    #[test]
+    fn scoped_stop_removes_only_its_pending_audio_and_global_reset_cancels_startup() {
+        let chunk = |track_id| super::DeviceCommand::PlaySpeakerSound {
+            track_id,
+            pcm_base64: "AAAAAA==".into(),
+            route: "speaker".into(),
+            append: false,
+        };
+        let stop = super::DeviceCommand::StopSpeakerSound { track_id: 42 };
+        assert!(stop.bypasses_audio_wait());
+        assert!(!stop.cancels_audio_wait());
+        assert!(stop.cancels_queued(&chunk(42)));
+        assert!(!stop.cancels_queued(&chunk(43)));
+        assert!(super::DeviceCommand::Reset.cancels_audio_wait());
+        assert!(!super::DeviceCommand::SetPcMode { enabled: false }.cancels_audio_wait());
+    }
+
     use super::{
         BowReturn, DeviceCommand, InputEffect, KickStyle, TriggerSetting, WeaponKind,
         encode_live_trigger, sensor_color,

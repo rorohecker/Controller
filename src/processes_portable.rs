@@ -1,33 +1,17 @@
+#[path = "process_cache.rs"]
+mod cache;
+pub fn inspect() -> ProcessState {
+    cache::inspect()
+}
+pub fn diagnostics() -> serde_json::Value {
+    cache::diagnostics()
+}
 #[derive(Clone, Default)]
 pub struct ProcessState {
     pub conflicts: Vec<&'static str>,
     pub foreground_exe: Option<String>,
     pub foreground_title: Option<String>,
     pub foreground_path: Option<String>,
-}
-
-pub fn inspect() -> ProcessState {
-    // Keep external process inspection away from the controller read loop.
-    static STATUS: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<ProcessState>>> =
-        std::sync::OnceLock::new();
-    let status = STATUS.get_or_init(|| {
-        let status = std::sync::Arc::new(std::sync::Mutex::new(ProcessState::default()));
-        let worker = status.clone();
-        std::thread::spawn(move || {
-            loop {
-                let next = inspect_now();
-                if let Ok(mut current) = worker.lock() {
-                    *current = next;
-                }
-                std::thread::sleep(std::time::Duration::from_secs(2));
-            }
-        });
-        status
-    });
-    status
-        .lock()
-        .map(|current| current.clone())
-        .unwrap_or_default()
 }
 
 fn inspect_now() -> ProcessState {
@@ -139,12 +123,40 @@ mod tests {
 }
 
 fn output(program: &str, args: &[&str]) -> Option<String> {
-    let output = std::process::Command::new(program)
+    use std::{
+        io::Read,
+        process::{Command, Stdio},
+        time::{Duration, Instant},
+    };
+    let mut child = Command::new(program)
         .args(args)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    let started = Instant::now();
+    let success = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Ok(None) if started.elapsed() < Duration::from_millis(600) => {
+                std::thread::sleep(Duration::from_millis(10))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break false;
+            }
+        }
+    };
+    if !success {
+        return None;
+    }
+    let mut text = String::new();
+    child
+        .stdout
+        .take()?
+        .take(65_537)
+        .read_to_string(&mut text)
+        .ok()?;
+    (text.len() <= 65_536).then(|| text.trim().to_owned())
 }

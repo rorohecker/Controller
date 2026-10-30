@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "appVersion": "0.21.0",
+  "capturedAtUtc": "2026-10-30T00:34:46.818523+00:00",
+  "method": "Short synthetic smoke samples, not physical latency, attached-controller performance, native webview or GPU measurements. CSS baseline uses the current DOM and old moving-background reflection; both sweeps are forced into their moving phase.",
+  "browser": {
+    "scope": "Headless Chromium preview; hidden flag simulated; not Tauri CPU or GPU",
+    "browser": "156.0.8078.48",
+    "appVersion": "0.21.0",
+    "viewport": {
+      "width": 1280,
+      "height": 900
+    },
+    "samples": [
+      {
+        "reflection": "legacy-background-position",
+        "simulatedHidden": false,
+        "seconds": 1.5231729999941308,
+        "mainThreadTaskPercent": 19.18711794399757,
+        "jsHeapBytes": 3724636,
+        "nodes": 18703,
+        "extraFrames": 0
+      },
+      {
+        "reflection": "legacy-background-position",
+        "simulatedHidden": true,
+        "seconds": 1.5228280000010272,
+        "mainThreadTaskPercent": 18.363400200141538,
+        "jsHeapBytes": 3723728,
+        "nodes": 18695,
+        "extraFrames": 0
+      },
+      {
+        "reflection": "composited-overlay",
+        "simulatedHidden": false,
+        "seconds": 1.5260060000000522,
+        "mainThreadTaskPercent": 1.0942945178458963,
+        "jsHeapBytes": 3725084,
+        "nodes": 18700,
+        "extraFrames": 0
+      },
+      {
+        "reflection": "composited-overlay",
+        "simulatedHidden": true,
+        "seconds": 1.51644700000179,
+        "mainThreadTaskPercent": 0.1663098017930687,
+        "jsHeapBytes": 3724532,
+        "nodes": 18700,
+        "extraFrames": 0
+      }
+    ]
+  },
+  "core": {
+    "scope": "Debug headless stdio core with HID discovery disabled; includes passive diagnostics and cached process discovery",
+    "platform": "win32",
+    "seconds": 3.085686,
+    "oneCoreCpuPercent": 1.0127407649384934,
+    "residentBytes": 12140544,
+    "lastProcessDiscoveryUs": 19729
+  },
+  "sourceHashNormalization": "UTF-8 text with LF line endings",
+  "sourceSha256": {
+    "Cargo.toml": "b7c728f198e3ff032381747d7b4e94b75f31add80919c60aa00e1c584bb90d56",
+    "protocol/src/lib.rs": "a10a1a876ba7b3f5fccbbbdf7df629177fd3b13518928d4bddc58e8cba573475",
+    "src/device.rs": "be5f7bea6bcfaee35fc7a5854a16ad24b3489ad46fb41e7ec00a261ddd9e86ad",
+    "src/main.rs": "f7e6c1527f5c7b07a9e4f1db6377e683c735d0f87c021ef51922e86fe456f94b",
+    "src/audio_haptics.rs": "5b36f3ea43873557c7889776c230f2ffe95174ad4d79c852771ad852b9d4489b",
+    "src/audio_haptics/io_runtime.rs": "afabd74430f24b721b95fb7884cb3856eb997422b29c13ade48ed6fecef0baec",
+    "src/process_cache.rs": "d8db2c2e2caf3353afc71c92aa647e8f11aad341782c0f3c7ae1d3d1f1cd3db9",
+    "src/runtime_diagnostics.rs": "8c87caa92e0f4d0d01850897ab1f39ee0935f09f144357e4e87700e5e42cb90e",
+    "src/hid_trace.rs": "01073def7637ced7e0a1ab534a09a4c05da5b4b3157bc1d970ee3a91a9415df5",
+    "ui/app.js": "ab820432f42cfe61c91c94abd170cf6a46db80ea7d504b70d5204f59d3f258ab",
+    "ui/player.js": "f38f5d810664cea5329d97d89bfc3403630e33155d020d8a15641cee4db74a26",
+    "ui/workbench.css": "de2a2f402e66d24b582e1a822c7e2c55ff5a12b32bb2c76130f115d1cfa8e4d6",
+    "ui/presentation.js": "9c67f683e0199028c078c8639f02d780b6e1a47139319d1fd167c38abe1d414d",
+    "ui/runtime-lab.js": "663b48611efbac7accc58f1b800ac058437f5d0686678eae9a1d6132e409f60a",
+    "ui/haptic-evaluation.js": "96e45ab0960b485b98263ad005fc70f49615adae31a92c91ec3b3e09967c1001",
+    "tests/runtime_reliability_smoke.py": "48e625067014d2783349e6e4431210528ddb7a083641a83730635258b0f66fce",
+    "tests/runtime_core_smoke.py": "684e93d6687fab9d13622c30276a7e72dbcbce8dcefb421362dab256c16e9092"
+  }
+}

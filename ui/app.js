@@ -246,12 +246,12 @@
       $('#update-status').textContent=`Downloading ${availableVersion}: ${Math.min(100,Math.round(progress.downloaded/progress.total*100))}%`;
     }
   }
-  function log(message) {
-    const list = $('#event-log'), item = document.createElement('li');
-    const time = document.createElement('time'), detail = document.createElement('span');
-    time.textContent = timeLabel(); detail.textContent = message;
-    item.append(time, detail); list.prepend(item);
-    while (list.children.length > 11) list.lastChild.remove();
+  const eventRows=[];
+  function log(message){eventRows.unshift({time:timeLabel(),message:String(message)});eventRows.length=Math.min(eventRows.length,11);renderLog();}
+  function renderLog(){
+    if(document.hidden||state.currentView!=='diagnostics')return;
+    const list=$('#event-log');list.replaceChildren();
+    for(const row of eventRows){const item=document.createElement('li'),time=document.createElement('time'),detail=document.createElement('span');time.textContent=row.time;detail.textContent=row.message;item.append(time,detail);list.append(item);}
   }
   async function send(command, sessionOwned=false,applyTicket=null) {
     if(command.action==='reset'||command.action==='selectDevice'){weaponRequest++;weaponApplying=false;activeWeaponPreset='';}
@@ -339,6 +339,27 @@
   function sampleCalibration(input){
     const axes=input.axes||[0,0,0,0],buttons=input.buttons||Array(23).fill(0),point=input.touch?.find(Boolean);
     const run=calibrationRun;
+    if(!run)return;
+    if(run.stage===0){
+      run.restSamples.push({axes:[...axes],triggers:[buttons[6],buttons[7]]});
+      if(run.restSamples.length>100)run.restSamples.shift();
+    }else if(run.stage===1){
+      run.axisCount++;
+      axes.forEach((value,i)=>{run.axisMins[i]=Math.min(run.axisMins[i],value);run.axisMaxs[i]=Math.max(run.axisMaxs[i],value);});
+    }else if(run.stage===2){
+      [6,7].forEach((button,i)=>{
+        const value=buttons[button];
+        if(value>run.rests[i]+.25)run.triggerHeld[i]=true;
+        if(run.triggerHeld[i])run.triggerPeaks[i]=Math.max(run.triggerPeaks[i],value);
+        if(run.triggerHeld[i]&&value<=run.rests[i]+.08){run.triggerFulls[i]=Math.max(run.triggerFulls[i],run.triggerPeaks[i]);run.triggerHeld[i]=false;run.triggerPeaks[i]=0;}
+      });
+    }else{
+      input.touch.forEach(contact=>{if(contact){run.touchMins[0]=Math.min(run.touchMins[0],contact.x);run.touchMins[1]=Math.min(run.touchMins[1],contact.y);run.touchMaxs[0]=Math.max(run.touchMaxs[0],contact.x);run.touchMaxs[1]=Math.max(run.touchMaxs[1],contact.y);run.touchCount++;if(contact.x<.3&&contact.y<.3)run.touchCorners.tl=true;if(contact.x>.7&&contact.y<.3)run.touchCorners.tr=true;if(contact.x<.3&&contact.y>.7)run.touchCorners.bl=true;if(contact.x>.7&&contact.y>.7)run.touchCorners.br=true;}});
+    }
+
+  }
+  function renderCalibrationInput(input){
+    const axes=input.axes||[0,0,0,0],buttons=input.buttons||Array(23).fill(0),point=input.touch?.find(Boolean),run=calibrationRun;
     $('#cal-stick-left').textContent=`${Math.round(axes[0]*100)} / ${Math.round(axes[1]*100)}`;
     $('#cal-stick-right').textContent=`${Math.round(axes[2]*100)} / ${Math.round(axes[3]*100)}`;
     $('#cal-trigger-l2').textContent=run?`${Math.round(buttons[6]*255)}/255`:`${Math.round(buttons[6]*100)}%`;
@@ -358,25 +379,10 @@
     $('#cal-touch-readout').textContent=point?`${Math.round(point.x*100)}% / ${Math.round(point.y*100)}%`:'No contact';
     const dot=$('#cal-touch-dot');dot.classList.toggle('is-active',!!point);
     if(point){dot.style.left=`${clamp(point.x)*100}%`;dot.style.top=`${clamp(point.y)*100}%`;}
-    if(!run)return;
-    if(run.stage===0){
-      run.restSamples.push({axes:[...axes],triggers:[buttons[6],buttons[7]]});
-      if(run.restSamples.length>100)run.restSamples.shift();
-    }else if(run.stage===1){
-      run.axisCount++;
-      axes.forEach((value,i)=>{run.axisMins[i]=Math.min(run.axisMins[i],value);run.axisMaxs[i]=Math.max(run.axisMaxs[i],value);});
-    }else if(run.stage===2){
-      [6,7].forEach((button,i)=>{
-        const value=buttons[button];
-        if(value>run.rests[i]+.25)run.triggerHeld[i]=true;
-        if(run.triggerHeld[i])run.triggerPeaks[i]=Math.max(run.triggerPeaks[i],value);
-        if(run.triggerHeld[i]&&value<=run.rests[i]+.08){run.triggerFulls[i]=Math.max(run.triggerFulls[i],run.triggerPeaks[i]);run.triggerHeld[i]=false;run.triggerPeaks[i]=0;}
-      });
-    }else{
-      input.touch.forEach(contact=>{if(contact){run.touchMins[0]=Math.min(run.touchMins[0],contact.x);run.touchMins[1]=Math.min(run.touchMins[1],contact.y);run.touchMaxs[0]=Math.max(run.touchMaxs[0],contact.x);run.touchMaxs[1]=Math.max(run.touchMaxs[1],contact.y);run.touchCount++;if(contact.x<.3&&contact.y<.3)run.touchCorners.tl=true;if(contact.x>.7&&contact.y<.3)run.touchCorners.tr=true;if(contact.x<.3&&contact.y>.7)run.touchCorners.bl=true;if(contact.x>.7&&contact.y>.7)run.touchCorners.br=true;}});
-    }
+    if(run){
     $$('.cal-corner').forEach(marker=>marker.classList.toggle('is-captured',!!run.touchCorners[marker.dataset.calCorner]));
     renderCalibrationStatus();
+    }
   }
   async function finishCalibration(){
     const run=calibrationRun;
@@ -568,6 +574,10 @@
     window.scrollTo({top:window.studioHooks?.scrollTop(view)||0,behavior:'instant'});
     window.studioHooks?.navigate(view);window.motionStudio?.navigate(view);
     if (view === 'triggers') renderCurve();
+    inputDirty=true;rangeDirty=true;calibrationPaintedPacket=-1;requestVisualFrame();
+    if(view==='haptics'){drawWave(performance.now());renderBridge();}
+    if(view==='diagnostics')renderLog();
+    document.dispatchEvent(new CustomEvent('controller-view',{detail:{view}}));
   }
   $('#nav').addEventListener('click',e => { const b = e.target.closest('[data-view]'); if (b) navigate(b.dataset.view); });
   $$('[data-goto]').forEach(b => b.addEventListener('click',() => navigate(b.dataset.goto)));
@@ -792,7 +802,7 @@
     saveTimeout=setTimeout(persistProfiles,180);
   }
   function gameNode(tag,props={},children=[]){const n=document.createElement(tag);for(const [key,value] of Object.entries(props))if(key==='text')n.textContent=value;else if(key==='class')n.className=value;else n[key]=value;for(const child of children)n.append(child);return n;}
-  function gameSelect(items,value,onchange){const n=gameNode('select');items.forEach(([v,label])=>n.add(new Option(label,String(v))));n.value=String(value);n.addEventListener('change',()=>onchange(n.value));return n;}
+  function gameSelect(items,value,onchange=()=>{}){const n=gameNode('select');items.forEach(([v,label])=>n.add(new Option(label,String(v))));n.value=String(value);n.addEventListener('change',()=>onchange(n.value));return n;}
   function gameField(label,input){return gameNode('label',{class:'game-field',text:label},[input]);}
   function gameNumber(value,min,max,change,step=1){const n=gameNode('input',{type:'number',min,max,step,value});n.addEventListener('change',()=>{const value=Number(n.value);if(!Number.isFinite(value)||value<min||value>max){n.value=String(min);toast(`Enter ${min}–${max}`);return;}change(value);saveProfiles();});return n;}
   function libraryOptions(){return [['','No trigger change'],...triggerPresets.map(p=>[p.id,p.name])];}
@@ -873,7 +883,7 @@
   $('#add-weapon-binding').addEventListener('click',()=>{if(!triggerPresets.length){toast('Save a trigger preset on Triggers first.');return;}if(profile().weaponBindings.length>=100)return;let name='Weapon',i=1;while(profile().weaponBindings.some(b=>b.weapon===name))name=`Weapon ${++i}`;profile().weaponBindings.push({weapon:name,presetId:triggerPresets[0].id});saveProfiles();renderGameProfiles();});
   $('#apply-manual-weapon').addEventListener('click',()=>useWeapon($('#manual-weapon').value));
 
-  function renderAllProfileControls() { renderProfiles(); renderTriggerControls(); renderHapticControls(); renderRemapEditor(); renderGyroControls(); renderGameProfiles(); window.motionStudio?.renderProfile(); window.gameSessions?.renderProfile(); window.studioHooks?.renderProfile(); window.dailyUse?.changed(); }
+  function renderAllProfileControls() { rangeDirty=true;requestVisualFrame();renderProfiles(); renderTriggerControls(); renderHapticControls(); renderRemapEditor(); renderGyroControls(); renderGameProfiles(); window.motionStudio?.renderProfile(); window.gameSessions?.renderProfile(); window.studioHooks?.renderProfile(); window.dailyUse?.changed(); }
 
   let profileApplyQueue=Promise.resolve();
   function applyProfileHardware(announce=true,sessionOwned=false,epoch=window.gameSessions?.epoch) {
@@ -1330,6 +1340,28 @@
   function syncRangeFills(){
     $$('.screen.is-current input[type="range"]').forEach(fillRange);
   }
+  // Scope reactive value bindings to range widgets. Native dragging still uses
+  // input events; programmatic writes need no timer, event or scrubbing side effect.
+  const boundRanges=new WeakSet();
+  function bindRangeFills(root){
+    const ranges=[...(root.matches?.('input[type="range"]')?[root]:[]),...root.querySelectorAll('input[type="range"]')];
+    for(const range of ranges){
+      if(boundRanges.has(range))continue;boundRanges.add(range);
+      for(const property of ['value','valueAsNumber']){
+        const descriptor=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,property);
+        if(descriptor?.get&&descriptor?.set)Object.defineProperty(range,property,{configurable:true,enumerable:descriptor.enumerable,get(){return descriptor.get.call(this);},set(value){descriptor.set.call(this,value);fillRange(this);}});
+      }
+      for(const method of ['stepUp','stepDown'])range[method]=function(...args){HTMLInputElement.prototype[method].apply(this,args);fillRange(this);};
+      fillRange(range);
+    }
+  }
+  bindRangeFills(document.body);
+  new MutationObserver(records=>{
+    for(const record of records){
+      if(record.type==='attributes'&&record.target.matches('input[type="range"]'))fillRange(record.target);
+      else for(const node of record.addedNodes)if(node.nodeType===1)bindRangeFills(node);
+    }
+  }).observe(document.body,{subtree:true,childList:true,attributes:true,attributeFilter:['min','max','step','value']});
   document.addEventListener('input',event=>{if(event.target.matches('input[type="range"]'))fillRange(event.target);});
   $('#trigger-strength').addEventListener('input',e=>{trigger().strength=+e.target.value;renderTriggerStrength(trigger());fillRange(e.target);saveProfiles();});
   function bindRangeNumber(rangeId,numberId,offset=0){
@@ -1437,11 +1469,12 @@
       else{source=audioContext.createOscillator();source.type=h.shape==='saw'?'sawtooth':h.shape;source.frequency.value=h.frequency;}
       source.connect(gain).connect(pan).connect(audioContext.destination);source.start(now);source.stop(now+duration/1000);
     }catch(error){log(`AUDIO SKETCH / ${error}`);}
-    state.playStart=performance.now();state.playDuration=duration;state.playUntil=state.playStart+duration;
+    state.playStart=performance.now();state.playDuration=duration;state.playUntil=state.playStart+duration;requestVisualFrame();
   }
   $('#play-haptic').addEventListener('click',playHaptic);
 
   function renderBridge(){
+    if(document.hidden||state.currentView!=='haptics')return;
     const available=state.connected&&state.transport==='USB';
     const toggle=$('#bridge-toggle'),status=$('#bridge-status');
     toggle.disabled=!available;
@@ -1452,6 +1485,7 @@
     else if(!available)status.textContent='USB is required for system audio haptics. Haptic previews use motor rumble over Bluetooth.';
     else if(!state.audioBridge)status.textContent='Bridge off';
     $('#haptic-route').textContent=!state.connected?'Route: PC audio preview':state.audioRoute==='voiceCoil'?'Route: USB voice coils':state.audioRoute==='motor'?'Route: motor fallback':state.transport==='Bluetooth'?'Route: Bluetooth motors':'Route: USB voice coils if available';
+    if(state.bridgeMessage)status.textContent=state.bridgeMessage;
   }
   $('#bridge-toggle').addEventListener('click',()=>send({action:'setAudioBridge',enabled:!state.audioBridge,gain:+$('#bridge-gain').value/100,preset:$('#bridge-preset').value,source:window.integrationStudio?.commandSource()||{kind:'system'}}));
   $('#bridge-gain').addEventListener('input',e=>{$('#bridge-gain-value').textContent=`${e.target.value}%`;fillRange(e.target);});
@@ -1759,7 +1793,7 @@
     if(!connected)musicPlayer.stop('Controller disconnected');
     musicPlayer.render();
     if(!connected)audioMixer.clear();
-    if(!connected){clearPadFocus();calibrationRun=null;state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.pcMode=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.temperatureLight=false;state.screenLight=false;state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderTemperatureLight();renderScreenLight();renderInput();}
+    if(!connected){clearPadFocus();calibrationRun=null;state.latestInput=null;widgetSignatures.clear();state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.pcMode=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.temperatureLight=false;state.screenLight=false;state.bridgeMessage='';state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderTemperatureLight();renderScreenLight();renderInput();}
     renderPcMode();
     if(!connected){state.lowBatteryAlert=false;state.timerUntil=0;}
     renderAlerts();renderBridge();
@@ -1776,14 +1810,15 @@
   }
 
   function renderSession(){
-    const remaining=Math.max(0,state.leaseUntil-performance.now());
-    $('#session-lease').textContent=remaining>0?`${(remaining/1000).toFixed(1)}s`:'Off';
-    $('#lease-fill').style.width=remaining>0?`${remaining/state.leaseDuration*100}%`:'0%';
-    $('#session-lease').parentElement.classList.toggle('is-active',remaining>0);
-    const age=performance.now()-state.lastInputAt;
+    if(document.hidden)return;
+    const now=performance.now(),remaining=Math.max(0,state.leaseUntil-now),age=now-state.lastInputAt;
     const signal=!state.connected?'Waiting':!state.lastInputAt?'Connecting':age>1500?'Stalled':state.fullReport?'Full report':'Basic';
-    $('#session-signal').textContent=signal;
-    $('#session-signal-dot').classList.toggle('is-live',state.connected&&age<=1500&&!!state.lastInputAt);
+    const text=(selector,value)=>{const el=$(selector);if(el.textContent!==value)el.textContent=value;};
+    const toggle=(el,name,on)=>{if(el.classList.contains(name)!==on)el.classList.toggle(name,on);};
+    text('#session-lease',remaining>0?`${(remaining/1000).toFixed(1)}s`:'Off');
+    const width=remaining>0?`${remaining/state.leaseDuration*100}%`:'0%';if($('#lease-fill').style.width!==width)$('#lease-fill').style.width=width;
+    toggle($('#session-lease').parentElement,'is-active',remaining>0);text('#session-signal',signal);toggle($('#session-signal-dot'),'is-live',state.connected&&age<=1500&&!!state.lastInputAt);
+    if(state.connected&&state.lastInputAt&&age<=1500&&!signalTimer)signalTimer=setTimeout(()=>{signalTimer=0;renderSession();},1501);
   }
   function renderBatteryHistory(){
     const host=$('#battery-history');host.replaceChildren();
@@ -1872,59 +1907,66 @@
     state.stickTest=null;renderStickButtons();
   }
   function formatAxis(n){return(Math.abs(n)<.005?0:n).toFixed(2);}
-  function renderInput(){
-    const b=state.buttons,a=state.axes,l=Math.round((b[6]||0)*100),r=Math.round((b[7]||0)*100);
-    $$('.map-control,.map-stick').forEach(el=>el.classList.toggle('is-pressed',(b[+el.dataset.button]||0)>.08));
-    $$('.button-matrix span').forEach(el=>el.classList.toggle('is-pressed',(b[+el.dataset.matrix]||0)>.5));
-    const active=names.filter((_,i)=>b[i]>.5);$('#active-buttons').textContent=active.length?active.join(' · '):'None';
-    $('#live-l2').textContent=String(l).padStart(2,'0')+'%';$('#live-r2').textContent=String(r).padStart(2,'0')+'%';
-    $('#live-l2-fill').style.width=l+'%';$('#live-r2-fill').style.width=r+'%';
-    $('#left-axis').textContent=`${formatAxis(a[0])} / ${formatAxis(a[1])}`;$('#right-axis').textContent=`${formatAxis(a[2])} / ${formatAxis(a[3])}`;
-    $('#diag-l2').textContent=(b[6]||0).toFixed(2);$('#diag-r2').textContent=(b[7]||0).toFixed(2);
-    $('#left-stick-cap').setAttribute('transform',`translate(${a[0]*38} ${a[1]*38})`);
-    $('#right-stick-cap').setAttribute('transform',`translate(${a[2]*38} ${a[3]*38})`);
-    $('#map-l2 .map-trigger-motion').setAttribute('transform',`translate(0 ${l*.18})`);
-    $('#map-r2 .map-trigger-motion').setAttribute('transform',`translate(0 ${r*.18})`);
-    state.touch.forEach((point,i)=>{
-      const mark=$(`#map-touch-${i}`);mark.classList.toggle('is-active',!!point);
-      if(point){const y=clamp(point.y),inset=y*36;mark.setAttribute('cx',String(480+inset+clamp(point.x)*(507-2*inset)));mark.setAttribute('cy',String(195+y*230));}
-    });
-    const info=state.batteryInfo;
-    const chargeNames={discharging:'Discharging',charging:'Charging',full:'Full',voltageOrTempFault:'Voltage / temp fault',temperatureFault:'Temperature fault',chargingError:'Charging error',unknown:'Unknown'};
-    const chargeLabel=info?.chargeState ? (chargeNames[info.chargeState]||info.chargeState) : null;
-    const fault=['voltageOrTempFault','temperatureFault','chargingError'].includes(info?.chargeState);
-    $('#battery-value').textContent=state.battery!=null?`${state.battery}%`:(fault?'Fault':'—');
-    $('#diag-battery').textContent=state.battery!=null?`${state.battery}%`:(fault?'Fault':'—');
-    $('#battery-detail').textContent=!info?'—':state.charging?'Charging':(chargeLabel||'Battery');
-    $('#battery-charge-rate').textContent=fault?'Charge fault':chargeRateLabel();
-    $('#diag-health').textContent=fault?'Charge fault':'Not reported';
-    $('#diag-temp').textContent=info?.sensorByte!=null?String(info.sensorByte):'—';
-    $('#diag-charge').textContent=chargeLabel||'—';
-    const jackParts=[];
-    if(info?.headphoneJack)jackParts.push('Headphone');
-    if(info?.microphoneJack)jackParts.push('Mic');
-    $('#diag-jack').textContent=info?`Jack: ${jackParts.length?jackParts.join(' · '):'None'}`:'Jack: —';
-    $('#battery-band')?.classList.toggle('is-fault', !!fault);
-    $('#battery-band')?.classList.toggle('is-charging', !!state.charging);
-    $('#battery-light').disabled=!state.connected||state.battery==null;
-    $$('#battery-segments i').forEach((el,i)=>{
-      const full=state.battery!=null&&state.battery>(i*10);
-      el.classList.toggle('is-full', full);
-      el.classList.toggle('is-charging', full && !!state.charging);
-      el.classList.toggle('is-fault', fault);
-    });
-    state.touch.forEach((point,i)=>{const el=$(`#contact-${i}`);el.classList.toggle('is-active',!!point);if(point){el.style.left=`clamp(15px, ${clamp(point.x)*100}%, calc(100% - 15px))`;el.style.top=`clamp(15px, ${clamp(point.y)*100}%, calc(100% - 15px))`;} $(`#touch-${i+1}-pos`).textContent=point?`${point.x.toFixed(3)} / ${point.y.toFixed(3)}`:'—';});
-    state.gyro.forEach((n,i)=>{const k=['x','y','z'][i];$(`#gyro-${k}`).textContent=String(n);const f=clamp(Math.abs(n)/16000)*50;const el=$(`#gyro-${k}-fill`);el.style.width=`${f}%`;el.style.left=n<0?`${50-f}%`:'50%';});
-    const activity=clamp(active.length/8+Math.abs(a[0])/4+Math.abs(a[1])/4+Math.abs(a[2])/4+Math.abs(a[3])/4+(b[6]+b[7])/4);
-    state.activity.push(activity);state.activity.shift();
-    $('#activity-scope').setAttribute('aria-label',`Input activity ${Math.round(activity*100)} percent`);
-    updatePlayhead();$('#diag-packet').textContent=`#${String(state.packet%10000).padStart(4,'0')}`;
+  const visualStats={frames:0,inputEvents:0,inputDraws:0,widgetDraws:0,rangeScans:0,hiddenEvents:0};
+  const widgetSignatures=new Map();
+  let inputDirty=true,rangeDirty=true,visualFrame=0,visualTimer=0,waveDirty=true,calibrationPaintedPacket=-1,signalTimer=0;
+  const inputViews=new Set(['live','diagnostics','touch','triggers','calibration','lights']);
+  function changedWidget(key,value){
+    const signature=JSON.stringify(value);
+    if(widgetSignatures.get(key)===signature)return false;
+    widgetSignatures.set(key,signature);visualStats.widgetDraws++;return true;
+  }
+  function activityValue(){const b=state.buttons,a=state.axes;return clamp(b.filter(v=>v>.5).length/8+a.reduce((sum,v)=>sum+Math.abs(v)/4,0)+(b[6]+b[7])/4);}
+  function sampleActivity(){state.activity.push(activityValue());state.activity.shift();}
+  function requestVisualFrame(){if(!document.hidden&&!visualFrame)visualFrame=requestAnimationFrame(frame);}
+  function renderInput(){inputDirty=true;if(document.hidden)return;drawVisibleInput();inputDirty=false;}
+  function renderRates(){for(const [id,value] of [['diag-rate',`${state.rate||0} / S`],['diag-gaps',String(state.sequenceGaps||0)],['diag-invalid',String(state.invalidReports||0)]]){const el=document.getElementById(id),text=state.connected?value:'\u2014';if(el.textContent!==text)el.textContent=text;}}
+  function drawVisibleInput(){
+    const b=state.buttons,a=state.axes,l=Math.round((b[6]||0)*100),r=Math.round((b[7]||0)*100),view=state.currentView;
+    if(!inputViews.has(view))return;
+    visualStats.inputDraws++;
+    if(view==='live'){
+      if(changedWidget('map',[b,a,state.touch])){
+        $$('#live .map-control,#live .map-stick').forEach(el=>el.classList.toggle('is-pressed',(b[+el.dataset.button]||0)>.08));
+        const active=names.filter((_,i)=>b[i]>.5);$('#active-buttons').textContent=active.length?active.join(' \u00b7 '):'None';
+        $('#live-l2').textContent=String(l).padStart(2,'0')+'%';$('#live-r2').textContent=String(r).padStart(2,'0')+'%';
+        $('#live-l2-fill').style.width=l+'%';$('#live-r2-fill').style.width=r+'%';
+        $('#left-axis').textContent=`${formatAxis(a[0])} / ${formatAxis(a[1])}`;$('#right-axis').textContent=`${formatAxis(a[2])} / ${formatAxis(a[3])}`;
+        $('#left-stick-cap').setAttribute('transform',`translate(${a[0]*38} ${a[1]*38})`);$('#right-stick-cap').setAttribute('transform',`translate(${a[2]*38} ${a[3]*38})`);
+        $('#map-l2 .map-trigger-motion').setAttribute('transform',`translate(0 ${l*.18})`);$('#map-r2 .map-trigger-motion').setAttribute('transform',`translate(0 ${r*.18})`);
+        state.touch.forEach((point,i)=>{const mark=$(`#map-touch-${i}`);mark.classList.toggle('is-active',!!point);if(point){const y=clamp(point.y),inset=y*36;mark.setAttribute('cx',String(480+inset+clamp(point.x)*(507-2*inset)));mark.setAttribute('cy',String(195+y*230));}});
+      }
+      if(changedWidget('map-report',[state.transport,state.fullReport]))$('#photo-status').textContent=state.fullReport?`${state.transport} live`:'Bluetooth basic';
+      if(changedWidget('activity',state.activity)){drawActivity();$('#activity-scope').setAttribute('aria-label',`Input activity ${Math.round(activityValue()*100)} percent`);}
+    }
+    if(view==='diagnostics'){
+      renderRates();
+      if(changedWidget('matrix',b)){$$('.button-matrix span').forEach(el=>el.classList.toggle('is-pressed',(b[+el.dataset.matrix]||0)>.5));$('#diag-l2').textContent=(b[6]||0).toFixed(2);$('#diag-r2').textContent=(b[7]||0).toFixed(2);}
+      $('#diag-packet').textContent=`#${String(state.packet%10000).padStart(4,'0')}`;
+    }
+    const info=state.batteryInfo,chargeNames={discharging:'Discharging',charging:'Charging',full:'Full',voltageOrTempFault:'Voltage / temp fault',temperatureFault:'Temperature fault',chargingError:'Charging error',unknown:'Unknown'},chargeLabel=info?.chargeState?(chargeNames[info.chargeState]||info.chargeState):null,fault=['voltageOrTempFault','temperatureFault','chargingError'].includes(info?.chargeState);
+    if(view==='live'&&changedWidget('battery',[info,state.battery,state.charging,chargeRateLabel()])){
+      $('#battery-value').textContent=state.battery!=null?`${state.battery}%`:(fault?'Fault':'\u2014');$('#battery-detail').textContent=!info?'\u2014':state.charging?'Charging':(chargeLabel||'Battery');$('#battery-charge-rate').textContent=fault?'Charge fault':chargeRateLabel();
+      $('#battery-band')?.classList.toggle('is-fault',!!fault);$('#battery-band')?.classList.toggle('is-charging',!!state.charging);
+      $$('#battery-segments i').forEach((el,i)=>{const full=state.battery!=null&&state.battery>i*10;el.classList.toggle('is-full',full);el.classList.toggle('is-charging',full&&!!state.charging);el.classList.toggle('is-fault',fault);});
+    }
+    if(view==='diagnostics'&&changedWidget('diag-battery',[info,state.battery])){
+      $('#diag-battery').textContent=state.battery!=null?`${state.battery}%`:(fault?'Fault':'\u2014');$('#diag-health').textContent=fault?'Charge fault':'Not reported';$('#diag-temp').textContent=info?.sensorByte!=null?String(info.sensorByte):'\u2014';$('#diag-charge').textContent=chargeLabel||'\u2014';
+      const parts=[];if(info?.headphoneJack)parts.push('Headphone');if(info?.microphoneJack)parts.push('Mic');$('#diag-jack').textContent=info?`Jack: ${parts.length?parts.join(' \u00b7 '):'None'}`:'Jack: \u2014';
+    }
+    if(view==='lights')$('#battery-light').disabled=!state.connected||state.battery==null;
+    if(view==='touch'){
+      if(changedWidget('touch',state.touch))state.touch.forEach((point,i)=>{const el=$(`#contact-${i}`);el.classList.toggle('is-active',!!point);if(point){el.style.left=`clamp(15px, ${clamp(point.x)*100}%, calc(100% - 15px))`;el.style.top=`clamp(15px, ${clamp(point.y)*100}%, calc(100% - 15px))`;}$(`#touch-${i+1}-pos`).textContent=point?`${point.x.toFixed(3)} / ${point.y.toFixed(3)}`:'\u2014';});
+      if(changedWidget('gyro',state.gyro))state.gyro.forEach((n,i)=>{const k=['x','y','z'][i];$(`#gyro-${k}`).textContent=String(n);const f=clamp(Math.abs(n)/16000)*50,el=$(`#gyro-${k}-fill`);el.style.width=`${f}%`;el.style.left=n<0?`${50-f}%`:'50%';});
+    }
+    if(view==='triggers'&&changedWidget('pull',[b[6],b[7]]))updatePlayhead();
+    if(view==='calibration'&&calibrationPaintedPacket!==state.packet){renderCalibrationInput(state.latestInput||{axes:a,buttons:b,touch:state.touch});calibrationPaintedPacket=state.packet;}
   }
   $('#battery-segments').innerHTML=Array.from({length:10},()=>'<i></i>').join('');
   function drawActivity(){const canvas=$('#activity-scope'),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);ctx.beginPath();state.activity.forEach((v,i)=>{const x=i/(state.activity.length-1)*w,y=h-8-v*(h-16);if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.lineWidth=3;ctx.strokeStyle='#d4a84b';ctx.stroke();ctx.fillStyle='#7ec9bc';const last=state.activity.at(-1);ctx.fillRect(w-5,h-8-last*(h-16)-4,8,8);}
   function handleEvent(event){
     if(event.type==='safetyReset'||event.type==='device'&&!event.connected){weaponRequest++;weaponApplying=false;activeWeaponPreset='';}
-    window.integrationStudio?.event(event);window.dailyUse?.event(event);window.motionStudio?.event(event);window.hardwareResearch?.event(event);
+    window.integrationStudio?.event(event);window.dailyUse?.event(event);window.motionStudio?.event(event);window.hardwareResearch?.event(event);window.runtimeLab?.event(event);window.hapticEvaluation?.event(event);
     window.hapticAuthoring?.event(event);
     window.gameSessions?.event(event);
     window.studioHooks?.event(event);
@@ -1944,7 +1986,7 @@
       renderDeviceList();
       if(state.manualScan)finishScan();
     }else if(event.type==='input'){
-      sampleCalibration(event.input);
+      sampleCalibration(event.input);state.latestInput=event.input;visualStats.inputEvents++;if(document.hidden)visualStats.hiddenEvents++;
       handlePadNavigation(event.input.buttons);
       state.buttons=event.input.buttons;state.axes=event.input.axes;state.touch=event.input.touch;state.gyro=event.input.gyro;
       state.battery=event.input.battery;state.charging=event.input.charging;state.batteryInfo=event.input.batteryInfo||null;
@@ -1952,9 +1994,9 @@
       const reportChanged=state.fullReport!==!!event.input.fullReport;
       state.fullReport=!!event.input.fullReport;
       if(reportChanged)renderGyroControls();
-      $('#photo-status').textContent=event.input.fullReport?`${state.transport} live`:'Bluetooth basic';
+
       state.packet++;state.lastInputAt=performance.now();
-      if(!document.hidden&&(performance.now()-(state.lastDrawAt||0)>32||event.input.buttons.some((v,i)=>(v>0.5)!==(state.lastDrawButtons?.[i]>0.5)))){renderInput();renderSession();state.lastDrawAt=performance.now();state.lastDrawButtons=event.input.buttons.slice();}
+      sampleActivity();if(!document.hidden)renderInput();renderSession();
     }else if(event.type==='xinput'){
       state.xinput=!!event.enabled && event.status==='active';
       state.xinputStatus=event.status||'disabled';
@@ -1968,10 +2010,8 @@
       const previousBridgeFrames=state.bridgeFrames;
       if(!state.audioBridge)state.bridgeFrames=0;
       else if(Number.isInteger(event.bridgeFrames))state.bridgeFrames=event.bridgeFrames;
+      state.bridgeMessage=event.message|| (event.reason?`Motor fallback \u00b7 ${event.reason}`:event.bridge?(event.glitches?`Bridge on \u00b7 ${event.glitches} audio glitch${event.glitches===1?'':'es'}`:state.bridgeFrames>previousBridgeFrames?'PC audio detected \u00b7 sending bass to grips':'Bridge on \u00b7 play audio through your PC speakers'):'');
       renderBridge();
-      if(event.message)$('#bridge-status').textContent=event.message;
-      else if(event.reason)$('#bridge-status').textContent=`Motor fallback · ${event.reason}`;
-      else if(event.bridge)$('#bridge-status').textContent=event.glitches?`Bridge on · ${event.glitches} audio glitch${event.glitches===1?'':'es'}`:state.bridgeFrames>previousBridgeFrames?'PC audio detected · sending bass to grips':'Bridge on · play audio through your PC speakers';
     }else if(event.type==='microphoneStatus'){
       controllerMicMuted=!!event.muted;
       $('#controller-mic').textContent=`Controller mic: ${controllerMicMuted?'muted':'live'}`;
@@ -1990,7 +2030,7 @@
     }else if(event.type==='hapticAlertStatus'){
       if(typeof event.lowBattery==='boolean')state.lowBatteryAlert=event.lowBattery;
       if(typeof event.timerSeconds==='number')state.timerUntil=event.timerSeconds?performance.now()+event.timerSeconds*1000:0;
-      renderAlerts();
+      renderAlerts();requestVisualFrame();
     }else if(event.type==='hapticAlert'){
       toast(event.message||'Haptic alert');log(event.message||'Haptic alert');
     }else if(event.type==='gameAction'){
@@ -2030,10 +2070,8 @@
         $('#light-hex').textContent=hex.toUpperCase();
       }
     }else if(event.type==='rate'){
-      state.rate=event.reportsPerSecond||0;$('#diag-rate').textContent=state.connected?`${state.rate} / S`:'—';
-      state.sequenceGaps=event.sequenceGaps||0;state.invalidReports=event.invalidReports||0;
-      $('#diag-gaps').textContent=state.connected?String(state.sequenceGaps):'—';
-      $('#diag-invalid').textContent=state.connected?String(state.invalidReports):'—';
+      state.rate=event.reportsPerSecond||0;state.sequenceGaps=event.sequenceGaps||0;state.invalidReports=event.invalidReports||0;
+      if(!document.hidden&&state.currentView==='diagnostics')renderRates();
     }else if(event.type==='conflict'){
       $('#conflict-message').textContent=event.message||'No conflicting tools.';
       $('#conflict-message').style.color=event.detected?'#d4a84b':'';
@@ -2075,7 +2113,7 @@
     }else if(event.type==='triggerLease'){
       state.leaseDuration=event.active?event.durationMs:0;
       state.leaseUntil=event.active?performance.now()+event.durationMs:0;
-      renderSession();
+      renderSession();requestVisualFrame();
     }else if(event.type==='safetyReset'){
       musicPlayer.stop('Effects reset');
       state.autoSuppressed=true;
@@ -2106,7 +2144,32 @@
       toast(event.message);log(event.message);
     }
   }
-  let lastCanvas=0;function frame(now){if(!document.hidden&&now-lastCanvas>50){syncRangeFills();if(state.packet!==state.lastFramePacket){renderInput();if(state.currentView==='live')drawActivity();state.lastFramePacket=state.packet;}if(state.currentView==='haptics'||now<state.playUntil)drawWave(now);if(state.leaseUntil>now||state.lastLeaseDraw){renderSession();state.lastLeaseDraw=state.leaseUntil>now;}if(state.currentView==='haptics'&&state.timerUntil)renderAlerts();updateStickTest(now);if(state.telemetryOn&&state.telemetryLast&&now-state.telemetryLast>1500)$('#telemetry-status').textContent='Listening · waiting for telemetry';lastCanvas=now;}requestAnimationFrame(frame);}requestAnimationFrame(frame);
+  function frame(now){
+    visualFrame=0;if(document.hidden)return;visualStats.frames++;
+    if(rangeDirty){syncRangeFills();rangeDirty=false;visualStats.rangeScans++;}
+    if(inputDirty){drawVisibleInput();inputDirty=false;renderSession();}
+    const wave=state.currentView==='haptics'&&(now<state.playUntil||musicPlayer.mode==='playing');
+    if(wave||(waveDirty&&state.currentView==='haptics')){drawWave(now);waveDirty=false;}
+    const lease=state.leaseUntil>now;
+    if(lease||state.lastLeaseDraw){renderSession();state.lastLeaseDraw=lease;}
+    if(state.currentView==='haptics'&&state.timerUntil)renderAlerts();
+    if(state.stickTest)updateStickTest(now);
+    if(state.telemetryOn&&state.telemetryLast&&now-state.telemetryLast>1500)$('#telemetry-status').textContent='Waiting for telemetry';
+    clearTimeout(visualTimer);
+    if(wave||lease||state.stickTest||(state.currentView==='haptics'&&state.timerUntil))visualTimer=setTimeout(requestVisualFrame,50);
+  }
+  document.addEventListener('visibilitychange',()=>{
+    clearTimeout(visualTimer);clearTimeout(signalTimer);signalTimer=0;if(visualFrame)cancelAnimationFrame(visualFrame);visualFrame=0;
+    if(!document.hidden){inputDirty=true;rangeDirty=true;requestVisualFrame();renderLog();if(state.currentView==='haptics')renderBridge();}
+  });
+  document.addEventListener('controller-player-state',requestVisualFrame);
+  document.addEventListener('change',()=>{if(state.currentView==='haptics'){waveDirty=true;requestVisualFrame();}});
+  document.addEventListener('visibilitychange',()=>{if(!document.hidden){window.motionStudio?.renderLiveInput();if(state.currentView==='touch')window.motionStudio?.renderReading();}});
+  document.addEventListener('input',e=>{if(e.target.matches('input[type="range"]')){rangeDirty=true;waveDirty=true;requestVisualFrame();}});
+  new MutationObserver(records=>{
+    if(records.some(r=>[...r.addedNodes].some(n=>n.nodeType===1&&(n.matches?.('input[type="range"]')||n.querySelector?.('input[type="range"]'))))){rangeDirty=true;requestVisualFrame();}
+  }).observe(document.body,{childList:true,subtree:true});
+
   const keyMap={j:2,k:0,l:1,i:3,q:4,e:5,z:6,c:7,ArrowUp:12,ArrowDown:13,ArrowLeft:14,ArrowRight:15};
   const held=new Set();window.addEventListener('keydown',e=>{if(state.connected||e.ctrlKey||e.metaKey||e.altKey||e.target.matches('input,textarea,button,select'))return;if(!(e.key in keyMap))return;held.add(e.key);state.buttons[keyMap[e.key]]=1;renderInput();});
   window.addEventListener('keyup',e=>{if(!(e.key in keyMap)||state.connected)return;held.delete(e.key);state.buttons[keyMap[e.key]]=0;renderInput();});
@@ -2122,7 +2185,7 @@
       setInterval(()=>checkForUpdates(),12*60*60*1000);
     }else{$('#core-status').textContent='Core: browser preview';$('#update-status').textContent='Updates are available in the installed desktop app.';$('#check-update').disabled=true;log('Browser preview');}
   }
-  window.controllerStudio={state,profile,trigger,clone,native,invoke,send,toast,names,vkChoices,validPcKey,gameNode,gameSelect,gameField,saveProfiles,commitProfileDraft,normalizeProfile,validProfile,validLibrary,renderProfiles,renderAllProfileControls,renderTriggerControls,renderPcBindings,savePcBindings,navigate,useWeapon,applyProfileHardware,applyGameRules,renderGameProfiles,getPlayer:()=>musicPlayer,
+  window.controllerStudio={visualStats:()=>({...visualStats}),invalidateView:()=>{inputDirty=true;rangeDirty=true;requestVisualFrame();},state,profile,trigger,clone,native,invoke,send,toast,names,vkChoices,validPcKey,gameNode,gameSelect,gameField,saveProfiles,commitProfileDraft,normalizeProfile,validProfile,validLibrary,renderProfiles,renderAllProfileControls,renderTriggerControls,renderPcBindings,savePcBindings,navigate,useWeapon,applyProfileHardware,applyGameRules,renderGameProfiles,getPlayer:()=>musicPlayer,getMixer:()=>clone(audioMixer.settings),
     getPresets:()=>triggerPresets,getPcBindings:()=>pcBindings,
     async selectProfile(id,apply=false){if(!state.profiles.some(p=>p.id===id))return;state.profileId=id;renderAllProfileControls();await saveProfiles(true);if(apply&&state.connected)await applyProfileHardware(true);},
     setSupportedKeys(keys){if(Array.isArray(keys)){supportedKeys=new Set(keys);renderPcBindings();window.motionStudio?.renderProfile();}},
@@ -2135,6 +2198,8 @@
   window.gameSessions=new window.ControllerGameSessions(window.controllerStudio);
   window.integrationStudio=new window.ControllerIntegrations(window.controllerStudio);
   window.hardwareResearch=new window.ControllerHardwareResearch(window.controllerStudio);
+  window.runtimeLab=new window.ControllerRuntimeLab(window.controllerStudio);
+  window.hapticEvaluation=new window.ControllerHapticEvaluation(window.controllerStudio);
   renderPlatform();
   start();
 })();

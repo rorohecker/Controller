@@ -1,3 +1,11 @@
+#[path = "process_cache.rs"]
+mod cache;
+pub fn inspect() -> ProcessState {
+    cache::inspect()
+}
+pub fn diagnostics() -> serde_json::Value {
+    cache::diagnostics()
+}
 use std::mem::size_of;
 
 use windows_sys::Win32::{
@@ -12,6 +20,7 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId},
 };
 
+#[derive(Clone, Default)]
 pub struct ProcessState {
     pub conflicts: Vec<&'static str>,
     pub foreground_exe: Option<String>,
@@ -29,7 +38,7 @@ pub fn gui_window_focused(gui_pid: u32) -> bool {
     foreground_pid == gui_pid
 }
 
-pub fn inspect() -> ProcessState {
+fn inspect_now() -> ProcessState {
     let mut state = ProcessState {
         conflicts: Vec::new(),
         foreground_exe: None,

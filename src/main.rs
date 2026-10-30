@@ -8,6 +8,7 @@ mod game_actions;
 mod game_link;
 mod haptics;
 mod hardware;
+mod hid_trace;
 mod input_map;
 mod integrations;
 mod macros;
@@ -20,6 +21,7 @@ mod processes;
 mod processes;
 mod profiles;
 mod recognition;
+mod runtime_diagnostics;
 #[cfg(windows)]
 mod screen_color;
 #[cfg(not(windows))]
@@ -479,6 +481,8 @@ fn send_demo_telemetry(port: u16) -> Result<(), String> {
 }
 
 fn run_core() {
+    // A 1 MiB trace is JSON-escaped inside its command envelope.
+    const MAX_CORE_COMMAND_BYTES: usize = 2 * 1024 * 1024 + 4096;
     let (commands_tx, commands_rx) = mpsc::channel();
     let (events_tx, events_rx) = mpsc::channel();
     let command_errors = events_tx.clone();
@@ -487,7 +491,7 @@ fn run_core() {
         .spawn(move || {
             for line in io::stdin().lock().lines() {
                 match line {
-                    Ok(line) if line.len() <= 450_000 => {
+                    Ok(line) if line.len() <= MAX_CORE_COMMAND_BYTES => {
                         match serde_json::from_str::<device::DeviceCommand>(&line) {
                             Ok(command) => {
                                 if commands_tx.send(command).is_err() {
@@ -514,11 +518,29 @@ fn run_core() {
             let _ = commands_tx.send(device::DeviceCommand::Shutdown);
         })
         .expect("core command reader");
+    let output_stop = std::sync::Arc::new(AtomicBool::new(false));
+    let writer_stop = output_stop.clone();
     let output = thread::Builder::new()
         .name("controller-core-output".into())
         .spawn(move || {
             let mut writer = BufWriter::new(io::stdout().lock());
-            for event in events_rx {
+            let mut drained = 0;
+            loop {
+                if writer_stop.load(Ordering::Acquire) && drained >= 256 {
+                    break;
+                }
+                let event = match events_rx.recv_timeout(Duration::from_millis(50)) {
+                    Ok(event) => event,
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                        if !writer_stop.load(Ordering::Acquire) =>
+                    {
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+                if writer_stop.load(Ordering::Acquire) {
+                    drained += 1;
+                }
                 if serde_json::to_writer(&mut writer, &event).is_err()
                     || writer.write_all(b"\n").is_err()
                     || writer.flush().is_err()
@@ -528,7 +550,12 @@ fn run_core() {
             }
         })
         .expect("core event writer");
-    device::run(commands_rx, events_tx);
+    let disable_hid = std::env::args().any(|arg| arg == "--no-hid");
+    if disable_hid {
+        hidapi::HidApi::disable_device_discovery();
+    }
+    device::run(commands_rx, events_tx, disable_hid);
+    output_stop.store(true, Ordering::Release);
     let _ = output.join();
 }
 

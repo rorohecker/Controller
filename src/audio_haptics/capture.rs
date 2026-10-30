@@ -40,25 +40,23 @@ pub(super) mod process;
 
 pub(super) enum CaptureHandle {
     System {
-        _stream: cpal::Stream,
+        _worker: super::io_runtime::CaptureWorker,
     },
     #[cfg(windows)]
-    Process {
-        _worker: process::ProcessCapture,
-    },
+    Process { _worker: process::ProcessCapture },
 }
 
 impl CaptureHandle {
     pub(super) fn timed_out(&self) -> bool {
         match self {
-            Self::System { .. } => false,
+            Self::System { _worker } => _worker.timed_out(),
             #[cfg(windows)]
             Self::Process { _worker } => _worker.timed_out(),
         }
     }
     pub(super) fn state(&self) -> &'static str {
         match self {
-            Self::System { .. } => "running",
+            Self::System { _worker } => _worker.state(),
             #[cfg(windows)]
             Self::Process { _worker } => _worker.state(),
         }
