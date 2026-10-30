@@ -1,4 +1,4 @@
-# Platform integrations (0.19.0)
+# Platform integrations (0.22.0)
 
 ## Game audio capture
 
@@ -19,6 +19,14 @@ Wayland backend/portal setup may prompt. A successful connection is not proof th
 ## Native game feedback: prototype boundary
 
 The bundled ViGEmBus provides Xbox 360/DS4 targets; this app does not integrate a virtual DualSense HID/audio driver. Creating a native virtual controller requires both the expected HID interface and the audio endpoints used by a game. Audio-derived effects do not identify weapons or reconstruct native trigger commands.
+
+### External vDS provider
+
+Current upstream [vDS](https://github.com/hurryman2212/vds) documents a concrete native Bluetooth-to-USB bridge on both Windows and Linux. Review snapshot: `ec531599dfdd02e14ce68efd8c0d2dcb439894a5` (MIT), checked 2026-10-30. Its [Windows guide](https://github.com/hurryman2212/vds/blob/ec531599dfdd02e14ce68efd8c0d2dcb439894a5/README-WINDOWS.md) uses a userspace vDS service, usbip-win2, HidHide and Opus. Its [Linux guide](https://github.com/hurryman2212/vds/blob/ec531599dfdd02e14ce68efd8c0d2dcb439894a5/README-LINUX.md) requires `vds_hcd` and the userspace daemon. This updates the earlier feasibility finding: there is a documented external Windows route, not an integrated native driver in this app.
+
+**Profiles > Native game feedback** now reports whether the provider tools are present in standard installation folders and copies the platform's upstream setup link. This is read-only file discovery: it does not establish that drivers/services work, execute the tools, attach a controller, or install drivers. Windows USB/IP setup can restart USB hubs, so dependency installation remains an explicit external setup step. No third-party driver/runtime is newly bundled.
+
+With a separately configured provider, release this app's monitoring while vDS owns the physical pad. Native effects belong to the game/provider then; the app's Stop all cannot stop them. Resume monitoring only after handing ownership back. Native forwarding remains experimental until an installed provider, target game and physical controller pass a complete handoff/audio/trigger/recovery test. There is no upstream macOS provider integration here, and provider setup controls are hidden there.
 
 **Profiles → Native game feedback → Release controller to game** stops app mappings/effects and closes this core's HID/audio handles. Automatic reconnect is suspended until **Resume monitoring**. Live input pauses. This lets an already-compatible USB or dongle route be owned by a native game. The mode is session-local; restarting the app/core resumes normal monitoring. Stop all affects this app's sources, not another game's output while released.
 

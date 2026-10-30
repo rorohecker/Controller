@@ -126,8 +126,36 @@ pub async fn integration_info() -> Result<Value, String> {
         }
         Ok(json!({"windowsBuild":windows_build(),"processCapture":cfg!(windows)&&windows_build()>=20348,
             "processes":processes()?,"nativeRelayEndpoints":endpoints,"environment":environment(),
-            "nativeDualSenseDriverIntegrated":false,"nativeDriverMessage":"The bundled ViGEmBus exposes Xbox 360/DS4, not a native DualSense HID/audio device. Native USB/dongle games can use controller handoff; the four-channel relay is an endpoint prototype."}))
+            "nativeBridge":native_bridge_readiness(),
+            "nativeDualSenseDriverIntegrated":false,"nativeDriverMessage":"ViGEmBus provides Xbox/DS4 output. Native DualSense feedback needs direct USB/dongle ownership or a separate native bridge such as vDS."}))
     }).await.map_err(|e|e.to_string())?
+}
+
+fn native_bridge_readiness() -> Value {
+    #[cfg(windows)]
+    let tools = std::env::var_os("ProgramFiles")
+        .map(std::path::PathBuf::from)
+        .map(|p| p.join("vDS"));
+    #[cfg(target_os = "linux")]
+    let tools = ["/usr/local/bin", "/usr/bin"]
+        .iter()
+        .map(std::path::PathBuf::from)
+        .find(|p| p.join("vdsctl").is_file());
+    #[cfg(not(any(windows, target_os = "linux")))]
+    let tools: Option<std::path::PathBuf> = None;
+    let control = if cfg!(windows) {
+        "vdsctl.exe"
+    } else {
+        "vdsctl"
+    };
+    let daemon = if cfg!(windows) { "vdsd.exe" } else { "vdsd" };
+    json!({"provider":"vDS","platform":std::env::consts::OS,
+        "toolFound":tools.as_ref().is_some_and(|p|p.join(control).is_file()),
+        "daemonFound":tools.as_ref().is_some_and(|p|p.join(daemon).is_file()),
+        "serviceState":"not_probed","driverState":"not_probed",
+        "guideUrl":match std::env::consts::OS {"windows"=>"https://github.com/hurryman2212/vds/blob/main/README-WINDOWS.md","linux"=>"https://github.com/hurryman2212/vds/blob/main/README-LINUX.md",_=>"https://github.com/hurryman2212/vds"},
+        "requirements":match std::env::consts::OS {"windows"=>"vDS service, usbip-win2, HidHide, Opus runtime and a paired Bluetooth controller.","linux"=>"vds_hcd kernel module, vdsd service, BlueZ and a paired Bluetooth controller.",_=>"The upstream vDS bridge documents Windows and Linux; no macOS provider is integrated."},
+        "message":"File discovery only. It does not prove driver readiness or launch services. Setup and attach remain external; release controller monitoring before handing ownership to a bridge."})
 }
 
 #[derive(Clone, Debug, Serialize)]

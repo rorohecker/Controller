@@ -14,6 +14,7 @@ mod integrations;
 mod macros;
 #[cfg(not(windows))]
 mod native_input;
+mod output_calibration;
 #[cfg(windows)]
 mod processes;
 #[cfg(not(windows))]
@@ -597,6 +598,7 @@ fn main() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => {
                         if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.unminimize();
                             let _ = window.show();
                             let _ = window.set_focus();
                         }
@@ -613,6 +615,7 @@ fn main() {
                         }
                     ) && let Some(window) = tray.app_handle().get_webview_window("main")
                     {
+                        let _ = window.unminimize();
                         let _ = window.show();
                         let _ = window.set_focus();
                     }
@@ -634,6 +637,7 @@ fn main() {
             hardware::store_edge_snapshot,
             hardware::edge_snapshots,
             hardware::delete_edge_snapshot,
+            output_calibration::save_output_calibration,
             save_profiles,
             export_profiles,
             profile_backups,

@@ -25,6 +25,13 @@
       this.handoffButton=this.button('Release controller to game','native-handoff',()=>this.toggleHandoff());
       native.append(this.nativeStatus,this.handoffButton,n('p',{class:'pc-note',text:'Release closes this app’s HID and audio handles so a native DualSense game can own them. Live input pauses. Resume monitoring afterward. The app’s Stop all cannot stop effects owned by another game.'}),
         n('p',{id:'dongle-status',text:'Connect a USB controller to check for a compatible DS5Dongle interface.'}));
+      this.nativeBridge=n('div',{class:'native-bridge-readiness',id:'native-bridge-readiness'},[
+        n('strong',{text:'External Bluetooth bridge · vDS'}),
+        n('p',{id:'native-bridge-status',text:'Refresh sources to check standard install locations.'}),
+        n('p',{id:'native-bridge-requirements'}),
+        n('p',{text:'vDS exposes a virtual USB DualSense for native game feedback. Install and attach it externally, then leave monitoring released here while it owns the controller. App effects are paused during handoff.'}),
+        this.button('Copy setup guide','native-bridge-guide',async()=>{try{await navigator.clipboard.writeText(this.info?.nativeBridge?.guideUrl||'https://github.com/hurryman2212/vds');this.a.toast('Setup link copied.');}catch{this.a.toast('Could not copy the setup link.');}})
+      ]);native.append(this.nativeBridge);
       const lab=this.panel('diagnostics','Wireless haptics lab · experimental','wireless-lab');
       this.strength=n('input',{type:'number',id:'link-test-strength',min:1,max:25,step:1,value:10});
       this.runButton=this.button('Run 2-second test','link-test-start',()=>this.testLink());
@@ -38,7 +45,7 @@
       preview.append(n('p',{text:'Inspect one captured USB 0x02 output report and preview Bluetooth control framing. This does not write hardware or emulate a driver.'}),this.packet,this.button('Inspect packet','native-packet-inspect',()=>this.inspect()),this.packetStatus);lab.append(preview);
       this.renderSelection();
     }
-    renderPlatform(){this.sourcePanel.hidden=!window.controllerPlatform.systemAudioBridge;this.runButton.disabled=!this.a.state.connected||this.running;$('capture-use').disabled=!this.a.state.connected||this.a.state.transport!=='USB'||!window.controllerPlatform.systemAudioBridge;}
+    renderPlatform(){this.nativeBridge.hidden=this.a.state.platformOS==='macos';this.sourcePanel.hidden=!window.controllerPlatform.systemAudioBridge;this.runButton.disabled=!this.a.state.connected||this.running;$('capture-use').disabled=!this.a.state.connected||this.a.state.transport!=='USB'||!window.controllerPlatform.systemAudioBridge;}
     renderSelection(){this.processField.hidden=this.mode.value!=='process';this.endpointField.hidden=this.mode.value!=='nativeEndpoint';$('native-relay-note').hidden=this.mode.value!=='nativeEndpoint';}
     selectedSource(){
       if(this.mode.value==='process'){const pid=Number(this.process.value);if(!Number.isInteger(pid)||pid<=4)throw Error('Choose a running app.');return{kind:'process',pid};}
@@ -51,6 +58,10 @@
       try{
         const info=await this.a.invoke('integration_info');if(id!==this.refreshId||!info)return;
         this.info=info;const oldPid=this.process.value,oldEndpoint=this.endpoint.value;
+        this.nativeBridge.hidden=(info.nativeBridge?.platform||this.a.state.platformOS)==='macos';
+        const bridge=info.nativeBridge;
+        $('native-bridge-status').textContent=bridge?`${bridge.toolFound?'Control tool found':'Control tool not found'} · ${bridge.daemonFound?'daemon found':'daemon not found'}. Driver and service readiness have not been tested.`:'External bridge discovery is unavailable.';
+        $('native-bridge-requirements').textContent=bridge?.requirements||'';
         this.process.replaceChildren(new Option('Choose a running app',''));for(const p of info.processes||[])this.process.add(new Option(`${p.name} · PID ${p.pid}`,String(p.pid)));
         if([...this.process.options].some(o=>o.value===oldPid))this.process.value=oldPid;
         this.endpoint.replaceChildren(new Option('Choose a four-channel source',''));for(const e of info.nativeRelayEndpoints||[])this.endpoint.add(new Option(e.name,e.id));

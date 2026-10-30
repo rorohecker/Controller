@@ -8,7 +8,7 @@ import sys
 ROOT=Path(__file__).resolve().parents[1]
 CHECKS=['ui_smoke','game_profiles_smoke','game_session_smoke','studio_smoke','platform_smoke',
         'reliability_smoke','audio_stream_smoke','haptic_authoring_smoke','layout_smoke',
-        'motion_input_smoke','daily_use_smoke','integrations_smoke','hardware_research_smoke','research_tools_smoke']
+        'motion_input_smoke','daily_use_smoke','integrations_smoke','hardware_research_smoke','research_tools_smoke','output_calibration_smoke']
 
 
 def run(name):

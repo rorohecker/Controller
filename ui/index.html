@@ -14,6 +14,7 @@
   <script src="./game-sessions.js" defer></script>
   <script src="./haptic-authoring.js" defer></script>
   <script src="./motion-studio.js" defer></script>
+  <script src="./output-calibration.js" defer></script>
   <script src="./daily-use.js" defer></script>
   <script src="./integrations.js" defer></script>
   <script src="./hardware-research.js" defer></script>
@@ -46,7 +47,7 @@
       <div class="side-bottom">
         <div class="side-led"><span id="side-dot"></span><span id="side-state">Searching</span></div>
         <p>Local only</p>
-        <div class="side-code">0.21.1</div>
+        <div class="side-code">0.22.0</div>
       </div>
     </aside>
 
@@ -206,7 +207,7 @@
                   <li data-cal-step="1"><span>02</span><div><strong>Sticks</strong><small>Trace the full rim of each stick.</small></div></li>
                   <li data-cal-step="2"><span>03</span><div><strong>Triggers</strong><small>Pull fully, then let go.</small></div></li>
                   <li data-cal-step="3"><span>04</span><div><strong>Touchpad</strong><small>Trace all four corners.</small></div></li>
-                </ol><p id="cal-range-feedback" class="cal-range-feedback">Live readings appear on the right.</p><div class="calibration-actions"><button id="start-calibration" class="main-action" type="button" disabled>Start calibration</button><button id="next-calibration" class="main-action" type="button" disabled hidden>Capture rest</button><button id="cancel-calibration" class="quiet-action" type="button" disabled>Cancel</button><button id="reset-calibration" class="quiet-action" type="button" disabled>Reset ranges</button></div><p id="calibration-status" role="status">Using default ranges.</p>
+                </ol><p id="cal-range-feedback" class="cal-range-feedback">Watch the live readings during each step.</p><div class="calibration-actions"><button id="start-calibration" class="main-action" type="button" disabled>Start calibration</button><button id="next-calibration" class="main-action" type="button" disabled hidden>Capture rest</button><button id="cancel-calibration" class="quiet-action" type="button" disabled>Cancel</button><button id="reset-calibration" class="quiet-action" type="button" disabled>Reset ranges</button></div><p id="calibration-status" role="status">Using default ranges.</p>
                 <details class="calibration-help"><summary>About trigger readings</summary><p>The controller reports 0–255. Your measured peak becomes 100%. Travel beyond the reported peak is not detectable.</p></details>
               </div>
               <div class="calibration-measurements"><div class="calibration-visual"><div class="cal-stick-card"><span>Left stick travel</span><div class="cal-stick-target"><i class="cal-stick-sweep" id="cal-left-sweep"></i><b id="cal-left-dot"></b></div></div><div class="cal-stick-card"><span>Right stick travel</span><div class="cal-stick-target"><i class="cal-stick-sweep" id="cal-right-sweep"></i><b id="cal-right-dot"></b></div></div><div class="cal-adc-card"><span>L2 raw travel</span><div class="cal-adc-track"><i id="cal-l2-fill"></i><b id="cal-l2-peak"></b></div><strong id="cal-l2-adc">0 / 255</strong></div><div class="cal-adc-card"><span>R2 raw travel</span><div class="cal-adc-track"><i id="cal-r2-fill"></i><b id="cal-r2-peak"></b></div><strong id="cal-r2-adc">0 / 255</strong></div></div><div class="calibration-live"><div><span>Left stick</span><strong id="cal-stick-left">0 / 0</strong></div><div><span>Right stick</span><strong id="cal-stick-right">0 / 0</strong></div><div><span>L2</span><strong id="cal-trigger-l2">0%</strong></div><div><span>R2</span><strong id="cal-trigger-r2">0%</strong></div></div><div class="calibration-touch"><span>Touchpad <b id="cal-touch-readout">No contact</b></span><div class="calibration-touch-field"><span class="cal-corner" data-cal-corner="tl">1</span><span class="cal-corner" data-cal-corner="tr">2</span><span class="cal-corner" data-cal-corner="bl">3</span><span class="cal-corner" data-cal-corner="br">4</span><i id="cal-touch-dot"></i></div></div></div>

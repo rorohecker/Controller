@@ -5,6 +5,59 @@
 use aftertouch_protocol::InputState;
 use serde_json::{Value, json};
 
+/// The values sent to ViGEm, also available for hardware-free verification.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Encoded {
+    pub buttons: u16,
+    pub left_trigger: u8,
+    pub right_trigger: u8,
+    pub thumb_lx: i16,
+    pub thumb_ly: i16,
+    pub thumb_rx: i16,
+    pub thumb_ry: i16,
+}
+impl Encoded {
+    pub fn from_input(input: &InputState) -> Self {
+        let masks = [
+            (0, 0x1000),
+            (1, 0x2000),
+            (2, 0x4000),
+            (3, 0x8000),
+            (4, 0x100),
+            (5, 0x200),
+            (8, 0x20),
+            (9, 0x10),
+            (10, 0x40),
+            (11, 0x80),
+            (12, 1),
+            (13, 2),
+            (14, 4),
+            (15, 8),
+            (16, 0x400),
+        ];
+        let buttons = masks
+            .iter()
+            .filter(|(i, _)| input.buttons[*i] > 0.5)
+            .fold(0, |bits, (_, mask)| bits | mask);
+        fn thumb(v: f32) -> i16 {
+            if !v.is_finite() {
+                return 0;
+            }
+            (v.clamp(-1.0, 1.0) * if v < 0.0 { 32768.0 } else { 32767.0 }).round() as i16
+        }
+        Self {
+            buttons,
+            left_trigger: (input.buttons[6].clamp(0.0, 1.0) * 255.0).round() as u8,
+            right_trigger: (input.buttons[7].clamp(0.0, 1.0) * 255.0).round() as u8,
+            thumb_lx: thumb(input.axes[0]),
+            thumb_ly: thumb(-input.axes[1]),
+            thumb_rx: thumb(input.axes[2]),
+            thumb_ry: thumb(-input.axes[3]),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum XInputStatus {
     Disabled,
@@ -45,6 +98,18 @@ impl Default for XInputBridge {
 impl XInputBridge {
     pub fn active(&self) -> bool {
         self.status == XInputStatus::Active
+    }
+    pub fn neutralize(&mut self) -> Option<Value> {
+        #[cfg(windows)]
+        if let Some(pad) = self.inner.as_mut()
+            && let Err(error) = pad.neutralize()
+        {
+            self.shutdown();
+            self.status = XInputStatus::Unavailable;
+            self.last_error = Some(error);
+            return Some(self.status_event());
+        }
+        None
     }
     /// Nonblocking notification polling. Only the hardware loop writes outputs.
     pub fn take_feedback(&mut self) -> Result<Option<[u8; 2]>, String> {
@@ -158,6 +223,7 @@ impl XInputBridge {
 
 #[cfg(windows)]
 mod windows_impl {
+    use super::Encoded;
     use aftertouch_protocol::InputState;
     use std::pin::Pin;
     use vigem_client::{Client, TargetId, XButtons, XGamepad, Xbox360Wired};
@@ -208,75 +274,25 @@ mod windows_impl {
                 .update(&gamepad)
                 .map_err(|error| format!("XInput update failed: {error}"))
         }
-    }
-
-    fn axis_to_thumb(value: f32) -> i16 {
-        let rescaled = value.clamp(-1.0, 1.0);
-        if rescaled < 0.0 {
-            (rescaled * 32768.0).round() as i16
-        } else {
-            (rescaled * 32767.0).round() as i16
+        pub fn neutralize(&mut self) -> Result<(), String> {
+            self.target
+                .update(&XGamepad::default())
+                .map_err(|error| format!("Could not neutralize XInput: {error}"))
         }
     }
 
     fn map_gamepad(input: &InputState) -> XGamepad {
-        let b = &input.buttons;
-        let mut raw = 0u16;
-        // DualSense → Xbox: Cross=A, Circle=B, Square=X, Triangle=Y
-        if b[0] > 0.5 {
-            raw |= XButtons::A;
-        }
-        if b[1] > 0.5 {
-            raw |= XButtons::B;
-        }
-        if b[2] > 0.5 {
-            raw |= XButtons::X;
-        }
-        if b[3] > 0.5 {
-            raw |= XButtons::Y;
-        }
-        if b[4] > 0.5 {
-            raw |= XButtons::LB;
-        }
-        if b[5] > 0.5 {
-            raw |= XButtons::RB;
-        }
-        if b[8] > 0.5 {
-            raw |= XButtons::BACK;
-        }
-        if b[9] > 0.5 {
-            raw |= XButtons::START;
-        }
-        if b[10] > 0.5 {
-            raw |= XButtons::LTHUMB;
-        }
-        if b[11] > 0.5 {
-            raw |= XButtons::RTHUMB;
-        }
-        if b[12] > 0.5 {
-            raw |= XButtons::UP;
-        }
-        if b[13] > 0.5 {
-            raw |= XButtons::DOWN;
-        }
-        if b[14] > 0.5 {
-            raw |= XButtons::LEFT;
-        }
-        if b[15] > 0.5 {
-            raw |= XButtons::RIGHT;
-        }
-        if b[16] > 0.5 {
-            raw |= XButtons::GUIDE;
-        }
+        let encoded = Encoded::from_input(input);
         XGamepad {
-            buttons: XButtons { raw },
-            left_trigger: (b[6].clamp(0.0, 1.0) * 255.0).round() as u8,
-            right_trigger: (b[7].clamp(0.0, 1.0) * 255.0).round() as u8,
-            thumb_lx: axis_to_thumb(input.axes[0]),
-            // XInput Y is inverted relative to DualSense HID.
-            thumb_ly: axis_to_thumb(-input.axes[1]),
-            thumb_rx: axis_to_thumb(input.axes[2]),
-            thumb_ry: axis_to_thumb(-input.axes[3]),
+            buttons: XButtons {
+                raw: encoded.buttons,
+            },
+            left_trigger: encoded.left_trigger,
+            right_trigger: encoded.right_trigger,
+            thumb_lx: encoded.thumb_lx,
+            thumb_ly: encoded.thumb_ly,
+            thumb_rx: encoded.thumb_rx,
+            thumb_ry: encoded.thumb_ry,
         }
     }
 }

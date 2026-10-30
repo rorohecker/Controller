@@ -76,7 +76,7 @@ Work in batches of five. Each batch includes regression checks, wording/layout r
 
 ## Batch 10 - Calibration at the output layer
 
-46. Pending - Apply saved drift/range correction at the driver or virtual-controller output so games receive corrected values; verify persistence across restart/reconnect, raw-versus-corrected plots and recovery. Investigate controller firmware calibration only with a verified protocol and reversible backup.
+46. Complete - Native per-controller range/noise persistence and correction before Windows virtual Xbox output; raw/game plots, bypass/reload, previous-save recovery, stale-input neutralization and exact encoder checks. macOS/Linux retain app/desktop calibration; native firmware/filter-driver writes are not enabled. See [output calibration](output-calibration.md).
 
 ## Verification log
 
@@ -106,3 +106,14 @@ Batch 8 is addressed (0.20.0): saved controller names, exact endpoint pairing an
 Batch 9 is implemented (0.21.1): opt-in bounded raw-input capture and pure replay analysis; cached process discovery and asynchronous audio/loopback startup; visible/dirty live widgets, reactive slider fills and paused offscreen decoration; software timing/core-resource checks; updated coverage records and seeded haptic A/B trials. Regression work preserves preview motor fallback, scoped pending Stop, panic/reset cancellation and shutdown with stdin still open. Real core smoke tests now disable HID explicitly, and the release smoke runners propagate every failed child. No physical latency/force result or macOS/Linux hardware certification is claimed. See [runtime reliability](runtime-reliability.md). Progress: 42/46 complete, 3 experimental, 1 pending (46).
 
 The first 0.21.0 candidate stayed unpublished after newer CI Rust rejected a deprecated atomic helper under strict Clippy. Version 0.21.1 uses a portable compare/exchange worker limit; the existing admission/cancellation tests cover it.
+
+
+Batch 10 is implemented (0.22.0): native per-controller range and rest-noise records load before virtual Xbox output. Measurement is separate from saved game correction. Atomic storage, revision checks, bypass/reload, previous-save recovery, raw/game plots and a 250 ms neutral watchdog have software coverage. A failed save stays visible; reconnect during a save cannot apply the previous connection's result. Tray Show/double-click now restores minimized windows. The UI audit covers every tab at normal and enlarged text scaling, including adjacent text/control collisions and content-based reflow. See [output calibration](output-calibration.md). Progress: 43/46 complete, 3 experimental, no queued implementation items.
+
+The experimental release limits remain explicit:
+
+- 33: current upstream vDS supplies an external Windows USB/IP and Linux HCD route. The app detects standard tool locations and provides platform setup guidance. No native HID/audio driver is integrated or newly bundled. Full provider/game/controller handoff and recovery require an installed provider and physical validation.
+- 34: the bounded Bluetooth PCM experiment and independent CRC/sequence/software-timing checks are implemented. Physical Bluetooth feel/timing and adapter recovery remain unverified; normal playback does not silently select this experiment.
+- 36: read-only Edge snapshots, original backups and local editing are implemented. A physical USB Edge is required to validate live reads. Hardware SET/profile/firmware writes remain disabled pending verified original backup/readback/recovery.
+
+The USB check was offered for this pass; the user was unavailable. No new physical calibration, force, latency, Bluetooth or Edge pass is claimed.

@@ -53,8 +53,8 @@ const MOUSEEVENTF_WHEEL: u32 = 0x0800;
 const VK_LEFT: u16 = 0x25;
 const VK_RIGHT: u16 = 0x27;
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Deserialize, serde::Serialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InputCalibration {
     pub axis_centers: [f32; 4],
     pub axis_mins: [f32; 4],

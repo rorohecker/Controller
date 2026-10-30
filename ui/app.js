@@ -95,8 +95,8 @@
   let calibrationOwner='';
   function calibrationRecord(save=false){
     let store={controllers:{}};
-    try{store=JSON.parse(localStorage.getItem('controller.deviceCalibration'))||store;}catch{}
-    store.controllers=store.controllers&&typeof store.controllers==='object'?store.controllers:{};
+    try{const saved=JSON.parse(localStorage.getItem('controller.deviceCalibration'));if(saved&&typeof saved==='object'&&!Array.isArray(saved))store=saved;}catch{}
+    store.controllers=store.controllers&&typeof store.controllers==='object'&&!Array.isArray(store.controllers)?store.controllers:{};
     if(!calibrationOwner)return null;
     if(save){
       store.controllers[calibrationOwner]={input:inputCalibration,motorZones};
@@ -106,12 +106,11 @@
   }
   function selectControllerCalibration(event){
     const id=event.controllerId||event.path||`${event.name}:${event.transport}`;
-    if(id===calibrationOwner)return;
     calibrationRun=null;
     if(zoneRun)stopZoneCalibration(false);
     calibrationOwner=id;inputCalibration=null;motorZones={left:null,right:null};
-    let record=calibrationRecord();
-    if(!record){
+    let record=event.outputCalibration?.record?{input:event.outputCalibration.record.settings.calibration,motorZones:calibrationRecord()?.motorZones}:event.outputCalibration?.error?null:calibrationRecord();
+    if(!record&&!event.outputCalibration?.error){
       try{
         if(!localStorage.getItem('controller.legacyCalibrationOwner')){
           const input=JSON.parse(localStorage.getItem('aftertouch.inputCalibration')||'null');
@@ -288,7 +287,8 @@
     if(run.stage===0){
       if(run.restSamples.length<30)return false;
       const {centres,rests}=restValues(run);
-      return centres.every(value=>Math.abs(value)<=.3)&&rests.every(value=>value<=.2);
+      const still=run.restSamples.every(s=>s.axes.every((v,i)=>Math.abs(v-centres[i])<=.08)&&s.triggers.every((v,i)=>Math.abs(v-rests[i])<=.03));
+      return still&&centres.every(value=>Math.abs(value)<=.3)&&rests.every(value=>value<=.2);
     }
     if(run.stage===1)return run.axisMins.every((value,i)=>value<=run.centers[i]-.5)&&run.axisMaxs.every((value,i)=>value>=run.centers[i]+.5);
     if(run.stage===2)return run.triggerFulls.every((value,i)=>value-run.rests[i]>=.5);
@@ -312,12 +312,13 @@
     return `Touch corners ${corners}/4 · horizontal ${Math.max(0,Math.round(x*100))}% · vertical ${Math.max(0,Math.round(y*100))}%. ${calibrationReady(run)?'Ready to save.':'Touch each remaining corner.'}`;
   }
   function renderCalibrationStatus(){
+    window.outputCalibration?.render();
     const run=calibrationRun;
     $('#start-calibration').disabled=!state.connected||!!run;
     $('#next-calibration').hidden=!run;
-    $('#next-calibration').disabled=!run||!calibrationReady(run);
-    $('#cancel-calibration').disabled=!run;
-    $('#reset-calibration').disabled=!state.connected||!!run||!inputCalibration;
+    $('#next-calibration').disabled=!run||!!run.saving||!calibrationReady(run);
+    $('#cancel-calibration').disabled=!run||!!run.saving;
+    $('#reset-calibration').disabled=!state.connected||!!run||(!inputCalibration&&!window.outputCalibration?.error);
     if(run){
       const step=calibrationStages[run.stage];
       $('#calibration-step').textContent=step.label;
@@ -325,7 +326,7 @@
       $('#next-calibration').textContent=step.action;
       $('#calibration-fill').style.width=`${run.stage*25}%`;
       $('#cal-range-feedback').textContent=calibrationFeedback(run);
-      $('#calibration-status').textContent=`Step ${run.stage+1} of 4`;
+      $('#calibration-status').textContent=run.saveError||(run.saving?'Saving calibration…':`Step ${run.stage+1} of 4`);
     }
     $('.calibration-work').dataset.stage=run?String(run.stage):'idle';
     const saved=!run&&$('#calibration-fill').style.width==='100%';
@@ -386,9 +387,14 @@
   }
   async function finishCalibration(){
     const run=calibrationRun;
+    if(!run)return;
+    const owner=calibrationOwner;
+    run.saving=true;run.saveError='';renderCalibrationStatus();
     const candidate={axisCenters:run.centers,axisMins:run.axisMins,axisMaxs:run.axisMaxs,triggerRests:run.rests,triggerFulls:run.triggerFulls,touchMins:run.touchMins,touchMaxs:run.touchMaxs};
+    try{if(native)await window.outputCalibration.save(candidate,run);}catch(error){run.saving=false;run.saveError=String(error?.message||error);renderCalibrationStatus();return;}
+    if(run!==calibrationRun||owner!==calibrationOwner||!state.connected)return;
     if(!await send({action:'setCalibration',calibration:candidate})){
-      $('#calibration-status').textContent='Could not apply measured ranges. Check Diagnostics and try saving again.';
+      run.saving=false;run.saveError=native?'Ranges saved. Reconnect the controller to apply.':'Could not apply measured ranges.';renderCalibrationStatus();
       return;
     }
     calibrationRun=null;inputCalibration=candidate;
@@ -402,23 +408,27 @@
   }
   $('#start-calibration').addEventListener('click',async()=>{
     if(!state.connected||calibrationRun)return;
-    if(!await send({action:'setCalibration',calibration:defaultCalibration()}))return;
+    if(window.outputCalibration?.busy){toast('Wait for calibration storage to finish.');return;}
+    if(!await send({action:'setCalibration',calibration:defaultCalibration(),measuring:true}))return;
     calibrationRun={stage:0,restSamples:[],centers:[0,0,0,0],rests:[0,0],axisMins:[1,1,1,1],axisMaxs:[-1,-1,-1,-1],axisCount:0,triggerFulls:[0,0],triggerPeaks:[0,0],triggerHeld:[false,false],touchMins:[1,1],touchMaxs:[0,0],touchCount:0,touchCorners:{tl:false,tr:false,bl:false,br:false}};
     renderCalibrationStatus();
   });
   $('#next-calibration').addEventListener('click',async()=>{
-    const run=calibrationRun;if(!run||!calibrationReady(run))return;
+    const run=calibrationRun;if(!run||run.saving||!calibrationReady(run))return;
     if(run.stage===0){const values=restValues(run);run.centers=values.centres;run.rests=values.rests;}
     if(run.stage===3){await finishCalibration();return;}
     run.stage++;renderCalibrationStatus();
   });
   $('#cancel-calibration').addEventListener('click',()=>{
+    if(calibrationRun?.saving)return;
     calibrationRun=null;sendCalibration();$('#calibration-step').textContent='Calibration canceled';
     $('#calibration-instruction').textContent='Previous ranges restored. Start again to retry.';
     $('#cal-range-feedback').textContent='No new ranges were saved.';
     $('#calibration-status').textContent='Previous ranges restored.';renderCalibrationStatus();
   });
-  $('#reset-calibration').addEventListener('click',()=>{
+  $('#reset-calibration').addEventListener('click',async()=>{
+    if(calibrationRun||window.outputCalibration?.busy)return;
+    try{if(native)await window.outputCalibration.save(defaultCalibration(),null,'reset');}catch(error){$('#calibration-status').textContent=String(error?.message||error);return;}
     inputCalibration=null;calibrationRecord(true);
     sendCalibration();$('#calibration-step').textContent='Default ranges restored';
     $('#calibration-status').textContent='Using default ranges.';$('#calibration-fill').style.width='0%';renderCalibrationStatus();
@@ -1965,6 +1975,7 @@
   $('#battery-segments').innerHTML=Array.from({length:10},()=>'<i></i>').join('');
   function drawActivity(){const canvas=$('#activity-scope'),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);ctx.beginPath();state.activity.forEach((v,i)=>{const x=i/(state.activity.length-1)*w,y=h-8-v*(h-16);if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.lineWidth=3;ctx.strokeStyle='#d4a84b';ctx.stroke();ctx.fillStyle='#7ec9bc';const last=state.activity.at(-1);ctx.fillRect(w-5,h-8-last*(h-16)-4,8,8);}
   function handleEvent(event){
+    window.outputCalibration?.event(event);
     if(event.type==='safetyReset'||event.type==='device'&&!event.connected){weaponRequest++;weaponApplying=false;activeWeaponPreset='';}
     window.integrationStudio?.event(event);window.dailyUse?.event(event);window.motionStudio?.event(event);window.hardwareResearch?.event(event);window.runtimeLab?.event(event);window.hapticEvaluation?.event(event);
     window.hapticAuthoring?.event(event);
@@ -1975,7 +1986,7 @@
       if(changed)padNavPrev=null;
       if(changed&&event.connected)selectControllerCalibration(event);
       setConnected(!!event.connected,event.name||'',event.transport||'',event.firmware||'',event.path||'');
-      if(changed && event.connected){window.motionStudio?.device(event);window.hapticAuthoring?.device(event);sendPcBindings();sendCalibration();audioMixer.apply();applyGameRules();}
+      if(changed && event.connected){window.outputCalibration?.device(event,inputCalibration);window.motionStudio?.device(event);window.hapticAuthoring?.device(event);sendPcBindings();sendCalibration();audioMixer.apply();applyGameRules();}
       if(event.path) state.selectedPath = event.path;
       if(changed||state.manualScan){const msg=event.connected?`${event.name} · ${event.transport}`:(event.message||'Disconnected');log(msg);toast(msg);}
       if(state.manualScan)finishScan();
@@ -2187,6 +2198,9 @@
   }
   window.controllerStudio={visualStats:()=>({...visualStats}),invalidateView:()=>{inputDirty=true;rangeDirty=true;requestVisualFrame();},state,profile,trigger,clone,native,invoke,send,toast,names,vkChoices,validPcKey,gameNode,gameSelect,gameField,saveProfiles,commitProfileDraft,normalizeProfile,validProfile,validLibrary,renderProfiles,renderAllProfileControls,renderTriggerControls,renderPcBindings,savePcBindings,navigate,useWeapon,applyProfileHardware,applyGameRules,renderGameProfiles,getPlayer:()=>musicPlayer,getMixer:()=>clone(audioMixer.settings),
     getPresets:()=>triggerPresets,getPcBindings:()=>pcBindings,
+    calibrationInProgress:()=>!!calibrationRun,
+    refreshCalibration:()=>renderCalibrationStatus(),
+    restoreCalibration(value){inputCalibration=value?clone(value):null;calibrationRecord(true);renderCalibrationStatus();},
     async selectProfile(id,apply=false){if(!state.profiles.some(p=>p.id===id))return;state.profileId=id;renderAllProfileControls();await saveProfiles(true);if(apply&&state.connected)await applyProfileHardware(true);},
     setSupportedKeys(keys){if(Array.isArray(keys)){supportedKeys=new Set(keys);renderPcBindings();window.motionStudio?.renderProfile();}},
     archive:()=>({schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles),triggerPresets:clone(triggerPresets),tactileClips:window.hapticAuthoring.archive()}),
@@ -2194,6 +2208,7 @@
   };
   window.dailyUse=new window.ControllerDailyUse(window.controllerStudio);
   window.motionStudio=new window.ControllerMotionStudio(window.controllerStudio);
+  window.outputCalibration=new window.ControllerOutputCalibration(window.controllerStudio);
   window.hapticAuthoring=new window.ControllerHapticAuthoring(window.controllerStudio);
   window.gameSessions=new window.ControllerGameSessions(window.controllerStudio);
   window.integrationStudio=new window.ControllerIntegrations(window.controllerStudio);

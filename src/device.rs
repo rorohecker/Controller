@@ -186,6 +186,11 @@ pub enum DeviceCommand {
     },
     SetCalibration {
         calibration: InputCalibration,
+        #[serde(default)]
+        measuring: bool,
+    },
+    ReloadOutputCalibration {
+        controller_id: String,
     },
     SetXinput {
         enabled: bool,
@@ -548,6 +553,10 @@ struct Connected {
     microphone_muted: Option<bool>,
     desktop: DesktopMapper,
     calibration: InputCalibration,
+    calibration_measuring: bool,
+    output_calibration: Option<crate::output_calibration::Record>,
+    output_calibration_error: Option<String>,
+    input_stale: bool,
     controls: ControlProfile,
     motion: MotionProcessor,
     radial: RadialMapper,
@@ -1677,6 +1686,13 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                 }
                 let display = path_key(info);
                 let controller_id = controller_identity(info, &hid);
+                let saved_calibration = crate::output_calibration::load(&controller_id);
+                let output_calibration_error = saved_calibration.as_ref().err().cloned();
+                let output_calibration = saved_calibration.ok().flatten();
+                let calibration = output_calibration
+                    .as_ref()
+                    .map(|r| r.settings.calibration.clone())
+                    .unwrap_or_default();
                 let mut found = Connected {
                     hid,
                     path: info.path().to_bytes().to_vec(),
@@ -1705,7 +1721,11 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     speaker_track_id: 0,
                     microphone_muted: None,
                     desktop: DesktopMapper::default(),
-                    calibration: InputCalibration::default(),
+                    calibration,
+                    calibration_measuring: false,
+                    output_calibration,
+                    output_calibration_error,
+                    input_stale: false,
                     controls: ControlProfile::default(),
                     motion: MotionProcessor::with_factory(factory),
                     radial: RadialMapper::default(),
@@ -1817,6 +1837,7 @@ fn emit_connected(proxy: &Sender<serde_json::Value>, found: &Connected) {
             "firmware": found.firmware,
             "path": found.path_display,
             "controllerId": found.controller_id,
+            "outputCalibration": {"record":found.output_calibration,"error":found.output_calibration_error},
             "dongle":found.dongle,
             "motionFactory":{"valid":found.motion.factory.valid,"message":found.motion.factory.message},
             "productId": format!("{:04x}", found.product_id),
@@ -2190,7 +2211,36 @@ fn handle_command(
             );
             return true;
         }
-        DeviceCommand::SetCalibration { calibration } => {
+        DeviceCommand::ReloadOutputCalibration { controller_id } => {
+            if let Some(connected) = device.as_mut() {
+                if connected.controller_id != controller_id {
+                    emit(
+                        proxy,
+                        json!({"type":"error","message":"Controller changed; calibration was not applied."}),
+                    );
+                } else {
+                    let loaded = crate::output_calibration::load(&controller_id);
+                    connected.output_calibration_error = loaded.as_ref().err().cloned();
+                    connected.output_calibration = loaded.ok().flatten();
+                    if !connected.calibration_measuring {
+                        connected.calibration = connected
+                            .output_calibration
+                            .as_ref()
+                            .map(|r| r.settings.calibration.clone())
+                            .unwrap_or_default();
+                    }
+                    emit(
+                        proxy,
+                        json!({"type":"outputCalibration","controllerId":controller_id,"record":connected.output_calibration,"error":connected.output_calibration_error}),
+                    );
+                }
+            }
+            return true;
+        }
+        DeviceCommand::SetCalibration {
+            calibration,
+            measuring,
+        } => {
             if !calibration.valid() {
                 emit(
                     proxy,
@@ -2200,6 +2250,7 @@ fn handle_command(
             }
             if let Some(connected) = device.as_mut() {
                 connected.calibration = calibration;
+                connected.calibration_measuring = measuring;
                 emit(proxy, json!({"type":"calibration","applied":true}));
             }
             return true;
@@ -3056,6 +3107,7 @@ fn handle_command(
         | DeviceCommand::SetPcMode { .. }
         | DeviceCommand::SetPcBindings { .. }
         | DeviceCommand::SetCalibration { .. }
+        | DeviceCommand::ReloadOutputCalibration { .. }
         | DeviceCommand::SetGameActions { .. }
         | DeviceCommand::SetGameLink { .. }
         | DeviceCommand::StopMacros
@@ -3170,6 +3222,25 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                     .into(),
                 )
             }));
+        }
+        if let Some(connected) = device.as_mut()
+            && crate::output_calibration::neutral_due(
+                connected.last_valid_report,
+                Instant::now(),
+                connected.input_stale,
+            )
+        {
+            connected.input_stale = true;
+            if let Some(event) = xinput.neutralize() {
+                emit(&proxy, event);
+            }
+            connected.desktop.cancel_for_modal();
+            remap.set_suspended(true);
+            mouse.cancel_pointer();
+            emit(
+                &proxy,
+                json!({"type":"outputInputHealth","stale":true,"controllerId":connected.controller_id}),
+            );
         }
         if let Some(connected) = device.as_mut()
             && let Err(error) = connected.audio.poll_output()
@@ -4180,6 +4251,22 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                             }
                         }
                         let raw_axes = input.axes;
+                        let raw_triggers = [input.buttons[6], input.buttons[7]];
+                        let (mut game_input, corrected_axes) = crate::output_calibration::project(
+                            &input,
+                            connected.output_calibration.as_ref(),
+                            (!connected.calibration_measuring
+                                && connected.output_calibration_error.is_none())
+                            .then_some(&connected.calibration),
+                            &connected.controls.sticks,
+                        );
+                        if connected.input_stale {
+                            connected.input_stale = false;
+                            emit(
+                                &proxy,
+                                json!({"type":"outputInputHealth","stale":false,"controllerId":connected.controller_id}),
+                            );
+                        }
                         let motion = connected.motion.update(&input, Instant::now());
                         if motion.calibration_complete {
                             emit(
@@ -4231,8 +4318,6 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                                 || radial.consume,
                         );
                         remap.update(&input);
-                        let mut game_input = input.clone();
-                        game_input.axes = connected.controls.sticks.apply(input.axes);
                         if gyro.config.enabled
                             && motion.valid
                             && connected.controls.motion.flick_enabled
@@ -4264,7 +4349,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                                 }
                             }
                         }
-                        if let Some(event) = xinput.update(&game_input) {
+                        if let Some(event) = if input.panic_combo {
+                            xinput.neutralize()
+                        } else {
+                            xinput.update(&game_input)
+                        } {
                             emit(&proxy, event.clone());
                             if let Some(message) = event["message"].as_str() {
                                 emit(&proxy, json!({ "type": "error", "message": message }));
@@ -4350,7 +4439,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                         {
                             emit(
                                 &proxy,
-                                json!({ "type": "input", "input": input,"rawAxes":raw_axes,"virtualAxes":virtual_axes }),
+                                json!({ "type": "input", "controllerId":connected.controller_id, "input": input,"rawAxes":raw_axes,"correctedAxes":corrected_axes,"virtualAxes":virtual_axes,"rawTriggers":raw_triggers,"virtualTriggers":[game_input.buttons[6],game_input.buttons[7]],"virtualReport":crate::xinput_bridge::Encoded::from_input(&game_input),"virtualOutputActive":xinput.active()&&!input.panic_combo }),
                             );
                             connected.last_input_sent = Instant::now();
                         }
