@@ -13,12 +13,21 @@ const START_TIMEOUT: Duration = Duration::from_secs(4);
 struct Permit(&'static AtomicU32);
 impl Permit {
     fn acquire(counter: &'static AtomicU32) -> Result<Self, String> {
-        counter
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < 2).then_some(n + 1)
-            })
-            .map(|_| Self(counter))
-            .map_err(|_| "Audio is still closing. Try again in a moment.".into())
+        let mut count = counter.load(Ordering::Acquire);
+        loop {
+            if count >= 2 {
+                return Err("Audio is still closing. Try again in a moment.".into());
+            }
+            match counter.compare_exchange_weak(
+                count,
+                count + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Ok(Self(counter)),
+                Err(current) => count = current,
+            }
+        }
     }
 }
 impl Drop for Permit {

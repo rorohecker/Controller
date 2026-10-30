@@ -1,8 +1,8 @@
 # Compatibility and test record
 
-## Current software coverage: 0.21.0
+## Current software coverage: 0.21.1
 
-Windows USB input, RGB/player lights, desktop controls and speaker/grip playback have prior physical test reports. This batch changes scheduling and presentation; physical output has not been revalidated for 0.21.0. macOS/Linux builds remain previews until their endpoints, permissions and controller behavior are physically checked. Bazzite has no dedicated runtime test in CI.
+Windows USB input, RGB/player lights, desktop controls and speaker/grip playback have prior physical test reports. This batch changes scheduling and presentation; physical output has not been revalidated for 0.21.1. macOS/Linux builds remain previews until their endpoints, permissions and controller behavior are physically checked. Bazzite has no dedicated runtime test in CI.
 
 | Area | Automated coverage | Physical limit |
 | --- | --- | --- |

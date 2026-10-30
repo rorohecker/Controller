@@ -101,11 +101,11 @@
         const discovery=stats.processDiscovery,ram=stats.core?.residentBytes;
         this.resources.textContent=`Core CPU: ${this.cpu==null?'waiting':this.cpu.toFixed(1)+'%'}; memory: ${ram==null?'not available':(ram/1048576).toFixed(1)+' MiB'}. Discovery: ${discovery?.ready?`${(discovery.durationUs/1000).toFixed(1)} ms; ${discovery.ageMs} ms old`:'starting'}. CPU uses 100% for one core; memory covers this process only.`;
       }
-      if(!this.probing&&!this.sampling)this.status.textContent=this.probeResult?`Bridge round trip: ${this.probeResult.count}/20 replies; median ${this.probeResult.p50?.toFixed(2)??'—'} ms, p95 ${this.probeResult.p95?.toFixed(2)??'—'} ms.${this.probeResult.missing?' Some replies timed out.':''}`:'Timings use the latest 512 samples. HID read wait includes time waiting for a report.';
+      if(!this.probing&&!this.sampling)this.status.textContent=this.probeResult?`UI/core round trip: ${this.probeResult.count}/20 replies; median ${this.probeResult.p50?.toFixed(2)??'—'} ms, p95 ${this.probeResult.p95?.toFixed(2)??'—'} ms.${this.probeResult.missing?' Some replies timed out.':''}`:'Timings use the latest 512 samples. HID read wait includes time waiting for a report.';
     }
     async probe(){
       if(this.probing)return;this.probing=true;this.ping.disabled=true;this.rtts=[];this.pending.clear();this.finishedSending=false;
-      this.status.textContent='Measuring 20 bridge round trips. No controller output is sent.';
+      this.status.textContent='Measuring 20 UI/core round trips. No controller output is sent.';
       for(let i=0;i<20&&this.probing;i++){
         const id=this.nextProbe++;this.pending.set(id,performance.now());
         if(!await this.a.send({action:'latencyProbe',id}))this.pending.delete(id);

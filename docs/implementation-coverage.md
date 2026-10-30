@@ -1,6 +1,6 @@
-# Implementation coverage (0.21.0)
+# Implementation coverage (0.21.1)
 
-Updated for CONTROLLER 0.21.0. The [development backlog](development-backlog.md) tracks current work. A build or software test does not establish physical controller support.
+Updated for CONTROLLER 0.21.1. The [development backlog](development-backlog.md) tracks current work. A build or software test does not establish physical controller support.
 
 | Area | Implemented software | Remaining validation or work |
 | --- | --- | --- |

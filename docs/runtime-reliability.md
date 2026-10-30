@@ -1,4 +1,4 @@
-# Runtime checks and haptic comparisons (0.21.0)
+# Runtime checks and haptic comparisons (0.21.1)
 
 ## Input capture and replay
 
