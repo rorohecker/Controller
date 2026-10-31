@@ -31,7 +31,10 @@ mod screen_color;
 mod script;
 mod steam;
 mod telemetry;
+mod ui_security;
 mod updates;
+#[cfg(any(target_os = "linux", test))]
+mod virtual_gamepad;
 mod xinput_bridge;
 
 use std::{
@@ -120,7 +123,7 @@ fn set_start_on_login(enabled: bool, app: tauri::AppHandle) -> Result<(), String
 
 #[tauri::command]
 fn platform_capabilities() -> Value {
-    json!({"os": std::env::consts::OS, "desktopInput":integrations::environment()["desktopCandidate"], "nativeAudioFiles":true,"processAudioCapture":cfg!(windows)&&integrations::windows_build()>=20348, "supportedKeys":(1..=254u16).filter(|k|input_map::supported_key(*k)).collect::<Vec<_>>(), "xinput": cfg!(windows), "screenColor": cfg!(windows), "systemAudioBridge": cfg!(windows), "updates": cfg!(windows)})
+    json!({"os": std::env::consts::OS, "desktopInput":integrations::environment()["desktopCandidate"], "nativeAudioFiles":true,"processAudioCapture":cfg!(windows)&&integrations::windows_build()>=20348, "supportedKeys":(1..=254u16).filter(|k|input_map::supported_key(*k)).collect::<Vec<_>>(), "xinput": cfg!(any(windows,target_os="linux")), "screenColor": cfg!(windows), "systemAudioBridge": audio_haptics::capture_supported(), "updates": cfg!(windows)})
 }
 
 #[cfg(windows)]
@@ -580,6 +583,15 @@ fn main() {
             None,
         ))
         .setup(|app| {
+            let config = app
+                .config()
+                .app
+                .windows
+                .first()
+                .ok_or("Main window configuration is missing")?;
+            tauri::WebviewWindowBuilder::from_config(app, config)?
+                .on_navigation(ui_security::allowed_navigation)
+                .build()?;
             let bridge = Bridge::spawn(app.handle().clone())?;
             app.manage(bridge);
             app.manage(updates::PendingUpdate::default());

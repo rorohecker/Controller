@@ -45,7 +45,7 @@
       preview.append(n('p',{text:'Inspect one captured USB 0x02 output report and preview Bluetooth control framing. This does not write hardware or emulate a driver.'}),this.packet,this.button('Inspect packet','native-packet-inspect',()=>this.inspect()),this.packetStatus);lab.append(preview);
       this.renderSelection();
     }
-    renderPlatform(){this.nativeBridge.hidden=this.a.state.platformOS==='macos';this.sourcePanel.hidden=!window.controllerPlatform.systemAudioBridge;this.runButton.disabled=!this.a.state.connected||this.running;$('capture-use').disabled=!this.a.state.connected||this.a.state.transport!=='USB'||!window.controllerPlatform.systemAudioBridge;}
+    renderPlatform(){this.nativeBridge.hidden=this.a.state.platformOS==='macos';this.sourcePanel.hidden=!window.controllerPlatform.systemAudioBridge;this.runButton.disabled=!this.a.state.connected||this.running;$('capture-use').disabled=!this.a.state.connected||this.a.state.transport!=='USB'||!window.controllerPlatform.systemAudioBridge;this.mode.querySelector('[value="process"]').hidden=this.a.state.platformOS!=='windows';this.mode.querySelector('[value="nativeEndpoint"]').hidden=this.a.state.platformOS==='macos';}
     renderSelection(){this.processField.hidden=this.mode.value!=='process';this.endpointField.hidden=this.mode.value!=='nativeEndpoint';$('native-relay-note').hidden=this.mode.value!=='nativeEndpoint';}
     selectedSource(){
       if(this.mode.value==='process'){const pid=Number(this.process.value);if(!Number.isInteger(pid)||pid<=4)throw Error('Choose a running app.');return{kind:'process',pid};}
@@ -67,9 +67,11 @@
         this.endpoint.replaceChildren(new Option('Choose a four-channel source',''));for(const e of info.nativeRelayEndpoints||[])this.endpoint.add(new Option(e.name,e.id));
         if([...this.endpoint.options].some(o=>o.value===oldEndpoint))this.endpoint.value=oldEndpoint;
         this.mode.querySelector('[value=process]').disabled=!info.processCapture;
+        this.mode.querySelector('[value=process]').hidden=this.a.state.platformOS!=='windows'&&!info.processCapture;
+        this.mode.querySelector('[value=nativeEndpoint]').hidden=this.a.state.platformOS==='macos';
         if(!info.processCapture&&this.mode.value==='process'){this.mode.value='system';this.renderSelection();}
         if(!this.accessChecked)this.accessStatus.textContent=info.environment?.message||'Session information unavailable.';
-        if(!this.a.state.audioBridge)this.captureStatus.textContent=info.processCapture?'Choose the app to capture; PID selections are not saved in profiles.':'Process capture needs Windows build 20348 or newer. System audio remains available.';
+        if(!this.a.state.audioBridge)this.captureStatus.textContent=info.processCapture?'Choose the app to capture; PID selections are not saved in profiles.':this.a.state.platformOS==='windows'?'Process capture needs Windows build 20348 or newer. System audio remains available.':'System audio captures the selected desktop output. Microphone input is not used.';
       }catch(error){if(id===this.refreshId)this.captureStatus.textContent=`Source discovery failed: ${error}`;}
       finally{if(id===this.refreshId)$('capture-refresh').disabled=false;}
     }

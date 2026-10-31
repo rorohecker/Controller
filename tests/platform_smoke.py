@@ -12,7 +12,7 @@ def main():
         for os in ('windows','macos','linux'):
             page=browser.new_page(viewport={'width':1280,'height':900})
             mock_core(page)
-            capabilities={'os':os,'desktopInput':True,'xinput':os=='windows','screenColor':os=='windows','systemAudioBridge':os=='windows','updates':os=='windows'}
+            capabilities={'os':os,'desktopInput':True,'xinput':os!='macos','screenColor':os=='windows','systemAudioBridge':True,'updates':os=='windows'}
             page.add_init_script('const platformInvoke=window.__TAURI__.core.invoke;window.__TAURI__.core.invoke=async(name,args)=>name==="platform_capabilities"?'+json.dumps(capabilities)+':platformInvoke(name,args);')
             page.add_init_script("""
               const accessInvoke=window.__TAURI__.core.invoke;
@@ -54,15 +54,17 @@ def main():
             placeholder=unbound.locator('[aria-label="CREATE app path"]').get_attribute('placeholder')
             assert ('/Applications/' in placeholder) if os=='macos' else ('C:' in placeholder) if os=='windows' else placeholder=='/usr/bin/app'
             page.locator('[data-view="touch"]').click()
-            assert page.locator('.touch-compatibility').is_visible()==(os=='windows')
+            assert page.locator('.touch-compatibility').is_visible()==(os!='macos')
+            assert page.locator('#setup-vigem').is_visible()==(os=='windows')
+            assert page.locator('#setup-hidhide').is_visible()==(os=='windows')
             page.locator('[data-view="haptics"]').click()
-            assert page.locator('.bridge-panel').is_visible()==(os=='windows')
-            assert page.locator('#audio-mix-bridgeGain').is_visible()==(os=='windows')
+            assert page.locator('.bridge-panel').is_visible()
+            assert page.locator('#audio-mix-bridgeGain').is_visible()
             page.locator('[data-view="lights"]').click()
             assert page.locator('#screen-light').is_visible()==(os=='windows')
             page.locator('[data-view="diagnostics"]').click()
             assert page.locator('.update-panel').is_visible()==(os=='windows')
-            assert page.locator('#diag-xinput').is_visible()==(os=='windows')
+            assert page.locator('#diag-xinput').is_visible()==(os!='macos')
             wrong='Control+k' if os=='macos' else 'Meta+k'
             right='Meta+k' if os=='macos' else 'Control+k'
             page.keyboard.press(wrong)

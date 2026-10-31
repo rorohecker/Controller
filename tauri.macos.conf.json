@@ -2,6 +2,7 @@
   "bundle": {
     "targets": ["dmg"],
     "createUpdaterArtifacts": false,
+    "macOS": { "minimumSystemVersion": "14.2", "infoPlist": "resources/Info.plist" },
     "icon": ["icons/icon.icns"],
     "resources": ["resources/DualSense-artwork-LICENSE.txt"]
   }

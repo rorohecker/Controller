@@ -615,6 +615,9 @@
     $('#pc-permission-note').textContent=platform.os==='windows'?'Shortcuts stay on this computer. Windows may block input to administrator apps.':platform.os==='macos'?'Shortcuts stay on this Mac. Allow Accessibility access to use desktop controls.':'Shortcuts stay on this computer. Approve desktop control if your session asks for it.';
     $('#profile-match').placeholder=platform.os==='windows'?'game.exe':'Game executable or app name';
     $('#profile-match-path').placeholder=platform.appPathPlaceholder;
+    $('.xinput-block>strong').textContent=platform.os==='linux'?'Virtual gamepad':'XInput bridge';
+    $('.xinput-block>p').textContent=platform.os==='linux'?'Create a virtual Xbox-compatible gamepad through uinput. Install the optional access rule and load the uinput module before enabling it.':'Create a virtual Xbox 360 pad with ViGEmBus. Install the included driver only if you use this feature.';
+    const driverNote=$('.driver-actions small');if(driverNote)driverNote.textContent=platform.os==='linux'?'Use /dev/uinput access for the active desktop user. Select the virtual gamepad in your game and avoid duplicate Steam mappings.':'ViGEmBus creates the virtual Xbox pad. Use HidHide if a game sees both pads.';
     renderPcMode();renderGyroControls();renderPcBindings();renderRemapEditor();
     platform.apply();window.motionStudio?.renderProfile();window.gameSessions?.renderProfile();window.studioHooks?.platform();
   }
@@ -1715,7 +1718,7 @@
     if (!state.connected) { toast('Connect a controller.'); return; }
     send({action:'setXinput', enabled: !state.xinput});
   });
-  $('.xinput-block').insertAdjacentHTML('beforeend','<div class="driver-actions"><button id="setup-vigem" class="quiet-action" type="button">Set up XInput driver</button><button id="setup-hidhide" class="quiet-action" type="button">HidHide download</button><small>ViGEmBus creates the virtual Xbox pad. Use HidHide if a game sees both pads.</small></div>');
+  $('.xinput-block').insertAdjacentHTML('beforeend','<div class="driver-actions"><button id="setup-vigem" data-platform-only="windows" class="quiet-action" type="button">Set up XInput driver</button><button id="setup-hidhide" data-platform-only="windows" class="quiet-action" type="button">HidHide download</button><small>ViGEmBus creates the virtual Xbox pad. Use HidHide if a game sees both pads.</small></div>');
   for(const [id,kind] of [['setup-vigem','vigem'],['setup-hidhide','hidhide']]){
     $(`#${id}`).addEventListener('click',async()=>{
       if(!native){toast('Open the Windows app to set up drivers.');return;}

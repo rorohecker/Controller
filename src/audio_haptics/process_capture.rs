@@ -148,6 +148,7 @@ fn capture(
     client.start_stream().map_err(|e| e.to_string())?;
     status.store(1, Ordering::Release);
     let mut dsp = CaptureDsp::new(48_000, 0.5);
+    dsp.generation = generation;
     let result = (|| {
         while !stop.load(Ordering::Acquire) {
             if unsafe { WaitForSingleObject(process.0, 0) } != WAIT_TIMEOUT {

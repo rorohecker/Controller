@@ -7,7 +7,8 @@
     "linux": {
       "deb": {
         "files": {
-          "/usr/lib/udev/rules.d/70-controller-dualsense.rules": "resources/70-controller-dualsense.rules"
+          "/usr/lib/udev/rules.d/70-controller-dualsense.rules": "resources/70-controller-dualsense.rules",
+          "/usr/lib/udev/rules.d/71-controller-uinput.rules": "resources/71-controller-uinput.rules"
         }
       }
     }

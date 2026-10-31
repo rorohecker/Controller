@@ -1,0 +1,2 @@
+# Optional virtual-gamepad access for the active local desktop session.
+KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess", OPTIONS+="static_node=uinput"

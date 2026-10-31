@@ -14,6 +14,8 @@ pub mod capture;
 #[path = "audio_haptics/file.rs"]
 pub mod file;
 use capture::{CaptureHandle, CaptureSource};
+#[path = "audio_haptics/capture_math.rs"]
+mod capture_math;
 #[path = "audio_haptics/io_runtime.rs"]
 mod io_runtime;
 #[path = "audio_haptics/stream.rs"]
@@ -191,7 +193,7 @@ struct Shared {
     speaker: ArcSwapOption<SpeakerChirp>,
     speaker_pcm: ArcSwapOption<PcmStream>,
     mixer: ArcSwap<MixerSettings>,
-    bridge: ArrayQueue<[f32; 2]>,
+    bridge: ArrayQueue<CaptureFrame>,
     file_underruns: AtomicU64,
     bridge_underruns: AtomicU64,
     bridge_dropped: AtomicU64,
@@ -1116,7 +1118,7 @@ fn fill_frames(
                 .and_then(|at| c.sample(at as f32 / RATE as f32))
         });
         let audio = if bridge_on {
-            shared.bridge.pop().unwrap_or_else(|| {
+            capture_sample(shared).unwrap_or_else(|| {
                 bridge_missing += 1;
                 [0.0; 2]
             })
@@ -1294,14 +1296,32 @@ fn render_output_i16(
     );
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CaptureFrame {
+    generation: u64,
+    samples: [f32; 2],
+}
+
+fn capture_sample(shared: &Shared) -> Option<[f32; 2]> {
+    let generation = shared.capture_generation.load(Ordering::Acquire);
+    // A retired callback may finish after a source change. Never play its data.
+    for _ in 0..64 {
+        let frame = shared.bridge.pop()?;
+        if frame.generation == generation {
+            return Some(frame.samples);
+        }
+    }
+    None
+}
+
 struct CaptureDsp {
+    generation: u64,
     low: [f32; 2],
     high: [f32; 2],
     previous_low: [f32; 2],
     phase: f32,
     envelope: [f32; 2],
-    resample: f32,
-    ratio: f32,
+    resample: u64,
     gain: f32,
     rate: u32,
     dropped: u64,
@@ -1315,15 +1335,21 @@ struct CaptureDsp {
 
 impl CaptureDsp {
     fn new(rate: u32, gain: f32) -> Self {
+        let rate = rate.clamp(8_000, 192_000);
+        let gain = if gain.is_finite() {
+            gain.clamp(0.0, 4.0)
+        } else {
+            0.0
+        };
         let mut dsp = Self {
+            generation: 0,
             low: [0.0; 2],
             native: false,
             high: [0.0; 2],
             previous_low: [0.0; 2],
             phase: 0.0,
             envelope: [0.0; 2],
-            resample: 0.0,
-            ratio: RATE as f32 / rate as f32,
+            resample: 0,
             gain,
             rate,
             dropped: 0,
@@ -1353,7 +1379,7 @@ impl CaptureDsp {
         self.transient_gain = transient;
         self.gate = gate;
     }
-    fn frame(&mut self, input: [f32; 2], ring: &ArrayQueue<[f32; 2]>) -> bool {
+    fn frame(&mut self, input: [f32; 2], ring: &ArrayQueue<CaptureFrame>) -> bool {
         let mut out = [0.0; 2];
         let carrier = self.phase.cos();
         self.phase =
@@ -1388,10 +1414,16 @@ impl CaptureDsp {
                 0.0
             };
         }
-        self.resample += self.ratio;
-        while self.resample >= 1.0 {
-            self.resample -= 1.0;
-            if ring.force_push(out).is_some() {
+        self.resample += u64::from(RATE);
+        while self.resample >= u64::from(self.rate) {
+            self.resample -= u64::from(self.rate);
+            if ring
+                .force_push(CaptureFrame {
+                    generation: self.generation,
+                    samples: out,
+                })
+                .is_some()
+            {
                 self.dropped += 1;
             }
         }
@@ -1423,86 +1455,145 @@ fn capture_is_output(
         || sink_name.is_some_and(|s| s.to_ascii_lowercase() == name)
         || id.zip(sink_id).is_some_and(|(id, sink)| id.ends_with(sink))
 }
+pub fn capture_supported() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        objc2::available!(macos = 14.6)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        cfg!(any(windows, target_os = "linux"))
+    }
+}
+pub(crate) fn capture_host() -> Result<cpal::Host, String> {
+    #[cfg(target_os = "linux")]
+    {
+        cpal::host_from_id(cpal::HostId::PulseAudio).map_err(|e|format!("Start PipeWire's PulseAudio service or PulseAudio before capturing system audio: {e}"))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        if !capture_supported() {
+            return Err("System audio capture requires macOS 14.6 or newer".into());
+        }
+        Ok(cpal::default_host())
+    }
+}
 fn build_loopback(
     shared: Arc<Shared>,
     source: Option<&str>,
     sink_name: Option<&str>,
     sink_id: Option<&str>,
 ) -> Result<Stream, String> {
-    let host = cpal::default_host();
-    let device = if let Some(id) = source {
+    let host = capture_host()?;
+    let output = if let Some(id) = source {
         host.output_devices()
             .map_err(|e| e.to_string())?
             .find(|d| d.id().is_ok_and(|key| key.to_string() == id))
             .ok_or("Selected source endpoint is no longer available")?
     } else {
         host.default_output_device()
-            .ok_or("No Windows default audio output is available for loopback.")?
+            .ok_or("No default output is available for system audio capture")?
     };
-    let id = device.id().ok().map(|id| id.to_string());
-    if capture_is_output(&device.to_string(), id.as_deref(), sink_name, sink_id) {
-        return Err("Set Windows system audio to your speakers or headphones before enabling the bridge; capturing the controller endpoint would create feedback.".into());
+    let id = output.id().ok().map(|id| id.to_string());
+    if capture_is_output(&output.to_string(), id.as_deref(), sink_name, sink_id) {
+        return Err("Choose PC speakers or headphones as the system output; capturing the controller would create feedback.".into());
     }
-    let format = device
+    let format = output
         .default_output_config()
         .map_err(|e| format!("Could not inspect system audio: {e}"))?;
-    if source.is_some() && (format.channels() != 4 || format.sample_rate() != RATE) {
-        return Err("Native relay requires a four-channel, 48 kHz virtual source endpoint".into());
-    }
     let native = source.is_some();
-    let offset = if native { 2 } else { 0 };
+    capture_math::validate(format.channels(), format.sample_rate(), native)?;
+    #[cfg(target_os = "macos")]
+    if native {
+        return Err(
+            "CoreAudio's stereo loopback does not expose a four-channel native relay".into(),
+        );
+    }
+    #[cfg(target_os = "linux")]
+    let device = {
+        let name = output.id().map_err(|e| e.to_string())?;
+        let monitor = format!("{}.monitor", name.id());
+        host.input_devices().map_err(|e|e.to_string())?.find(|d|d.id().is_ok_and(|id|id.id()==monitor)).ok_or("The selected output has no monitor source; microphone capture is not used as a fallback")?
+    };
+    #[cfg(not(target_os = "linux"))]
+    let device = output;
     let config = StreamConfig {
-        channels: format.channels(),
+        channels: if cfg!(target_os = "macos") {
+            2
+        } else {
+            format.channels()
+        },
         sample_rate: format.sample_rate(),
         buffer_size: BufferSize::Default,
     };
-    let channels = config.channels as usize;
-    let rate = config.sample_rate;
-    let generation = shared.capture_generation.load(Ordering::Acquire);
-    let error_shared = shared.clone();
-    let on_error = move |error: cpal::Error| {
-        record_capture_error(&error_shared, generation, error);
-    };
     let stream = match format.sample_format() {
-        SampleFormat::F32 => {
-            let mut dsp = CaptureDsp::new(rate, 0.5);dsp.native=native;
-            let shared = shared.clone();
-            device.build_input_stream(config, move |data: &[f32], _| {
-                if shared.capture_generation.load(Ordering::Acquire)!=generation{return;}
-                dsp.gain = f32::from_bits(shared.gain_bits.load(Ordering::Relaxed));
-                dsp.set_preset(shared.preset.load(Ordering::Relaxed));
-                {
-                    let before=dsp.dropped;
-                    let active = data.chunks_exact(channels).filter(|frame| dsp.frame([frame[offset], frame[offset+channels.min(2)-1]], &shared.bridge)).count();
-                    shared.bridge_frames.fetch_add(active as u64, Ordering::Relaxed);
-                    shared.bridge_dropped.fetch_add(dsp.dropped-before,Ordering::Relaxed);
-                }
-            }, on_error, None)
+        SampleFormat::F32 => build_capture::<f32>(&device, config, shared, native),
+        SampleFormat::F64 => build_capture::<f64>(&device, config, shared, native),
+        SampleFormat::I16 => build_capture::<i16>(&device, config, shared, native),
+        SampleFormat::I32 => build_capture::<i32>(&device, config, shared, native),
+        SampleFormat::U16 => build_capture::<u16>(&device, config, shared, native),
+        SampleFormat::U32 => build_capture::<u32>(&device, config, shared, native),
+        SampleFormat::I8 => build_capture::<i8>(&device, config, shared, native),
+        SampleFormat::U8 => build_capture::<u8>(&device, config, shared, native),
+        other => {
+            return Err(format!(
+                "Capture sample format {other:?} is not supported; choose PCM16 or float output"
+            ));
         }
-        SampleFormat::I16 => {
-            let mut dsp = CaptureDsp::new(rate, 0.5);dsp.native=native;
-            let shared = shared.clone();
-            let error_shared = shared.clone();
-            device.build_input_stream(config, move |data: &[i16], _| {
-                if shared.capture_generation.load(Ordering::Acquire)!=generation{return;}
-                dsp.gain = f32::from_bits(shared.gain_bits.load(Ordering::Relaxed));
-                dsp.set_preset(shared.preset.load(Ordering::Relaxed));
-                {
-                    let before=dsp.dropped;
-                    let active = data.chunks_exact(channels).filter(|frame| dsp.frame([frame[offset] as f32 / 32768.0, frame[offset+channels.min(2)-1] as f32 / 32768.0], &shared.bridge)).count();
-                    shared.bridge_frames.fetch_add(active as u64, Ordering::Relaxed);
-                    shared.bridge_dropped.fetch_add(dsp.dropped-before,Ordering::Relaxed);
-                }
-            }, move |error| {
-                record_capture_error(&error_shared,generation,error);
-            }, None)
-        }
-        other => return Err(format!("System audio uses unsupported sample format {other:?}. Choose a 16-bit or float output format in Windows.")),
-    }.map_err(|e| format!("Could not start WASAPI loopback on {}: {e}", device))?;
+    }
+    .map_err(|e| format!("Could not start system audio capture: {e}"))?;
     stream
         .play()
-        .map_err(|e| format!("Could not play WASAPI capture: {e}"))?;
+        .map_err(|e| format!("Could not play system audio capture: {e}"))?;
     Ok(stream)
+}
+fn build_capture<T>(
+    device: &cpal::Device,
+    config: StreamConfig,
+    shared: Arc<Shared>,
+    native: bool,
+) -> Result<Stream, cpal::Error>
+where
+    T: cpal::SizedSample,
+    f32: cpal::FromSample<T>,
+{
+    let channels = usize::from(config.channels);
+    let generation = shared.capture_generation.load(Ordering::Acquire);
+    let errors = shared.clone();
+    let mut dsp = CaptureDsp::new(config.sample_rate, 0.5);
+    dsp.generation = generation;
+    dsp.native = native;
+    device.build_input_stream(
+        config,
+        move |data: &[T], _| {
+            if shared.capture_generation.load(Ordering::Acquire) != generation {
+                return;
+            }
+            dsp.gain = f32::from_bits(shared.gain_bits.load(Ordering::Relaxed));
+            dsp.set_preset(shared.preset.load(Ordering::Relaxed));
+            let before = dsp.dropped;
+            let mut active = 0;
+            for frame in data.chunks_exact(channels) {
+                if shared.capture_generation.load(Ordering::Acquire) != generation {
+                    break;
+                }
+                let mut samples = [0f32; 32];
+                for (i, s) in frame.iter().enumerate() {
+                    samples[i] = s.to_sample::<f32>();
+                }
+                active += u64::from(dsp.frame(
+                    capture_math::stereo(&samples[..channels], native),
+                    &shared.bridge,
+                ));
+            }
+            shared.bridge_frames.fetch_add(active, Ordering::Relaxed);
+            shared
+                .bridge_dropped
+                .fetch_add(dsp.dropped - before, Ordering::Relaxed);
+        },
+        move |e| record_capture_error(&errors, generation, e),
+        Some(Duration::from_secs(3)),
+    )
 }
 
 #[cfg(test)]
@@ -1590,9 +1681,9 @@ mod tests {
         dsp.native = true;
         let ring = ArrayQueue::new(4);
         dsp.frame([0.25, -0.5], &ring);
-        assert_eq!(ring.pop(), Some([0.125, -0.25]));
+        assert_eq!(ring.pop().map(|f| f.samples), Some([0.125, -0.25]));
         dsp.frame([f32::NAN, f32::INFINITY], &ring);
-        assert_eq!(ring.pop(), Some([0.0; 2]));
+        assert_eq!(ring.pop().map(|f| f.samples), Some([0.0; 2]));
         let mut clip = VoiceClip::new("sine", 80, 2, 650, 25, 0);
         clip.shape = Shape::LinkTest;
         clip.attack = 0.0;
@@ -1982,6 +2073,55 @@ mod tests {
         assert_eq!(dsp.dropped, QUEUE_FRAMES as u64);
     }
     #[test]
+    fn capture_source_switch_rejects_inflight_and_backlogged_old_frames() {
+        let shared = Shared::default();
+        shared.capture_generation.store(4, Ordering::Release);
+        for _ in 0..128 {
+            shared
+                .bridge
+                .push(CaptureFrame {
+                    generation: 3,
+                    samples: [1.0; 2],
+                })
+                .unwrap();
+        }
+        shared
+            .bridge
+            .push(CaptureFrame {
+                generation: 4,
+                samples: [0.2, -0.1],
+            })
+            .unwrap();
+        assert_eq!(capture_sample(&shared), None);
+        assert_eq!(capture_sample(&shared), None);
+        assert_eq!(capture_sample(&shared), Some([0.2, -0.1]));
+        shared
+            .bridge
+            .push(CaptureFrame {
+                generation: 3,
+                samples: [1.0; 2],
+            })
+            .unwrap();
+        assert_eq!(capture_sample(&shared), None);
+    }
+    #[test]
+    fn capture_resampling_uses_exact_frame_counts_and_rejects_nonfinite_gain() {
+        for rate in [8_000, 44_100, 48_000, 96_000, 192_000] {
+            let ring = ArrayQueue::new(8);
+            let mut dsp = CaptureDsp::new(rate, f32::NAN);
+            for _ in 0..44_101 {
+                dsp.frame([f32::INFINITY, -1.0], &ring);
+            }
+            assert_eq!(
+                ring.len() as u64 + dsp.dropped,
+                44_101u64 * u64::from(RATE) / u64::from(rate)
+            );
+            while let Some(frame) = ring.pop() {
+                assert_eq!(frame.samples, [0.0; 2]);
+            }
+        }
+    }
+    #[test]
     fn footsteps_preset_emphasizes_short_impacts() {
         let mut footsteps = CaptureDsp::new(RATE, 1.0);
         footsteps.set_preset(1);
@@ -1991,7 +2131,7 @@ mod tests {
         let heavy = ArrayQueue::new(QUEUE_FRAMES);
         footsteps.frame([1.0, 1.0], &quick);
         explosions.frame([1.0, 1.0], &heavy);
-        assert!(quick.pop().unwrap()[0] > heavy.pop().unwrap()[0]);
+        assert!(quick.pop().unwrap().samples[0] > heavy.pop().unwrap().samples[0]);
     }
     #[test]
     fn file_underrun_keeps_position_and_recovers_with_separate_grips() {

@@ -2,8 +2,12 @@
 //! Requires the separately installed [ViGEmBus](https://github.com/nefarius/ViGEmBus) driver.
 //! The Windows installer bundles its signed setup; users launch it explicitly for XInput.
 
+#[cfg(target_os = "linux")]
+use crate::virtual_gamepad::linux::Pad as NativePad;
 use aftertouch_protocol::InputState;
 use serde_json::{Value, json};
+#[cfg(windows)]
+use windows_impl::Pad as NativePad;
 
 /// The values sent to ViGEm, also available for hardware-free verification.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
@@ -79,8 +83,8 @@ pub struct XInputBridge {
     enabled: bool,
     status: XInputStatus,
     last_error: Option<String>,
-    #[cfg(windows)]
-    inner: Option<windows_impl::Pad>,
+    #[cfg(any(windows, target_os = "linux"))]
+    inner: Option<NativePad>,
 }
 
 impl Default for XInputBridge {
@@ -89,7 +93,7 @@ impl Default for XInputBridge {
             enabled: false,
             status: XInputStatus::Disabled,
             last_error: None,
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "linux"))]
             inner: None,
         }
     }
@@ -100,7 +104,7 @@ impl XInputBridge {
         self.status == XInputStatus::Active
     }
     pub fn neutralize(&mut self) -> Option<Value> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         if let Some(pad) = self.inner.as_mut()
             && let Err(error) = pad.neutralize()
         {
@@ -113,7 +117,7 @@ impl XInputBridge {
     }
     /// Nonblocking notification polling. Only the hardware loop writes outputs.
     pub fn take_feedback(&mut self) -> Result<Option<[u8; 2]>, String> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         if let Some(pad) = self.inner.as_mut() {
             let result = pad.feedback();
             if let Err(error) = &result {
@@ -132,7 +136,8 @@ impl XInputBridge {
             "enabled": self.enabled,
             "status": self.status.as_str(),
             "available": self.status == XInputStatus::Active,
-            "platformSupported": cfg!(windows),
+            "platformSupported": cfg!(any(windows,target_os="linux")),
+            "backend":if cfg!(windows){"vigem"}else if cfg!(target_os="linux"){"uinput"}else{"unavailable"},
             "message": self.status_message(),
             "error": self.last_error,
         })
@@ -140,15 +145,20 @@ impl XInputBridge {
 
     fn status_message(&self) -> String {
         match self.status {
-            XInputStatus::Disabled => "XInput bridge off".into(),
+            XInputStatus::Disabled => "Virtual gamepad off".into(),
             XInputStatus::Unavailable => self.last_error.clone().unwrap_or_else(|| {
                 if cfg!(windows) {
                     "ViGEmBus not found — install the Nefarius driver to enable XInput".into()
                 } else {
-                    "XInput bridge is Windows-only".into()
+                    "Virtual gamepad output is not available on this platform".into()
                 }
             }),
-            XInputStatus::Active => "Virtual Xbox 360 pad active (ViGEm)".into(),
+            XInputStatus::Active => if cfg!(target_os = "linux") {
+                "Virtual Xbox gamepad active (uinput)"
+            } else {
+                "Virtual Xbox 360 pad active (ViGEm)"
+            }
+            .into(),
         }
     }
 
@@ -163,9 +173,9 @@ impl XInputBridge {
             self.last_error = None;
             return self.status_event();
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
-            match windows_impl::Pad::open() {
+            match NativePad::open() {
                 Ok(pad) => {
                     self.inner = Some(pad);
                     self.status = XInputStatus::Active;
@@ -179,11 +189,12 @@ impl XInputBridge {
                 }
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             self.enabled = false;
             self.status = XInputStatus::Unavailable;
-            self.last_error = Some("XInput bridge requires Windows + ViGEmBus".into());
+            self.last_error =
+                Some("Virtual gamepad output is not available on this platform".into());
         }
         self.status_event()
     }
@@ -193,7 +204,7 @@ impl XInputBridge {
         if self.status != XInputStatus::Active {
             return None;
         }
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         if let Some(pad) = self.inner.as_mut()
             && let Err(error) = pad.update(input)
         {
@@ -202,7 +213,7 @@ impl XInputBridge {
             self.status = XInputStatus::Unavailable;
             return Some(self.status_event());
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "linux")))]
         {
             let _ = input;
         }
@@ -210,7 +221,7 @@ impl XInputBridge {
     }
 
     pub fn shutdown(&mut self) {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "linux"))]
         {
             self.inner = None;
         }

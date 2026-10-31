@@ -113,7 +113,7 @@ pub async fn integration_info() -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(||{
         use cpal::traits::{HostTrait,DeviceTrait};
         let mut endpoints=Vec::new();
-        if cfg!(windows) && let Ok(devices)=cpal::default_host().output_devices(){
+        if !cfg!(target_os="macos") && let Ok(host)=crate::audio_haptics::capture_host() && let Ok(devices)=host.output_devices(){
             for device in devices.take(64){
                 let name=device.to_string();let lower=name.to_ascii_lowercase();
                 // Physical controller endpoints are never loopback sources.
@@ -126,7 +126,7 @@ pub async fn integration_info() -> Result<Value, String> {
         }
         Ok(json!({"windowsBuild":windows_build(),"processCapture":cfg!(windows)&&windows_build()>=20348,
             "processes":processes()?,"nativeRelayEndpoints":endpoints,"environment":environment(),
-            "nativeBridge":native_bridge_readiness(),
+            "nativeBridge":native_bridge_readiness(),"systemCapture":crate::audio_haptics::capture_supported(),
             "nativeDualSenseDriverIntegrated":false,"nativeDriverMessage":"ViGEmBus provides Xbox/DS4 output. Native DualSense feedback needs direct USB/dongle ownership or a separate native bridge such as vDS."}))
     }).await.map_err(|e|e.to_string())?
 }

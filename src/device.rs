@@ -3231,6 +3231,14 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
             )
         {
             connected.input_stale = true;
+            if connected.game_rumble != [0, 0] {
+                if matches!(connected.transport, BusType::Usb) {
+                    let _ = connected.audio.set_game_rumble([0, 0]);
+                } else {
+                    let _ = connected.write_rumble([0, 0]);
+                }
+                connected.game_rumble = [0, 0];
+            }
             if let Some(event) = xinput.neutralize() {
                 emit(&proxy, event);
             }
@@ -3985,6 +3993,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                 None
             };
             if let Some(motors) = feedback {
+                let motors = if connected.input_stale {
+                    [0, 0]
+                } else {
+                    motors
+                };
                 let usb = matches!(connected.transport, BusType::Usb);
                 let recovering = usb
                     && motors != [0, 0]

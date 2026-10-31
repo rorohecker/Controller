@@ -63,13 +63,13 @@
     render(){
       if(this.a.state.currentView!=='calibration'||document.hidden)return;
       const measured=!!this.record,platform=this.a.state.platformOS||'windows';
-      $('output-route').textContent=platform==='windows'?'Virtual Xbox · Windows':'Input correction';
-      $('output-cal-scope').textContent=platform==='windows'?'Games must use the virtual Xbox pad. HidHide can prevent duplicate physical input. Closing the app removes virtual output.':'Saved ranges apply to this app and desktop controls. Virtual game output is currently available on Windows.';
+      $('output-route').textContent=platform==='windows'?'Virtual Xbox · Windows':platform==='linux'?'Virtual gamepad · Linux':'Input correction';
+      $('output-cal-scope').textContent=platform==='windows'?'Games must use the virtual Xbox pad. HidHide can prevent duplicate physical input. Closing the app removes virtual output.':platform==='linux'?'Games must use the uinput virtual gamepad. Physical controller reports stay unchanged. Closing the app removes virtual output.':'Saved ranges apply to this app and desktop controls. A macOS virtual gamepad provider is not integrated.';
       $('output-cal-status').textContent=!this.connected?'Connect a controller.':this.busy?'Saving calibration…':this.stale?'Input paused; virtual output is neutral.':measured?`Native save · revision ${this.record.revision} · correction ${this.record.settings.enabled?'on':'bypassed'}`:'Finish calibration to save ranges and rest noise in the native core.';
       $('output-cal-error').textContent=this.error;
       const blocked=!this.connected||this.busy||!!this.a.calibrationInProgress?.();
       $('output-cal-enabled').disabled=blocked||!measured;$('output-cal-enabled').checked=this.record?.settings.enabled!==false;
-      $('output-cal-enabled').parentElement.hidden=platform!=='windows';
+      $('output-cal-enabled').parentElement.hidden=!['windows','linux'].includes(platform);
       $('output-cal-restore').disabled=blocked||!this.a.native;
       $('output-cal-reload').disabled=blocked||!this.a.native;
       for(let i=0;i<2;i++)$('output-noise-'+i).textContent='Rest filter: '+(this.record?this.record.settings.axisNoise.slice(i*2,i*2+2).map(v=>(v*100).toFixed(1)+'%').join(' / '):'none');

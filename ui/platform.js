@@ -12,9 +12,9 @@
   const defaults = (os) => ({
     os,
     desktopInput: os !== "unknown",
-    xinput: os === "windows",
+    xinput: os === "windows" || os === "linux",
     screenColor: os === "windows",
-    systemAudioBridge: os === "windows",
+    systemAudioBridge: os === "windows" || os === "linux" || os === "macos",
     updates: os === "windows",
   });
   const platform = {
