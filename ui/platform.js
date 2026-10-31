@@ -13,7 +13,7 @@
     os,
     desktopInput: os !== "unknown",
     xinput: os === "windows" || os === "linux",
-    screenColor: os === "windows",
+    screenColor: ["windows", "macos", "linux"].includes(os),
     systemAudioBridge: os === "windows" || os === "linux" || os === "macos",
     updates: os === "windows",
   });

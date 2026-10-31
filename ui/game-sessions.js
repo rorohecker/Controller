@@ -161,7 +161,8 @@
       const grid=n('div',{class:'game-form-grid'});
       const check=(label,key)=>{const input=n('input',{type:'checkbox',checked:s[key]});input.addEventListener('change',()=>{s[key]=input.checked;save();});const l=n('label',{class:'check-row'});l.append(input,document.createTextNode(label));return l;};
       grid.append(check('Manage settings while this game is focused','enabled'));
-      if(window.controllerPlatform.xinput)grid.append(field('Input route',select([['keep','Keep current'],['native','Physical DualSense'],['xinput','Xbox 360 bridge']],s.inputRoute,v=>{s.inputRoute=v;save();})),check('Remind me to configure HidHide','hideHint'));
+      if(window.controllerPlatform.xinput)grid.append(field('Input route',select([['keep','Keep current'],['native','Physical DualSense'],['xinput','Virtual Xbox gamepad']],s.inputRoute,v=>{s.inputRoute=v;save();})));
+      if(window.controllerPlatform.os==='windows')grid.append(check('Remind me to configure HidHide','hideHint'));
       if(window.controllerPlatform.systemAudioBridge){
         grid.append(field('Audio haptics source',select([['keep','Keep current'],['off','Off'],['system','System audio'],['game','Matched game process']],s.audio,v=>{s.audio=v;save();})));
         const gain=n('input',{type:'number',min:0,max:100,value:s.audioGain});gain.addEventListener('change',()=>{s.audioGain=Math.round(Math.max(0,Math.min(100,Number(gain.value)||0)));gain.value=s.audioGain;save();});grid.append(field('Audio strength · %',gain));

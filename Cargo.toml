@@ -9,6 +9,7 @@ description = "CONTROLLER, a native DualSense tuning studio"
 
 [workspace]
 members = ["protocol"]
+exclude = ["vendor/scap"]
 
 [dependencies]
 aftertouch-protocol = { path = "protocol" }
@@ -39,6 +40,7 @@ libc = "0.2"
 
 [target.'cfg(not(windows))'.dependencies]
 enigo = { version = "0.6.1", default-features = false }
+scap = { version = "=0.1.0-beta.1", path = "vendor/scap" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { version = "0.18.2", features = ["pulseaudio"] }

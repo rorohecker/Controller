@@ -28,6 +28,9 @@ mod screen_color;
 #[cfg(not(windows))]
 #[path = "screen_color_portable.rs"]
 mod screen_color;
+#[cfg(all(test, windows))]
+#[path = "screen_pixels.rs"]
+mod screen_pixels;
 mod script;
 mod steam;
 mod telemetry;
@@ -123,7 +126,7 @@ fn set_start_on_login(enabled: bool, app: tauri::AppHandle) -> Result<(), String
 
 #[tauri::command]
 fn platform_capabilities() -> Value {
-    json!({"os": std::env::consts::OS, "desktopInput":integrations::environment()["desktopCandidate"], "nativeAudioFiles":true,"processAudioCapture":cfg!(windows)&&integrations::windows_build()>=20348, "supportedKeys":(1..=254u16).filter(|k|input_map::supported_key(*k)).collect::<Vec<_>>(), "xinput": cfg!(any(windows,target_os="linux")), "screenColor": cfg!(windows), "systemAudioBridge": audio_haptics::capture_supported(), "updates": cfg!(windows)})
+    json!({"os": std::env::consts::OS, "desktopInput":integrations::environment()["desktopCandidate"], "nativeAudioFiles":true,"processAudioCapture":cfg!(windows)&&integrations::windows_build()>=20348, "supportedKeys":(1..=254u16).filter(|k|input_map::supported_key(*k)).collect::<Vec<_>>(), "xinput": cfg!(any(windows,target_os="linux")), "screenColor": cfg!(any(windows,target_os="linux",target_os="macos")), "systemAudioBridge": audio_haptics::capture_supported(), "updates": cfg!(windows)})
 }
 
 #[cfg(windows)]
@@ -151,6 +154,9 @@ impl Bridge {
             .stderr(Stdio::piped());
         #[cfg(windows)]
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        if std::env::args().any(|arg| arg == "--no-hid") {
+            command.arg("--no-hid");
+        }
         let mut child = command.spawn()?;
         let writer = child
             .stdin
