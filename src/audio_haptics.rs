@@ -697,7 +697,7 @@ impl AudioEngine {
             "quiet" => (4, 0.25),
             _ => return Err("Choose a valid audio bridge preset.".into()),
         };
-        source.validate()?;
+        source.validate_runtime()?;
         self.start_output()?;
         self.shared.gain_bits.store(
             (gain

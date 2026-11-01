@@ -2753,13 +2753,6 @@ fn handle_command(
             }
         }
         DeviceCommand::SetScreenLightbar { enabled } => {
-            if enabled && !cfg!(windows) {
-                emit(
-                    proxy,
-                    json!({"type":"error","message":"Screen color sampling is currently available on Windows."}),
-                );
-                return true;
-            }
             if !enabled && !device.screen_light {
                 emit(
                     proxy,
@@ -2970,8 +2963,8 @@ fn handle_command(
             gain,
             preset,source,
         } => {
-            if enabled && !cfg!(windows) {
-                Err("System audio capture is currently available on Windows.".into())
+            if enabled && !crate::audio_haptics::capture_supported() {
+                Err("System audio capture is unavailable on this OS version. macOS requires 14.6 or later.".into())
             } else if enabled && !matches!(device.transport, BusType::Usb) {
                 Err("System audio haptics require USB. Bluetooth motor fallback remains available in Haptic Lab.".into())
             } else {
