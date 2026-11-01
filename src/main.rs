@@ -15,6 +15,7 @@ mod integrations;
 mod macros;
 #[cfg(not(windows))]
 mod native_input;
+mod native_provider;
 mod output_calibration;
 #[cfg(windows)]
 mod processes;

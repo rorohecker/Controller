@@ -83,6 +83,21 @@ def main():
         assert page.evaluate("window.sent.at(-1).enabled")==False
         page.evaluate("window.coreHandler({type:'bluetoothAudioStatus',controllerId:'pad-A',enabled:false})")
         assert page.locator('#bridge-toggle').is_disabled()
+        page.evaluate("window.integrationStudio.info.nativeBridge={toolFound:true};window.integrationStudio.renderProvider()")
+        page.locator('[data-view="profiles"]').click()
+        page.locator('#native-provider-inspect').click()
+        assert page.evaluate("window.sent.at(-1).operation")=='inspect'
+        page.evaluate("window.coreHandler({type:'nativeProviderStatus',owned:false,busy:false,verified:true,data:{connected:0,registered:0,onlineTargets:1}})")
+        page.locator('#native-provider-attach').click()
+        assert page.evaluate("window.sent.at(-1).controllerId")=='pad-A'
+        page.evaluate("window.coreHandler({type:'device',connected:false});window.coreHandler({type:'nativeProviderStatus',owned:true,busy:false,owner:'pad-A',phase:'attached',verified:true,data:{ownedConnected:true,ownedRegistered:true}})")
+        assert page.locator('#native-handoff').is_disabled()
+        assert page.locator('#native-provider-detach').is_enabled()
+        page.locator('#native-provider-recover').click();page.locator('#native-provider-cancel').click()
+        assert not page.locator('#native-provider-forget').is_visible()
+        page.locator('#native-provider-detach').click()
+        assert page.evaluate("window.sent.at(-1).operation")=='detach'
+        page.evaluate("window.coreHandler({type:'nativeProviderStatus',owned:false,busy:false,verified:true,data:{connected:0,registered:0,onlineTargets:1}});window.coreHandler({type:'nativeHandoff',enabled:false});window.coreHandler({type:'device',connected:true,name:'DualSense',transport:'Bluetooth',controllerId:'pad-A'})")
         # Backend checks request no pointer/key movement and can report revocation.
         page.locator('[data-view="pc-controls"]').click()
         page.locator('#runtime-access-test').click()

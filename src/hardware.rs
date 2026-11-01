@@ -330,7 +330,7 @@ pub fn edit_edge_snapshot(
     let crc = content_crc(&chunks);
     chunks[2][56..60].copy_from_slice(&crc.to_le_bytes());
     Ok(
-        serde_json::json!({"format":"controller-edge-local-draft-v1","controllerId":data.controller_id,"slot":slot,"edit":edit,"readReports":chunks,"hardwareWritten":false,"message":"Local draft only. Hardware writing is not enabled."}),
+        serde_json::json!({"format":"controller-edge-local-draft-v1","controllerId":data.controller_id,"slot":slot,"edit":edit,"readReports":chunks,"hardwareWritten":false,"message":"Local draft. Review a USB write in the app to save it to the controller."}),
     )
 }
 #[tauri::command]

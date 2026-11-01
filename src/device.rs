@@ -55,6 +55,15 @@ pub enum DeviceCommand {
     SetNativeHandoff {
         enabled: bool,
     },
+    NativeProviderControl {
+        operation: crate::native_provider::Operation,
+        #[serde(default, rename = "controllerId")]
+        controller_id: Option<String>,
+        #[serde(default, rename = "requestId")]
+        request_id: u32,
+        #[serde(default)]
+        confirmed: bool,
+    },
     CheckDesktopInput,
     ReadEdgeProfiles {
         #[serde(rename = "controllerId")]
@@ -561,6 +570,7 @@ struct Connected {
     rumble_until: Option<Instant>,
     haptic: Option<HapticClip>,
     audio: AudioEngine,
+    bluetooth_address: Option<String>,
     bt_audio_sequence: u8,
     speaker_route_until: Option<Instant>,
     speaker_track_id: u64,
@@ -1602,6 +1612,9 @@ fn path_key(info: &hidapi::DeviceInfo) -> String {
 }
 
 pub(crate) fn controller_identity(info: &hidapi::DeviceInfo, hid: &HidDevice) -> String {
+    identify_controller(info, hid).0
+}
+fn identify_controller(info: &hidapi::DeviceInfo, hid: &HidDevice) -> (String, Option<String>) {
     let serial = info
         .serial_number()
         .unwrap_or("")
@@ -1629,7 +1642,10 @@ pub(crate) fn controller_identity(info: &hidapi::DeviceInfo, hid: &HidDevice) ->
     let hash = identity.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
     });
-    format!("pad-{hash:016x}")
+    (
+        format!("pad-{hash:016x}"),
+        crate::native_provider::normalize_address(&address).ok(),
+    )
 }
 
 fn list_devices(api: &HidApi) -> Vec<serde_json::Value> {
@@ -1727,7 +1743,7 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     }
                 }
                 let display = path_key(info);
-                let controller_id = controller_identity(info, &hid);
+                let (controller_id, bluetooth_address) = identify_controller(info, &hid);
                 let saved_calibration = crate::output_calibration::load(&controller_id);
                 let output_calibration_error = saved_calibration.as_ref().err().cloned();
                 let output_calibration = saved_calibration.ok().flatten();
@@ -1775,6 +1791,7 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     dongle,
                     link_experiment: None,
                     bt_audio_sequence: 0,
+                    bluetooth_address,
                     last_input_sent: Instant::now() - Duration::from_secs(1),
                     last_input_buttons: [false; 23],
                     last_valid_report: Instant::now(),
@@ -3160,7 +3177,7 @@ fn handle_command(
         | DeviceCommand::SetGameLink { .. }
         | DeviceCommand::StopMacros
         | DeviceCommand::SetGameRecording { .. } => unreachable!(),
-        DeviceCommand::SetWeaponOverride{..}|DeviceCommand::WriteEdgeProfile{..}=>unreachable!(),
+        DeviceCommand::SetWeaponOverride{..}|DeviceCommand::WriteEdgeProfile{..}|DeviceCommand::NativeProviderControl{..}=>unreachable!(),
     };
     match result {
         Ok(message) => emit(proxy, json!({ "type": "notice", "message": message })),
@@ -3217,6 +3234,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
     let mut next_scan = Instant::now();
     let mut native_handoff = false;
     let mut edge_worker: Option<crate::edge_writer::Worker> = None;
+    let mut native_provider = crate::native_provider::Manager::load(disable_hid);
+    emit(&proxy, native_provider.status());
+    if native_provider.owns_controller() {
+        emit(&proxy, json!({"type":"nativeHandoff","enabled":true}));
+    }
     let mut input_report = [0u8; 78];
     let mut next_process_check = Instant::now();
     #[cfg(windows)]
@@ -3243,6 +3265,14 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
     let mut deferred_audio = std::collections::VecDeque::<DeviceCommand>::new();
     let mut deferred_owner: Option<String> = None;
     loop {
+        if let Some(event) = native_provider.poll() {
+            emit(&proxy, event);
+            emit(
+                &proxy,
+                json!({"type":"nativeHandoff","enabled":native_handoff||native_provider.owns_controller()}),
+            );
+            next_scan = Instant::now();
+        }
         if let Some(event) = edge_worker.as_ref().and_then(|worker| worker.poll()) {
             emit(&proxy, event);
             edge_worker = None;
@@ -3517,6 +3547,97 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
             };
             match command {
                 Ok(command) => {
+                    if let DeviceCommand::NativeProviderControl {
+                        operation,
+                        controller_id,
+                        request_id,
+                        confirmed,
+                    } = command
+                    {
+                        let mut prepared = false;
+                        let result = (|| {
+                            if disable_hid {
+                                return Err(
+                                    "Native provider access is disabled for this core session."
+                                        .to_string(),
+                                );
+                            }
+                            if edge_worker.is_some() {
+                                return Err("Wait for the Edge profile operation to finish.".into());
+                            }
+                            if operation == crate::native_provider::Operation::Attach {
+                                let active=device.as_ref().filter(|d|Some(&d.controller_id)==controller_id.as_ref()&&matches!(d.transport,BusType::Bluetooth)).ok_or("Select the same Bluetooth controller before attaching the native bridge.")?;
+                                let address = active.bluetooth_address.clone().ok_or(
+                                    "The selected controller has no verified Bluetooth address.",
+                                )?;
+                                let lease = crate::native_provider::Lease::new(
+                                    active.controller_id.clone(),
+                                    address,
+                                    active.product_id == protocol::EDGE_PID,
+                                )?;
+                                native_provider.prepare_attach(lease)?;
+                                prepared = true;
+                                game_link.stop();
+                                let _ = telemetry.set(false, 0, false);
+                                script = None;
+                                screen.set_enabled(false);
+                                cancel_audio_commands(
+                                    &mut deferred_audio,
+                                    &proxy,
+                                    "Audio stopped for native bridge handoff.",
+                                );
+                                deferred_owner = None;
+                                stop_input_mappers(
+                                    &mut mouse,
+                                    &mut gyro,
+                                    &mut remap,
+                                    &mut xinput,
+                                    &proxy,
+                                );
+                                let reset = if let Some(mut active) = device.take() {
+                                    active.reset()
+                                } else {
+                                    Ok(())
+                                };
+                                emit(
+                                    &proxy,
+                                    json!({"type":"device","connected":false,"message":"App monitoring paused for native bridge"}),
+                                );
+                                emit(&proxy, json!({"type":"safetyReset"}));
+                                reset?;
+                            }
+                            native_provider.start(operation, request_id, confirmed)
+                        })();
+                        if result.is_err() && prepared {
+                            let _ = native_provider.abandon_unstarted_attach();
+                        }
+                        let mut event = native_provider.status();
+                        event["requestId"] = json!(request_id);
+                        if let Err(error) = result {
+                            event["error"] = json!(error);
+                        }
+                        emit(&proxy, event);
+                        emit(
+                            &proxy,
+                            json!({"type":"nativeHandoff","enabled":native_handoff||native_provider.owns_controller()}),
+                        );
+                        continue;
+                    }
+                    if native_provider.owns_controller()
+                        && matches!(
+                            command,
+                            DeviceCommand::Scan
+                                | DeviceCommand::SelectDevice { .. }
+                                | DeviceCommand::SetXinput { enabled: true }
+                                | DeviceCommand::SetNativeHandoff { enabled: false }
+                        )
+                    {
+                        emit(
+                            &proxy,
+                            json!({"type":"error","message":"Detach the native bridge before resuming app monitoring or virtual Xbox output."}),
+                        );
+                        continue;
+                    }
                     if edge_worker.is_some()
                         && !matches!(
                             command,
@@ -3576,8 +3697,8 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                             game_link.stop();let _=telemetry.set(false,0,false);script=None;screen.set_enabled(false);cancel_audio_commands(&mut deferred_audio,&proxy,"Audio cancelled for the Edge profile write.");deferred_owner=None;
                             stop_input_mappers(&mut mouse,&mut gyro,&mut remap,&mut xinput,&proxy);
                             let mut active=device.take().ok_or("The selected controller disconnected.")?;
-                            let reset=active.reset();drop(active);reset?;
-                            emit(&proxy,json!({"type":"device","connected":false,"message":"Saving Edge profile; monitoring is paused"}));
+                            let reset=active.reset();drop(active);
+                            emit(&proxy,json!({"type":"device","connected":false,"message":"Saving Edge profile; monitoring is paused"}));reset?;
                             emit(&proxy,json!({"type":"safetyReset"}));
                             crate::edge_writer::start(path,data,slot,edit,request_id)
                         });
@@ -3778,7 +3899,12 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                         emit(&proxy, json!({"type":"nativeHandoff","enabled":enabled}));
                         continue;
                     }
-                    if native_handoff && matches!(command, DeviceCommand::SelectDevice { .. }) {
+                    if native_handoff
+                        && matches!(
+                            command,
+                            DeviceCommand::SelectDevice { .. } | DeviceCommand::Scan
+                        )
+                    {
                         emit(
                             &proxy,
                             json!({"type":"error","message":"Resume controller monitoring before selecting a device"}),
@@ -4640,6 +4766,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
         } else {
             if !disable_hid
                 && !native_handoff
+                && !native_provider.owns_controller()
                 && edge_worker.is_none()
                 && Instant::now() >= next_scan
             {

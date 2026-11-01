@@ -143,19 +143,14 @@ fn native_bridge_readiness() -> Value {
         .find(|p| p.join("vdsctl").is_file());
     #[cfg(not(any(windows, target_os = "linux")))]
     let tools: Option<std::path::PathBuf> = None;
-    let control = if cfg!(windows) {
-        "vdsctl.exe"
-    } else {
-        "vdsctl"
-    };
     let daemon = if cfg!(windows) { "vdsd.exe" } else { "vdsd" };
     json!({"provider":"vDS","platform":std::env::consts::OS,
-        "toolFound":tools.as_ref().is_some_and(|p|p.join(control).is_file()),
+        "toolFound":crate::native_provider::tool_path().is_some(),
         "daemonFound":tools.as_ref().is_some_and(|p|p.join(daemon).is_file()),
         "serviceState":"not_probed","driverState":"not_probed",
         "guideUrl":match std::env::consts::OS {"windows"=>"https://github.com/hurryman2212/vds/blob/main/README-WINDOWS.md","linux"=>"https://github.com/hurryman2212/vds/blob/main/README-LINUX.md",_=>"https://github.com/hurryman2212/vds"},
         "requirements":match std::env::consts::OS {"windows"=>"vDS service, usbip-win2, HidHide, Opus runtime and a paired Bluetooth controller.","linux"=>"vds_hcd kernel module, vdsd service, BlueZ and a paired Bluetooth controller.",_=>"The upstream vDS bridge documents Windows and Linux; no macOS provider is integrated."},
-        "message":"File discovery only. It does not prove driver readiness or launch services. Setup and attach remain external; release controller monitoring before handing ownership to a bridge."})
+        "message":"Install discovery only. Inspect checks the running service; attach verifies registration and pauses app ownership. Driver installation remains separate."})
 }
 
 #[derive(Clone, Debug, Serialize)]
