@@ -127,7 +127,7 @@ fn set_start_on_login(enabled: bool, app: tauri::AppHandle) -> Result<(), String
 
 #[tauri::command]
 fn platform_capabilities() -> Value {
-    json!({"os": std::env::consts::OS, "desktopInput":integrations::environment()["desktopCandidate"], "nativeAudioFiles":true,"processAudioCapture":cfg!(windows)&&integrations::windows_build()>=20348, "supportedKeys":(1..=254u16).filter(|k|input_map::supported_key(*k)).collect::<Vec<_>>(), "xinput": cfg!(any(windows,target_os="linux")), "screenColor": cfg!(any(windows,target_os="linux",target_os="macos")), "systemAudioBridge": audio_haptics::capture_supported(), "updates": cfg!(windows)})
+    json!({"os": std::env::consts::OS, "desktopInput":integrations::environment()["desktopCandidate"], "nativeAudioFiles":true,"processAudioCapture":cfg!(windows)&&integrations::windows_build()>=20348, "supportedKeys":(1..=254u16).filter(|k|input_map::supported_key(*k)).collect::<Vec<_>>(), "xinput": cfg!(any(windows,target_os="linux")), "screenColor": cfg!(any(windows,target_os="linux",target_os="macos")), "systemAudioBridge": audio_haptics::capture_supported(), "updates": updates::supported()})
 }
 
 #[cfg(windows)]

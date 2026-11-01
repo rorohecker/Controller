@@ -8,6 +8,7 @@ on:
 jobs:
   portable:
     uses: ./.github/workflows/portable-build.yml
+    secrets: inherit
   release:
     runs-on: windows-latest
     permissions:
@@ -68,7 +69,9 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: cargo tauri build --bundles nsis --ci
+        run: |
+          python scripts/clean_bundle_outputs.py
+          cargo tauri build --bundles nsis --ci
       - name: Create update manifest
         shell: pwsh
         run: |
@@ -94,17 +97,24 @@ jobs:
           pattern: controller-*
           path: release-assets
           merge-multiple: true
+      - name: Build complete signed update feed
+        run: |
+          version=$(python3 -c 'import json;print(json.load(open("tauri.conf.json"))["version"])')
+          python3 scripts/build_update_manifest.py "$version" release-assets "$GITHUB_REPOSITORY" --require-all
       - name: Publish all platforms
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
-          mapfile -d '' assets < <(find release-assets -type f \( -name '*-setup.exe' -o -name '*.sig' -o -name latest.json -o -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' \) -print0)
+          mapfile -d '' assets < <(find release-assets -type f \( -name '*-setup.exe' -o -name '*.sig' -o -name '*.dmg' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.app.tar.gz' -o -name 'portable-build-info-*.json' \) -print0)
           test "${#assets[@]}" -ge 6
-          assets+=(resources/70-controller-dualsense.rules)
-          if gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null | grep -qx true; then
+          assets+=(release-assets/latest.json resources/70-controller-dualsense.rules resources/71-controller-uinput.rules)
+          preview=false
+          latest=true
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then preview=true; latest=false; fi
+          if gh release view "$GITHUB_REF_NAME" --json isDraft >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
-            gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease="$preview" --latest="$latest"
           else
-            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --title "CONTROLLER $GITHUB_REF_NAME" --generate-notes --verify-tag
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --title "CONTROLLER $GITHUB_REF_NAME" --generate-notes --verify-tag --prerelease="$preview" --latest="$latest"
           fi

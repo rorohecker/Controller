@@ -15,7 +15,7 @@
     xinput: os === "windows" || os === "linux",
     screenColor: ["windows", "macos", "linux"].includes(os),
     systemAudioBridge: os === "windows" || os === "linux" || os === "macos",
-    updates: os === "windows",
+    updates: os === "windows" || os === "macos",
   });
   const platform = {
     ...defaults(inferred),

@@ -12,7 +12,7 @@ def main():
         for os in ('windows','macos','linux'):
             page=browser.new_page(viewport={'width':1280,'height':900})
             mock_core(page)
-            capabilities={'os':os,'desktopInput':True,'xinput':os!='macos','screenColor':True,'systemAudioBridge':True,'updates':os=='windows'}
+            capabilities={'os':os,'desktopInput':True,'xinput':os!='macos','screenColor':True,'systemAudioBridge':True,'updates':os!='linux'}
             page.add_init_script('const platformInvoke=window.__TAURI__.core.invoke;window.__TAURI__.core.invoke=async(name,args)=>name==="platform_capabilities"?'+json.dumps(capabilities)+':platformInvoke(name,args);')
             page.add_init_script("""
               const accessInvoke=window.__TAURI__.core.invoke;
@@ -63,7 +63,7 @@ def main():
             page.locator('[data-view="lights"]').click()
             assert page.locator('#screen-light').is_visible()
             page.locator('[data-view="diagnostics"]').click()
-            assert page.locator('.update-panel').is_visible()==(os=='windows')
+            assert page.locator('.update-panel').is_visible()==(os!='linux')
             assert page.locator('#diag-xinput').is_visible()==(os!='macos')
             wrong='Control+k' if os=='macos' else 'Meta+k'
             right='Meta+k' if os=='macos' else 'Control+k'

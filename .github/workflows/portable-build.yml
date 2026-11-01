@@ -19,6 +19,9 @@ jobs:
             bundle: dmg
             config: tauri.macos.conf.json
     runs-on: ${{ matrix.os }}
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -54,18 +57,90 @@ jobs:
       - name: Install Tauri CLI
         if: steps.tauri-cli.outputs.cache-hit != 'true'
         run: cargo install tauri-cli --version 2.11.1 --locked
+      - name: Configure updater signing
+        env:
+          PORTABLE_CONFIG: ${{ matrix.config }}
+        run: |
+          python3 scripts/clean_bundle_outputs.py
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path(os.environ['PORTABLE_CONFIG'])
+          data=json.loads(p.read_text())
+          data['bundle']['createUpdaterArtifacts']=bool(os.environ.get('TAURI_SIGNING_PRIVATE_KEY'))
+          p.write_text(json.dumps(data,indent=2)+'\n')
+          print('Updater signing enabled' if data['bundle']['createUpdaterArtifacts'] else 'Unsigned preview bundle; updater feed publication is disabled')
+          PY
       - name: Bundle Linux
         if: runner.os == 'Linux'
         run: cargo tauri build --bundles ${{ matrix.bundle }} --config ${{ matrix.config }} --ci
       - name: Bundle universal macOS
         if: runner.os == 'macOS'
-        run: cargo tauri build --bundles dmg --target universal-apple-darwin --config tauri.macos.conf.json --ci
+        env:
+          MAC_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          MAC_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          MAC_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          MAC_APPLE_ID: ${{ secrets.APPLE_ID }}
+          MAC_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          MAC_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [[ -z "$MAC_CERTIFICATE" && -n "$MAC_CERTIFICATE_PASSWORD$MAC_SIGNING_IDENTITY$MAC_APPLE_ID$MAC_APPLE_PASSWORD$MAC_TEAM_ID" ]]; then
+            echo 'Apple signing credentials are incomplete; configure the certificate before enabling signing or notarization.'
+            exit 1
+          fi
+          if [[ -n "$MAC_CERTIFICATE" ]]; then
+            test -n "$MAC_CERTIFICATE_PASSWORD" && test -n "$MAC_SIGNING_IDENTITY" || { echo 'Apple certificate password and signing identity are required'; exit 1; }
+            certificate_path="$RUNNER_TEMP/controller-signing.p12"
+            keychain_path="$RUNNER_TEMP/controller-signing.keychain-db"
+            keychain_password=$(python3 -c 'import secrets;print(secrets.token_hex(32))')
+            trap 'security delete-keychain "$keychain_path" >/dev/null 2>&1 || true; rm -f "$certificate_path"' EXIT
+            python3 - <<'PY'
+          import base64,os
+          path=os.path.join(os.environ['RUNNER_TEMP'],'controller-signing.p12')
+          descriptor=os.open(path,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
+          with os.fdopen(descriptor,'wb') as out:out.write(base64.b64decode(os.environ['MAC_CERTIFICATE'],validate=True))
+          PY
+            security create-keychain -p "$keychain_password" "$keychain_path"
+            security unlock-keychain -p "$keychain_password" "$keychain_path"
+            security set-keychain-settings -lut 21600 "$keychain_path"
+            security import "$certificate_path" -k "$keychain_path" -P "$MAC_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain_path" >/dev/null
+            security list-keychains -d user -s "$keychain_path" "$HOME/Library/Keychains/login.keychain-db"
+            export APPLE_SIGNING_IDENTITY="$MAC_SIGNING_IDENTITY"
+            if [[ -n "$MAC_APPLE_ID$MAC_APPLE_PASSWORD$MAC_TEAM_ID" ]]; then
+              test -n "$MAC_APPLE_ID" && test -n "$MAC_APPLE_PASSWORD" && test -n "$MAC_TEAM_ID" || { echo 'Apple notarization credentials are incomplete'; exit 1; }
+              export APPLE_ID="$MAC_APPLE_ID" APPLE_PASSWORD="$MAC_APPLE_PASSWORD" APPLE_TEAM_ID="$MAC_TEAM_ID"
+            fi
+          else
+            echo 'No Developer ID certificate configured; macOS preview will not be notarized.'
+          fi
+          cargo tauri build --bundles dmg --target universal-apple-darwin --config tauri.macos.conf.json --ci
+          if [[ -n "$MAC_CERTIFICATE" ]]; then
+            codesign --verify --deep --strict target/universal-apple-darwin/release/bundle/macos/CONTROLLER.app
+            if [[ -n "$MAC_APPLE_ID" ]]; then xcrun stapler validate target/universal-apple-darwin/release/bundle/macos/CONTROLLER.app; fi
+          fi
+      - name: Record portable build status
+        env:
+          MAC_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          MAC_APPLE_ID: ${{ secrets.APPLE_ID }}
+        run: |
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          mac=os.environ['RUNNER_OS']=='macOS'
+          data={'version':json.loads(Path('tauri.conf.json').read_text())['version'],'os':os.environ['RUNNER_OS'],'updaterSigned':bool(list(Path('target').rglob('*.sig'))),'developerIdSigned':mac and bool(os.environ.get('MAC_CERTIFICATE')),'notarized':mac and bool(os.environ.get('MAC_CERTIFICATE') and os.environ.get('MAC_APPLE_ID'))}
+          Path('target/portable-build-info-'+os.environ['RUNNER_OS']+'.json').write_text(json.dumps(data,indent=2)+'\n')
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: controller-${{ runner.os }}-preview
           path: |
             target/release/bundle/deb/*.deb
             target/release/bundle/appimage/*.AppImage
+            target/release/bundle/appimage/*.AppImage.sig
             target/release/bundle/dmg/*.dmg
             target/universal-apple-darwin/release/bundle/dmg/*.dmg
+            target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+            target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+            target/portable-build-info-*.json
           if-no-files-found: error

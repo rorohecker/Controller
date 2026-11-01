@@ -8,6 +8,11 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 #[derive(Default)]
 pub struct PendingUpdate(pub Mutex<Option<Update>>);
 
+pub fn supported() -> bool {
+    cfg!(any(windows, target_os = "macos"))
+        || (cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_some())
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInfo {
