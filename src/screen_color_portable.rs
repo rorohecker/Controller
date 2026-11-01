@@ -91,16 +91,22 @@ fn capture_session(shared: &Shared, generation: u64) -> Result<(), String> {
         captures_audio: false,
         ..Options::default()
     };
-    let (tx, rx) = std::sync::mpsc::channel();
-    let mut engine = Engine::new(&options, tx);
+    let (tx, rx) = std::sync::mpsc::sync_channel(2);
+    struct CaptureSession(Engine);
+    impl Drop for CaptureSession {
+        fn drop(&mut self) {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.0.stop()));
+        }
+    }
+    let mut engine = CaptureSession(Engine::new(&options, tx));
     if !current(shared, generation) {
         return Ok(());
     }
-    engine.start();
+    engine.0.start();
     let mut last_frame = Instant::now();
     let result = (|| {
         while current(shared, generation) {
-            let item =
+            let mut item =
                 match rx.recv_timeout(Duration::from_millis(100)) {
                     Ok(item) => item,
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout)
@@ -113,7 +119,10 @@ fn capture_session(shared: &Shared, generation: u64) -> Result<(), String> {
                             .into(),
                     ),
                 };
-            let Some(Frame::Video(frame)) = engine.process_channel_item(item) else {
+            while let Ok(newer) = rx.try_recv() {
+                item = newer;
+            }
+            let Some(Frame::Video(frame)) = engine.0.process_channel_item(item) else {
                 continue;
             };
             let color = match frame {
@@ -132,7 +141,6 @@ fn capture_session(shared: &Shared, generation: u64) -> Result<(), String> {
         }
         Ok(())
     })();
-    engine.stop();
     result
 }
 

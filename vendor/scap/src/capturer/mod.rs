@@ -111,7 +111,7 @@ impl Capturer {
             return Err(CapturerBuildError::PermissionNotGranted);
         }
 
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(2);
         let engine = engine::Engine::new(&options, tx);
 
         Ok(Capturer { engine, rx })

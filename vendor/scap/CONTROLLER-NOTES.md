@@ -5,3 +5,5 @@ CONTROLLER uses its public engine API only on macOS/Linux, with cancellable rece
 The unused Windows CPAL dependency is aligned to 0.18.2 because Cargo resolves native `links` dependencies across targets; the upstream 0.15.3 dependency conflicts with CONTROLLER's ALSA bindings even on non-Windows builds. This fork is not used as a Windows capture backend.
 
 Keep upstream changes and these adaptations separate when updating the dependency. Desktop-portal consent and actual Mac/Linux capture still require testing on those systems.
+
+Additional adaptations: macOS/Linux video channels are bounded to two frames and use nonblocking sends. Linux frames use the current VideoFrame wrapper and arrival timestamps; packed-RGB dimensions, stride, offset and buffer bounds are validated before copying, row padding is stripped, and dequeued PipeWire buffers are always returned. This backend is for screen color, not synchronized audiovisual recording.

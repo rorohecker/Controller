@@ -31,7 +31,7 @@ use pw::{
 
 use crate::{
     capturer::Options,
-    frame::{BGRxFrame, Frame, RGBFrame, RGBxFrame, XBGRFrame},
+    frame::{BGRxFrame, Frame, RGBFrame, RGBxFrame, VideoFrame, XBGRFrame},
 };
 
 use self::{error::LinCapError, portal::ScreenCastPortal};
@@ -44,7 +44,7 @@ static STREAM_STATE_CHANGED_TO_ERROR: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone)]
 struct ListenerUserData {
-    pub tx: mpsc::Sender<Frame>,
+    pub tx: mpsc::SyncSender<Frame>,
     pub format: spa::param::video::VideoInfoRaw,
 }
 
@@ -111,69 +111,105 @@ unsafe fn get_timestamp(buffer: *mut spa_buffer) -> i64 {
 }
 
 fn process_callback(stream: &StreamRef, user_data: &mut ListenerUserData) {
-    let buffer = unsafe { stream.dequeue_raw_buffer() };
-    if !buffer.is_null() {
-        'outside: {
-            let buffer = unsafe { (*buffer).buffer };
-            if buffer.is_null() {
-                break 'outside;
-            }
-            let timestamp = unsafe { get_timestamp(buffer) };
-
-            let n_datas = unsafe { (*buffer).n_datas };
-            if n_datas < 1 {
-                return;
-            }
-            let frame_size = user_data.format.size();
-            let frame_data: Vec<u8> = unsafe {
-                std::slice::from_raw_parts(
-                    (*(*buffer).datas).data as *mut u8,
-                    (*(*buffer).datas).maxsize as usize,
-                )
-                .to_vec()
-            };
-
-            if let Err(e) = match user_data.format.format() {
-                VideoFormat::RGBx => user_data.tx.send(Frame::RGBx(RGBxFrame {
-                    display_time: timestamp as u64,
-                    width: frame_size.width as i32,
-                    height: frame_size.height as i32,
-                    data: frame_data,
-                })),
-                VideoFormat::RGB => user_data.tx.send(Frame::RGB(RGBFrame {
-                    display_time: timestamp as u64,
-                    width: frame_size.width as i32,
-                    height: frame_size.height as i32,
-                    data: frame_data,
-                })),
-                VideoFormat::xBGR => user_data.tx.send(Frame::XBGR(XBGRFrame {
-                    display_time: timestamp as u64,
-                    width: frame_size.width as i32,
-                    height: frame_size.height as i32,
-                    data: frame_data,
-                })),
-                VideoFormat::BGRx => user_data.tx.send(Frame::BGRx(BGRxFrame {
-                    display_time: timestamp as u64,
-                    width: frame_size.width as i32,
-                    height: frame_size.height as i32,
-                    data: frame_data,
-                })),
-                _ => panic!("Unsupported frame format received"),
-            } {
-                eprintln!("{e}");
-            }
-        }
-    } else {
-        eprintln!("Out of buffers");
+    let queued = unsafe { stream.dequeue_raw_buffer() };
+    if queued.is_null() {
+        return;
     }
-
-    unsafe { stream.queue_raw_buffer(buffer) };
+    'frame: {
+        let buffer = unsafe { (*queued).buffer };
+        if buffer.is_null() {
+            break 'frame;
+        }
+        let buffer = unsafe { &*buffer };
+        if buffer.n_datas < 1 || buffer.datas.is_null() {
+            break 'frame;
+        }
+        let data = unsafe { &*buffer.datas };
+        if data.data.is_null() || data.chunk.is_null() {
+            break 'frame;
+        }
+        let chunk = unsafe { &*data.chunk };
+        let size = user_data.format.size();
+        let (width, height) = (size.width as usize, size.height as usize);
+        if width == 0 || height == 0 || width > 16384 || height > 16384 {
+            break 'frame;
+        }
+        let format = user_data.format.format();
+        let bpp = match format {
+            VideoFormat::RGB => 3,
+            VideoFormat::RGBx | VideoFormat::xBGR | VideoFormat::BGRx => 4,
+            _ => break 'frame,
+        };
+        let row = width * bpp;
+        let stride = if chunk.stride == 0 {
+            row
+        } else if chunk.stride > 0 {
+            chunk.stride as usize
+        } else {
+            break 'frame;
+        };
+        let needed = match (height - 1)
+            .checked_mul(stride)
+            .and_then(|v| v.checked_add(row))
+        {
+            Some(n) => n,
+            None => break 'frame,
+        };
+        let offset = chunk.offset as usize;
+        let available = chunk.size as usize;
+        if stride < row
+            || needed > available
+            || needed > 64 * 1024 * 1024
+            || offset
+                .checked_add(available)
+                .is_none_or(|n| n > data.maxsize as usize)
+        {
+            break 'frame;
+        }
+        // The negotiated packed RGB layout and chunk bounds are checked before dereferencing.
+        let bytes =
+            unsafe { std::slice::from_raw_parts((data.data as *const u8).add(offset), needed) };
+        let mut pixels = Vec::with_capacity(row * height);
+        for y in 0..height {
+            pixels.extend_from_slice(&bytes[y * stride..y * stride + row]);
+        }
+        let display_time = std::time::SystemTime::now();
+        let video = match format {
+            VideoFormat::RGB => VideoFrame::RGB(RGBFrame {
+                display_time,
+                width: width as i32,
+                height: height as i32,
+                data: pixels,
+            }),
+            VideoFormat::RGBx => VideoFrame::RGBx(RGBxFrame {
+                display_time,
+                width: width as i32,
+                height: height as i32,
+                data: pixels,
+            }),
+            VideoFormat::xBGR => VideoFrame::XBGR(XBGRFrame {
+                display_time,
+                width: width as i32,
+                height: height as i32,
+                data: pixels,
+            }),
+            VideoFormat::BGRx => VideoFrame::BGRx(BGRxFrame {
+                display_time,
+                width: width as i32,
+                height: height as i32,
+                data: pixels,
+            }),
+            _ => break 'frame,
+        };
+        let _ = user_data.tx.try_send(Frame::Video(video));
+    }
+    // Return every dequeued buffer, including malformed or unsupported frames.
+    unsafe { stream.queue_raw_buffer(queued) };
 }
 
-// TODO: Format negotiation
 fn pipewire_capturer(
     options: Options,
-    tx: mpsc::Sender<Frame>,
+    tx: mpsc::SyncSender<Frame>,
     ready_sender: &SyncSender<bool>,
     stream_id: u32,
 ) -> Result<(), LinCapError> {
@@ -317,7 +353,7 @@ pub struct LinuxCapturer {
 
 impl LinuxCapturer {
     // TODO: Error handling
-    pub fn new(options: &Options, tx: mpsc::Sender<Frame>) -> Self {
+    pub fn new(options: &Options, tx: mpsc::SyncSender<Frame>) -> Self {
         let connection =
             dbus::blocking::Connection::new_session().expect("Failed to create dbus connection");
         let stream_id = ScreenCastPortal::new(&connection)
@@ -364,6 +400,6 @@ impl LinuxCapturer {
     }
 }
 
-pub fn create_capturer(options: &Options, tx: mpsc::Sender<Frame>) -> LinuxCapturer {
+pub fn create_capturer(options: &Options, tx: mpsc::SyncSender<Frame>) -> LinuxCapturer {
     LinuxCapturer::new(options, tx)
 }

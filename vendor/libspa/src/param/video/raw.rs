@@ -241,16 +241,24 @@ impl VideoInfoRaw {
 
     pub fn set_flags(&mut self, flags: VideoFlags) {
         #[cfg(feature = "v0_3_65")]
-        { self.0.flags = flags.bits(); }
+        {
+            self.0.flags = flags.bits();
+        }
         #[cfg(not(feature = "v0_3_65"))]
-        { let _ = flags; } // CONTROLLER negotiates RGB shared memory without DMA modifiers.
+        {
+            let _ = flags;
+        } // CONTROLLER negotiates RGB shared memory without DMA modifiers.
     }
 
     pub fn flags(self) -> VideoFlags {
         #[cfg(feature = "v0_3_65")]
-        { VideoFlags::from_bits_retain(self.0.flags) }
+        {
+            VideoFlags::from_bits_retain(self.0.flags)
+        }
         #[cfg(not(feature = "v0_3_65"))]
-        { VideoFlags::empty() }
+        {
+            VideoFlags::empty()
+        }
     }
 
     pub fn set_modifier(&mut self, modifier: u64) {
