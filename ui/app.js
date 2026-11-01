@@ -1488,7 +1488,7 @@
 
   function renderBridge(){
     if(document.hidden||state.currentView!=='haptics')return;
-    const available=state.connected&&state.transport==='USB';
+    const available=state.connected&&(state.transport==='USB'||state.btAudioEnabled);
     const toggle=$('#bridge-toggle'),status=$('#bridge-status');
     toggle.disabled=!available;
     toggle.textContent=state.audioBridge?'Stop bridge':'Start bridge';
@@ -1497,7 +1497,7 @@
     if(!state.connected)status.textContent='Connect a controller to start the bridge.';
     else if(!available)status.textContent='USB is required for system audio haptics. Haptic previews use motor rumble over Bluetooth.';
     else if(!state.audioBridge)status.textContent='Bridge off';
-    $('#haptic-route').textContent=!state.connected?'Route: PC audio preview':state.audioRoute==='voiceCoil'?'Route: USB voice coils':state.audioRoute==='motor'?'Route: motor fallback':state.transport==='Bluetooth'?'Route: Bluetooth motors':'Route: USB voice coils if available';
+    $('#haptic-route').textContent=!state.connected?'Route: PC audio preview':state.btAudioEnabled?'Route: Bluetooth grip PCM \u00b7 experimental':state.audioRoute==='voiceCoil'?'Route: USB voice coils':state.audioRoute==='motor'?'Route: motor fallback':state.transport==='Bluetooth'?'Route: Bluetooth motors':'Route: USB voice coils if available';
     if(state.bridgeMessage)status.textContent=state.bridgeMessage;
   }
   $('#bridge-toggle').addEventListener('click',()=>send({action:'setAudioBridge',enabled:!state.audioBridge,gain:+$('#bridge-gain').value/100,preset:$('#bridge-preset').value,source:window.integrationStudio?.commandSource()||{kind:'system'}}));
@@ -1517,7 +1517,7 @@
   $('#alert-ping').addEventListener('click',()=>send({action:'playHaptic',shape:'sine',frequency:125,attack:5,release:160,strength:26,pan:0}));
   $('#alert-ping').insertAdjacentHTML('afterend','<button id="speaker-chirp" class="quiet-action" type="button" disabled title="Play a test tone through the controller speaker over USB">Speaker test · USB</button>');
   $('.alert-body > div > p').textContent='Low battery and timer alerts tap the grips. Find my pad taps them now. Speaker chirp uses the controller speaker over USB. Reset, disconnect, or exit to stop alerts.';
-  const musicPlayer=new window.ControllerPlayer(send,()=>state.connected&&state.transport==='USB',invoke);
+  const musicPlayer=new window.ControllerPlayer(send,route=>state.connected&&(state.transport==='USB'||state.btAudioEnabled&&route==='grips'),invoke);
   const audioMixer=new window.ControllerAudioMixer(send,()=>state.connected);
   async function testSpeaker(){await musicPlayer.stop('Playing speaker test');await send({action:'playSpeakerChirp'});}
   $('#speaker-chirp').addEventListener('click',testSpeaker);
@@ -1806,7 +1806,7 @@
     if(!connected)musicPlayer.stop('Controller disconnected');
     musicPlayer.render();
     if(!connected)audioMixer.clear();
-    if(!connected){clearPadFocus();calibrationRun=null;state.latestInput=null;widgetSignatures.clear();state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.pcMode=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.temperatureLight=false;state.screenLight=false;state.bridgeMessage='';state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderTemperatureLight();renderScreenLight();renderInput();}
+    if(!connected){state.btAudioEnabled=false;clearPadFocus();calibrationRun=null;state.latestInput=null;widgetSignatures.clear();state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.pcMode=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.temperatureLight=false;state.screenLight=false;state.bridgeMessage='';state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderTemperatureLight();renderScreenLight();renderInput();}
     renderPcMode();
     if(!connected){state.lowBatteryAlert=false;state.timerUntil=0;}
     renderAlerts();renderBridge();
@@ -1985,6 +1985,7 @@
     window.gameSessions?.event(event);
     window.studioHooks?.event(event);
     if(event.type==='device'){
+      state.controllerId=event.connected?event.controllerId:null;state.btAudioEnabled=!!event.bluetoothAudio;
       const changed=state.connected!==!!event.connected || (event.connected&&((event.controllerId&&calibrationOwner?event.controllerId!==calibrationOwner:state.name!==event.name)||state.transport!==event.transport||state.path!==(event.path||'')));
       if(changed)padNavPrev=null;
       if(changed&&event.connected)selectControllerCalibration(event);
@@ -2018,6 +2019,8 @@
       renderXinput();
     }else if(event.type==='audioMeters'){
       musicPlayer.event(event);audioMixer.event(event);
+    }else if(event.type==='bluetoothAudioStatus'&&event.controllerId===state.controllerId){
+      state.btAudioEnabled=!!event.enabled;state.audioRoute=event.enabled?'btPcm':'off';state.audioBridge=false;state.bridgeMessage='';musicPlayer.stop('Audio stopped after changing Bluetooth mode.');renderBridge();musicPlayer.render();
     }else if(event.type==='audioStatus'){
       state.audioRoute=event.route||'off';
       if(typeof event.bridge==='boolean')state.audioBridge=event.bridge;
@@ -2133,7 +2136,7 @@
       state.autoSuppressed=true;
       state.pcMode=false;renderPcMode();
       state.leaseUntil=0;
-      state.audioBridge=false;state.audioRoute='off';renderBridge();
+      state.btAudioEnabled=false;state.audioBridge=false;state.audioRoute='off';renderBridge();
       state.inputEffectsActive=false;$('#click-status').textContent='Not armed';
       state.lowBatteryAlert=false;state.timerUntil=0;renderAlerts();
       state.telemetryOn=false;renderTelemetry();

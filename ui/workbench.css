@@ -618,3 +618,11 @@ body[data-density=compact] .work-panel,body[data-density=compact] .studio-card {
 @media (prefers-reduced-motion:reduce) {
   *,*::before,*::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; }
 }
+.hardware-write-review {
+  padding:16px; margin-top:12px; border:1px solid rgba(164,107,148,.55); border-radius:8px;
+  color:var(--ink); background:linear-gradient(125deg,rgba(255,222,177,.74),rgba(238,208,231,.76) 48%,rgba(192,231,222,.62));
+  box-shadow:inset 0 1px rgba(255,255,255,.65),0 5px 20px rgba(120,82,114,.12);
+  overflow-wrap:anywhere;
+}
+.hardware-write-review p {margin:0 0 12px;line-height:1.55}
+.hardware-write-review .game-buttons {margin:0;flex-wrap:wrap}

@@ -81,6 +81,11 @@ pub enum DeviceCommand {
         strength: u8,
     },
     StopLinkExperiment,
+    SetBluetoothAudio {
+        enabled: bool,
+        #[serde(rename = "controllerId")]
+        controller_id: String,
+    },
     ProfileCheckpoint {
         #[serde(rename = "requestId")]
         request_id: u32,
@@ -556,6 +561,7 @@ struct Connected {
     rumble_until: Option<Instant>,
     haptic: Option<HapticClip>,
     audio: AudioEngine,
+    bt_audio_sequence: u8,
     speaker_route_until: Option<Instant>,
     speaker_track_id: u64,
     microphone_muted: Option<bool>,
@@ -981,6 +987,23 @@ impl Connected {
         self.last_rumble = None;
         self.write(protocol::audio_haptics_enable_report())
     }
+    fn write_bt_audio(&mut self, pcm: &[i8; 64]) -> Result<(), String> {
+        let report =
+            protocol::bt_haptic_report_sequences(pcm, self.sequence, self.bt_audio_sequence);
+        self.sequence = self.sequence.wrapping_add(1) & 15;
+        self.bt_audio_sequence = self.bt_audio_sequence.wrapping_add(1);
+        let count = self.hid.write(&report).map_err(|e| e.to_string())?;
+        if count != report.len() {
+            return Err("Short Bluetooth grip-audio write.".into());
+        }
+        Ok(())
+    }
+    fn tick_bt_audio(&mut self) -> Result<(), String> {
+        if let Some(pcm) = self.audio.take_bluetooth_packet(Instant::now())? {
+            self.write_bt_audio(&pcm)?;
+        }
+        Ok(())
+    }
     fn load_assignment(&mut self) -> Result<(), String> {
         let result = (|| {
             let record = match crate::hardware::assignment(&self.controller_id) {
@@ -1020,7 +1043,9 @@ impl Connected {
         pan: i16,
     ) {
         let voice = VoiceClip::new(shape, frequency, attack, release, strength, pan);
-        if matches!(self.transport, BusType::Usb) && self.play_voice(voice).is_ok() {
+        if (matches!(self.transport, BusType::Usb) || self.audio.bluetooth_enabled())
+            && self.play_voice(voice).is_ok()
+        {
             return;
         }
         let fallback = HapticClip::new(shape.into(), frequency, attack, release, strength, pan);
@@ -1030,7 +1055,10 @@ impl Connected {
 
     fn start_timeline(&mut self, clip: EffectClip) -> Result<(), String> {
         clip.validate().map_err(str::to_string)?;
-        if clip.has_grips() && !matches!(self.transport, BusType::Usb) {
+        if clip.has_grips()
+            && !matches!(self.transport, BusType::Usb)
+            && !self.audio.bluetooth_enabled()
+        {
             return Err(
                 "Stereo timeline grips require USB; trigger-only clips work over Bluetooth".into(),
             );
@@ -1244,6 +1272,12 @@ impl Connected {
         Ok(())
     }
     fn set_speaker_route(&mut self, enabled: bool) -> Result<(), String> {
+        if !enabled
+            && matches!(self.transport, BusType::Bluetooth)
+            && self.audio.bluetooth_enabled()
+        {
+            return Ok(());
+        }
         if !matches!(self.transport, BusType::Usb) {
             return Err("Controller speaker routing requires USB.".into());
         }
@@ -1345,7 +1379,7 @@ impl Connected {
         self.motion.reset();
         self.controls = ControlProfile::default();
         self.haptic = None;
-        self.audio.stop();
+        self.audio.set_bluetooth(false);
         self.game_rumble = [0, 0];
         self.game_audio_retry_at = None;
         let restore_speaker = self.speaker_route_until.is_some();
@@ -1740,6 +1774,7 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     last_motion_event: Instant::now(),
                     dongle,
                     link_experiment: None,
+                    bt_audio_sequence: 0,
                     last_input_sent: Instant::now() - Duration::from_secs(1),
                     last_input_buttons: [false; 23],
                     last_valid_report: Instant::now(),
@@ -1850,6 +1885,7 @@ fn emit_connected(proxy: &Sender<serde_json::Value>, found: &Connected) {
             "motionFactory":{"valid":found.motion.factory.valid,"message":found.motion.factory.message},
             "productId": format!("{:04x}", found.product_id),
             "isEdge": found.product_id == protocol::EDGE_PID,
+            "bluetoothAudio": found.audio.bluetooth_enabled(),
         }),
     );
 }
@@ -2543,6 +2579,17 @@ fn handle_command(
                 emit_connected(proxy,device);Ok("Controller assignment applied")
             })()}
         }
+        DeviceCommand::SetBluetoothAudio{enabled,controller_id}=>{
+            let result=(|| {
+                if device.controller_id!=controller_id||!matches!(device.transport,BusType::Bluetooth){return Err("Select the same Bluetooth controller before changing grip audio.".to_string());}
+                if device.audio.bluetooth_enabled(){let _=device.write_bt_audio(&[0;64]);}
+                device.audio.set_bluetooth(enabled);device.haptic=None;device.rumble_until=None;device.game_rumble=[0,0];device.game_audio_retry_at=None;
+                if enabled {if let Err(error)=device.enable_pcm(){device.audio.set_bluetooth(false);return Err(error);}}else{device.write_rumble([0,0])?;}
+                Ok(())
+            })();
+            emit(proxy,json!({"type":"bluetoothAudioStatus","controllerId":controller_id,"enabled":device.audio.bluetooth_enabled(),"error":result.as_ref().err()}));
+            result.map(|_|if enabled{"Bluetooth grip audio enabled; speaker requires USB."}else{"Bluetooth grip audio off."})
+        }
         DeviceCommand::StartLinkExperiment{strength}=>{
             let run=LinkExperiment::new(Instant::now(),matches!(device.transport,BusType::Bluetooth),strength);
             run.and_then(|mut run|{
@@ -2834,7 +2881,7 @@ fn handle_command(
             pan,
         } => {
             let voice = VoiceClip::new(&shape, frequency, attack, release, strength, pan);
-            if matches!(device.transport, BusType::Usb) {
+            if matches!(device.transport, BusType::Usb)||device.audio.bluetooth_enabled() {
                 match device.play_voice(voice) {
                     Ok(endpoint) => {
                         emit(
@@ -2890,7 +2937,7 @@ fn handle_command(
         }
         DeviceCommand::SetAudioMixer {settings} => device.audio.set_mixer(settings).map(|_|"Audio mixer saved"),
         DeviceCommand::PlayAudioFile {path,position,duration,route,kind,track_id} => {
-            if !matches!(device.transport,BusType::Usb) {Err("Controller audio requires USB.".into())}
+            if !matches!(device.transport,BusType::Usb)&&!device.audio.bluetooth_enabled() {Err("Use USB, or enable experimental Bluetooth grip audio and choose Grips only.".into())}
             else {
                 device.audio.start_output().map(|_|()).and_then(|_|device.enable_pcm())
                     .and_then(|_|device.set_speaker_route(route!="grips"))
@@ -2910,7 +2957,7 @@ fn handle_command(
         } => {
             if append && track_id != device.speaker_track_id {
                 Err("Ignored an audio chunk from an old track.".into())
-            } else if !matches!(device.transport, BusType::Usb) {
+            } else if !matches!(device.transport, BusType::Usb)&&!device.audio.bluetooth_enabled() {
                 Err("Controller speaker playback requires USB.".into())
             } else if pcm_base64.len() > 400_000 {
                 Err("Sound is too long. Use at most 3 seconds.".into())
@@ -2965,7 +3012,7 @@ fn handle_command(
         } => {
             if enabled && !crate::audio_haptics::capture_supported() {
                 Err("System audio capture is unavailable on this OS version. macOS requires 14.6 or later.".into())
-            } else if enabled && !matches!(device.transport, BusType::Usb) {
+            } else if enabled && !matches!(device.transport, BusType::Usb)&&!device.audio.bluetooth_enabled() {
                 Err("System audio haptics require USB. Bluetooth motor fallback remains available in Haptic Lab.".into())
             } else {
                 let result = if enabled { source.validate().and_then(|_|device.enable_pcm()) } else { Ok(()) }
@@ -3239,7 +3286,9 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
         {
             connected.input_stale = true;
             if connected.game_rumble != [0, 0] {
-                if matches!(connected.transport, BusType::Usb) {
+                if matches!(connected.transport, BusType::Usb)
+                    || connected.audio.bluetooth_enabled()
+                {
                     let _ = connected.audio.set_game_rumble([0, 0]);
                 } else {
                     let _ = connected.write_rumble([0, 0]);
@@ -4069,6 +4118,14 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                     emit(&proxy, json!({"type":"error","message":error}));
                 }
             }
+            if let Err(error) = connected.tick_bt_audio() {
+                connected.audio.set_bluetooth(false);
+                let _ = connected.write_bt_audio(&[0; 64]);
+                emit(
+                    &proxy,
+                    json!({"type":"bluetoothAudioStatus","controllerId":connected.controller_id,"enabled":false,"error":error}),
+                );
+            }
             let feedback = if xinput.active() {
                 match xinput.take_feedback() {
                     Ok(motors) => motors,
@@ -4090,7 +4147,8 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                 } else {
                     motors
                 };
-                let usb = matches!(connected.transport, BusType::Usb);
+                let usb = matches!(connected.transport, BusType::Usb)
+                    || connected.audio.bluetooth_enabled();
                 let recovering = usb
                     && motors != [0, 0]
                     && connected
@@ -4240,7 +4298,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
             let read_started = Instant::now();
             let read_result = connected.hid.read_timeout(
                 &mut input_report,
-                if connected.timeline.is_some() { 5 } else { 20 },
+                if connected.timeline.is_some() || connected.audio.bluetooth_enabled() {
+                    5
+                } else {
+                    20
+                },
             );
             if diagnostics {
                 metrics

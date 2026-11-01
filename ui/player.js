@@ -47,7 +47,7 @@
       this.next = 0; this.hasStream = false; this.chunkPending = false; this.previewEnd=null;
       $('speaker-file-status').textContent = message;
       this.render();
-      return this.connected()
+      return this.connected($('speaker-route').value)
         ? this.command({action: 'stopSpeakerSound', trackId: this.trackId}, this.trackId, true)
         : Promise.resolve(true);
     }
@@ -106,7 +106,7 @@
       return {pcmBase64: btoa(binary), duration: count / 48_000};
     }
     async audition(kind,position,seconds=5,onStart=null){
-      if(!this.nativeFile||!this.connected()||!['music','bass','impact','texture'].includes(kind))return;
+      if(!this.nativeFile||!this.connected($('speaker-route').value)||!['music','bass','impact','texture'].includes(kind))return;
       const pendingStop=this.stop(),stopped=this.trackId;await pendingStop;
       if(stopped!==this.trackId)return;
       position=Math.max(0,Math.min(this.duration,position));
@@ -135,7 +135,7 @@
       this.hasStream = true; this.next = position + chunk.duration; this.pump();
     }
     async toggle() {
-      if (!this.decoded || !this.connected()) return;
+      if (!this.decoded || !this.connected($('speaker-route').value)) return;
       if (['playing','buffering'].includes(this.mode)) {
         this.position = this.current(); this.mode = 'paused';
         $('speaker-file-status').textContent = 'Paused'; this.render();
@@ -205,7 +205,7 @@
       if(!ticking&&this.tickTimer){clearTimeout(this.tickTimer);this.tickTimer=0;}
       if(ticking&&!this.tickTimer)this.tickTimer=setTimeout(()=>{this.tickTimer=0;this.pump();this.render();},100);
       if(!visible)return;
-      const current = this.current(), ready = !!this.decoded && this.connected();
+      const current = this.current(), ready = !!this.decoded && this.connected($('speaker-route').value);
       if (!this.nativeFile && this.mode === 'playing' && current >= this.duration) {
         this.stop('Finished'); this.position = this.duration;
       }

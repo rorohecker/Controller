@@ -15,7 +15,9 @@ pub enum CaptureSource {
 impl CaptureSource {
     pub fn validate_runtime(&self) -> Result<(), String> {
         self.validate()?;
-        if !super::capture_supported() { return Err("System audio capture is unavailable on this OS version.".into()); }
+        if !super::capture_supported() {
+            return Err("System audio capture is unavailable on this OS version.".into());
+        }
         match self {
             Self::Process { .. } if !cfg!(windows) => Err("Selected-app capture is available on Windows. Choose System audio explicitly to capture your desktop.".into()),
             Self::NativeEndpoint { .. } if cfg!(target_os="macos") => Err("The macOS system tap is stereo. Four-channel relay capture is unavailable.".into()),
@@ -98,9 +100,14 @@ mod tests {
     }
     #[test]
     fn unsupported_sources_are_rejected_before_replacing_a_live_capture() {
-        let process=CaptureSource::Process { pid:u32::MAX };
-        assert_eq!(process.validate_runtime().is_ok(),cfg!(windows));
-        let relay=CaptureSource::NativeEndpoint{id:"explicit-source".into()};
-        assert_eq!(relay.validate_runtime().is_ok(),!cfg!(target_os="macos")&&super::super::capture_supported());
+        let process = CaptureSource::Process { pid: u32::MAX };
+        assert_eq!(process.validate_runtime().is_ok(), cfg!(windows));
+        let relay = CaptureSource::NativeEndpoint {
+            id: "explicit-source".into(),
+        };
+        assert_eq!(
+            relay.validate_runtime().is_ok(),
+            !cfg!(target_os = "macos") && super::super::capture_supported()
+        );
     }
 }

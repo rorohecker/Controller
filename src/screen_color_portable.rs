@@ -104,7 +104,7 @@ fn capture_session(shared: &Shared, generation: u64) -> Result<(), String> {
     }
     engine.0.start();
     let mut last_frame = Instant::now();
-    let result = (|| {
+    (|| {
         while current(shared, generation) {
             let mut item =
                 match rx.recv_timeout(Duration::from_millis(100)) {
@@ -140,8 +140,7 @@ fn capture_session(shared: &Shared, generation: u64) -> Result<(), String> {
             publish(shared, generation, Ok(color));
         }
         Ok(())
-    })();
-    result
+    })()
 }
 
 pub fn smooth(previous: Option<[u8; 3]>, current: [u8; 3]) -> [u8; 3] {

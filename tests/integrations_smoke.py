@@ -69,6 +69,20 @@ def main():
         page.locator('#native-handoff').click()
         assert page.evaluate("window.sent.at(-1)") == {'action':'setNativeHandoff','enabled':False}
         page.evaluate("window.coreHandler({type:'nativeHandoff',enabled:false});window.coreHandler({type:'device',connected:true,name:'DualSense',transport:'Bluetooth',controllerId:'pad-A'})")
+        page.locator('[data-view="haptics"]').click()
+        assert page.locator('#bluetooth-audio-panel').is_visible()
+        page.locator('#bluetooth-audio-toggle').click()
+        assert page.evaluate("window.sent.at(-1)")=={'action':'setBluetoothAudio','controllerId':'pad-A','enabled':True}
+        page.evaluate("window.coreHandler({type:'bluetoothAudioStatus',controllerId:'old-pad',enabled:true})")
+        assert page.locator('#bluetooth-audio-toggle').is_disabled()
+        page.evaluate("window.coreHandler({type:'bluetoothAudioStatus',controllerId:'pad-A',enabled:true})")
+        assert page.locator('#bluetooth-audio-toggle').get_attribute('aria-pressed')=='true'
+        assert page.locator('#capture-use').is_enabled()
+        assert page.locator('#bridge-toggle').is_enabled()
+        page.locator('#bluetooth-audio-toggle').click()
+        assert page.evaluate("window.sent.at(-1).enabled")==False
+        page.evaluate("window.coreHandler({type:'bluetoothAudioStatus',controllerId:'pad-A',enabled:false})")
+        assert page.locator('#bridge-toggle').is_disabled()
         # Backend checks request no pointer/key movement and can report revocation.
         page.locator('[data-view="pc-controls"]').click()
         page.locator('#runtime-access-test').click()

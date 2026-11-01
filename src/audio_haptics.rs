@@ -14,6 +14,8 @@ pub mod capture;
 #[path = "audio_haptics/file.rs"]
 pub mod file;
 use capture::{CaptureHandle, CaptureSource};
+#[path = "audio_haptics/bluetooth.rs"]
+mod bluetooth;
 #[path = "audio_haptics/capture_math.rs"]
 mod capture_math;
 #[path = "audio_haptics/io_runtime.rs"]
@@ -246,6 +248,8 @@ impl Default for Shared {
 }
 
 pub struct AudioEngine {
+    bluetooth_enabled: bool,
+    bluetooth_output: Option<bluetooth::Output>,
     output: Option<io_runtime::OutputWorker>,
     retired_outputs: Vec<Arc<AtomicBool>>,
     output_startup_ms: Option<u64>,
@@ -262,6 +266,8 @@ pub struct AudioEngine {
 impl Default for AudioEngine {
     fn default() -> Self {
         Self {
+            bluetooth_enabled: false,
+            bluetooth_output: None,
             output: None,
             retired_outputs: Vec::new(),
             output_startup_ms: None,
@@ -285,6 +291,7 @@ impl Drop for AudioEngine {
 
 impl AudioEngine {
     fn retire_output(&mut self) {
+        self.bluetooth_output = None;
         self.retired_outputs
             .retain(|done| !done.load(Ordering::Acquire));
         if let Some(worker) = self.output.take() {
@@ -375,6 +382,21 @@ impl AudioEngine {
     pub fn endpoint(&self) -> Option<&str> {
         self.endpoint.as_deref()
     }
+    pub fn bluetooth_enabled(&self) -> bool {
+        self.bluetooth_enabled
+    }
+    pub fn set_bluetooth(&mut self, enabled: bool) {
+        self.stop();
+        self.bluetooth_enabled = enabled;
+    }
+    pub fn take_bluetooth_packet(
+        &mut self,
+        now: std::time::Instant,
+    ) -> Result<Option<[i8; 64]>, String> {
+        self.bluetooth_output
+            .as_mut()
+            .map_or(Ok(None), |output| output.take(now))
+    }
     pub fn callbacks(&self) -> u64 {
         self.shared.callbacks.load(Ordering::Relaxed)
     }
@@ -422,6 +444,15 @@ impl AudioEngine {
         self.output_failure.is_some()
     }
     pub fn start_output(&mut self) -> Result<&str, String> {
+        if self.bluetooth_enabled {
+            if self.bluetooth_output.is_none() {
+                self.fresh_output_state();
+                self.bluetooth_output = Some(bluetooth::Output::start(self.shared.clone())?);
+                self.endpoint = Some("Bluetooth grip PCM · experimental".into());
+                self.output_startup_ms = Some(0);
+            }
+            return Ok(self.endpoint.as_deref().unwrap_or("Bluetooth grips"));
+        }
         if let Some((error, failed_at)) = &self.output_failure
             && failed_at.elapsed() < Duration::from_secs(5)
         {
@@ -450,7 +481,7 @@ impl AudioEngine {
             .unwrap_or("Opening controller audio"))
     }
     pub fn output_ready(&self) -> bool {
-        self.output.is_some() && self.endpoint.is_some()
+        (self.output.is_some() || self.bluetooth_output.is_some()) && self.endpoint.is_some()
     }
     pub fn output_opening(&self) -> bool {
         self.output.is_some() && self.endpoint.is_none()
@@ -487,6 +518,11 @@ impl AudioEngine {
         self.play(clip).map(|_| ())
     }
     pub fn play_speaker_chirp(&mut self) -> Result<&str, String> {
+        if self.bluetooth_enabled {
+            return Err(
+                "The Bluetooth PCM route supports grips only. Use USB for the speaker.".into(),
+            );
+        }
         self.start_output()?;
         self.stop_speaker_pcm();
         self.shared.speaker.store(Some(Arc::new(SpeakerChirp {
@@ -506,6 +542,9 @@ impl AudioEngine {
         }
         if !matches!(route, "speaker" | "both" | "grips") {
             return Err("Choose a valid sound route.".into());
+        }
+        if self.bluetooth_enabled && route != "grips" {
+            return Err("Choose Grips only for Bluetooth playback.".into());
         }
         self.start_output()?;
         let stream = if append {
@@ -557,6 +596,9 @@ impl AudioEngine {
         track_id: u64,
     ) -> Result<(), String> {
         let (start, duration) = range;
+        if self.bluetooth_enabled && route != "grips" {
+            return Err("Choose Grips only for Bluetooth playback.".into());
+        }
         if !start.is_finite()
             || !(0.0..3600.0).contains(&start)
             || !duration.is_finite()
@@ -1264,7 +1306,6 @@ fn fill_frames(
     shared.callbacks.fetch_add(1, Ordering::Relaxed);
 }
 
-#[cfg(any(test, not(windows)))]
 fn render_output(data: &mut [f32], shared: &Shared, position: &mut u64, duty: &mut RenderState) {
     let frames = data.len() / 4;
     fill_frames(
