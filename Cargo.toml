@@ -9,7 +9,10 @@ description = "CONTROLLER, a native DualSense tuning studio"
 
 [workspace]
 members = ["protocol"]
-exclude = ["vendor/scap"]
+exclude = ["vendor/scap", "vendor/libspa"]
+
+[patch.crates-io]
+libspa = { path = "vendor/libspa" }
 
 [dependencies]
 aftertouch-protocol = { path = "protocol" }

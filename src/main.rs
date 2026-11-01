@@ -4,6 +4,7 @@ mod audio_haptics;
 mod desktop_access;
 mod device;
 mod diagnostics;
+mod edge_writer;
 mod game_actions;
 mod game_link;
 mod haptics;
@@ -655,6 +656,8 @@ fn main() {
             hardware::store_edge_snapshot,
             hardware::edge_snapshots,
             hardware::delete_edge_snapshot,
+            edge_writer::edge_transactions,
+            edge_writer::archive_edge_transaction,
             output_calibration::save_output_calibration,
             save_profiles,
             export_profiles,

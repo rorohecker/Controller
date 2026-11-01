@@ -87,6 +87,18 @@ def main():
         assert page.evaluate('window.lastEdgeEdit.edit.name')=='Local bow'
         assert page.evaluate('window.hardwareBackups[0].data')==original
         assert not page.evaluate("window.sent.some(c=>/writeEdge|sendFeature/i.test(c.action))")
+        page.locator('#edge-write').click()
+        assert page.locator('#edge-write-summary').is_visible()
+        assert not page.evaluate("window.sent.some(c=>c.action==='writeEdgeProfile')")
+        page.locator('#edge-cancel-write').click()
+        assert not page.locator('#edge-write-summary').is_visible()
+        page.locator('#edge-write').click();page.locator('#edge-confirm-write').click()
+        write=page.evaluate("window.sent.filter(c=>c.action==='writeEdgeProfile').at(-1)")
+        assert write['slot']==1 and write['edit']['name']=='Local bow'
+        assert page.locator('#edge-write').is_disabled()
+        page.evaluate('r=>window.coreHandler({type:"edgeWriteStatus",requestId:r.requestId,controllerId:r.data.controllerId,verified:false,originalBackupId:"123",error:"Readback mismatch; restore original"})',write)
+        assert 'Original backup: 123' in page.locator('#edge-status').inner_text()
+        assert page.locator('#edge-write').is_disabled()
         page.locator('#recognition-enabled').check();page.locator('#recognition-hud').check();page.locator('#recognition-threshold').fill('95');page.locator('#recognition-confirmations').fill('3');page.locator('#recognition-save').click()
         page.wait_for_function("window.saved?.profiles.some(p=>p.gameLink.recognition?.threshold===.95)")
         page.locator('#game-link-port').fill('6971');page.locator('#game-link-port').dispatch_event('change')

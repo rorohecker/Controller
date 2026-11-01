@@ -62,6 +62,14 @@ pub enum DeviceCommand {
         #[serde(rename = "requestId")]
         request_id: u32,
     },
+    WriteEdgeProfile {
+        data: crate::hardware::EdgeSnapshot,
+        slot: usize,
+        #[serde(default)]
+        edit: Option<crate::hardware::EdgeEdit>,
+        #[serde(rename = "requestId")]
+        request_id: u32,
+    },
     ApplyControllerAssignment {
         #[serde(rename = "controllerId")]
         controller_id: String,
@@ -3112,7 +3120,7 @@ fn handle_command(
         | DeviceCommand::SetGameLink { .. }
         | DeviceCommand::StopMacros
         | DeviceCommand::SetGameRecording { .. } => unreachable!(),
-        DeviceCommand::SetWeaponOverride{..}=>unreachable!(),
+        DeviceCommand::SetWeaponOverride{..}|DeviceCommand::WriteEdgeProfile{..}=>unreachable!(),
     };
     match result {
         Ok(message) => emit(proxy, json!({ "type": "notice", "message": message })),
@@ -3168,6 +3176,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
     let mut preferred_path: Option<String> = None;
     let mut next_scan = Instant::now();
     let mut native_handoff = false;
+    let mut edge_worker: Option<crate::edge_writer::Worker> = None;
     let mut input_report = [0u8; 78];
     let mut next_process_check = Instant::now();
     #[cfg(windows)]
@@ -3194,6 +3203,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
     let mut deferred_audio = std::collections::VecDeque::<DeviceCommand>::new();
     let mut deferred_owner: Option<String> = None;
     loop {
+        if let Some(event) = edge_worker.as_ref().and_then(|worker| worker.poll()) {
+            emit(&proxy, event);
+            edge_worker = None;
+            next_scan = Instant::now();
+        }
         let now = Instant::now();
         let diagnostics = diagnostics_until.is_some_and(|until| until > now);
         if diagnostics {
@@ -3461,6 +3475,85 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
             };
             match command {
                 Ok(command) => {
+                    if edge_worker.is_some()
+                        && !matches!(
+                            command,
+                            DeviceCommand::Shutdown
+                                | DeviceCommand::Reset
+                                | DeviceCommand::SetUiFocused { .. }
+                                | DeviceCommand::LatencyProbe { .. }
+                        )
+                    {
+                        if let DeviceCommand::WriteEdgeProfile {
+                            data, request_id, ..
+                        } = &command
+                        {
+                            emit(
+                                &proxy,
+                                json!({"type":"edgeWriteStatus","requestId":request_id,"controllerId":data.controller_id,"verified":false,"error":"An Edge write is already finishing."}),
+                            );
+                        } else {
+                            emit(
+                                &proxy,
+                                json!({"type":"error","message":"Wait for the Edge profile write to finish."}),
+                            );
+                        }
+                        continue;
+                    }
+                    if matches!(command, DeviceCommand::Reset | DeviceCommand::Shutdown)
+                        && let Some(worker) = edge_worker.as_ref()
+                    {
+                        worker.cancel();
+                    }
+                    if let DeviceCommand::WriteEdgeProfile {
+                        data,
+                        slot,
+                        edit,
+                        request_id,
+                    } = command
+                    {
+                        let prepared = (|| {
+                            if disable_hid {
+                                return Err("HID is disabled for this session.".to_string());
+                            }
+                            let selected = device
+                                .as_ref()
+                                .filter(|d| {
+                                    d.controller_id == data.controller_id
+                                        && d.product_id == protocol::EDGE_PID
+                                        && matches!(d.transport, BusType::Usb)
+                                })
+                                .ok_or(
+                                    "Connect the same DualSense Edge over USB before writing.",
+                                )?;
+                            crate::edge_writer::validate_request(&data, slot, edit.clone())?;
+                            std::ffi::CString::new(selected.path.clone()).map_err(|e| e.to_string())
+                        })();
+                        let owner = data.controller_id.clone();
+                        let result=prepared.and_then(|path| {
+                            game_link.stop();let _=telemetry.set(false,0,false);script=None;screen.set_enabled(false);cancel_audio_commands(&mut deferred_audio,&proxy,"Audio cancelled for the Edge profile write.");deferred_owner=None;
+                            stop_input_mappers(&mut mouse,&mut gyro,&mut remap,&mut xinput,&proxy);
+                            let mut active=device.take().ok_or("The selected controller disconnected.")?;
+                            let reset=active.reset();drop(active);reset?;
+                            emit(&proxy,json!({"type":"device","connected":false,"message":"Saving Edge profile; monitoring is paused"}));
+                            emit(&proxy,json!({"type":"safetyReset"}));
+                            crate::edge_writer::start(path,data,slot,edit,request_id)
+                        });
+                        match result {
+                            Ok(worker) => {
+                                edge_worker = Some(worker);
+                                emit(
+                                    &proxy,
+                                    json!({"type":"edgeWriteStarted","requestId":request_id,"controllerId":owner}),
+                                );
+                            }
+                            Err(error) => emit(
+                                &proxy,
+                                json!({"type":"edgeWriteStatus","requestId":request_id,"controllerId":owner,"verified":false,"error":error}),
+                            ),
+                        }
+                        continue;
+                    }
                     if disable_hid
                         && matches!(
                             command,
@@ -3616,6 +3709,12 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                             let _ = telemetry.set(false, 0, false);
                             script = None;
                             screen.set_enabled(false);
+                            cancel_audio_commands(
+                                &mut deferred_audio,
+                                &proxy,
+                                "Audio cancelled while releasing the controller to the native game.",
+                            );
+                            deferred_owner = None;
                             stop_input_mappers(
                                 &mut mouse,
                                 &mut gyro,
@@ -4484,7 +4583,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                 }
             }
         } else {
-            if !disable_hid && !native_handoff && Instant::now() >= next_scan {
+            if !disable_hid
+                && !native_handoff
+                && edge_worker.is_none()
+                && Instant::now() >= next_scan
+            {
                 let _ = api.refresh_devices();
                 match open_path(&api, preferred_path.as_deref()) {
                     Ok(Some(found)) => {

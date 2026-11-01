@@ -1,0 +1,3 @@
+Vendored `libspa 0.8.0` (MIT) for Ubuntu 22.04's PipeWire 0.3.48 headers. Upstream's raw video wrapper assumes a newer `flags` member and unsigned modifier type even without newer-version Cargo features.
+
+The raw descriptor now uses a zero initializer for its plain C integer fields, modifier casts retain the underlying bits, and newer flags are gated behind the existing `v0_3_65` feature. CONTROLLER's screen-color path requests ordinary RGB shared-memory frames and does not use DMA modifier flags. Update these adaptations with the PipeWire dependency; newer modifier negotiation must require a matching platform version.

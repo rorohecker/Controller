@@ -1,7 +1,7 @@
-//! Local controller identities and read-only Edge snapshots. No feature SET operations.
+//! Local controller identities and Edge snapshots. Writes use the separate verified transaction worker.
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, Ordering};
-static EDGE_READING: AtomicBool = AtomicBool::new(false);
+pub(crate) static EDGE_READING: AtomicBool = AtomicBool::new(false);
 pub fn start_edge_read(
     path: std::ffi::CString,
     owner: String,
@@ -102,7 +102,7 @@ impl Library {
         Ok(())
     }
 }
-fn root() -> Result<PathBuf, String> {
+pub(crate) fn root() -> Result<PathBuf, String> {
     Ok(crate::profiles::config_base()?
         .join("CONTROLLER")
         .join("hardware"))
@@ -271,7 +271,7 @@ impl EdgeSnapshot {
             .collect())
     }
 }
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EdgeEdit {
     pub name: String,
@@ -399,6 +399,9 @@ pub fn edge_snapshots() -> Result<Vec<serde_json::Value>, String> {
 pub fn delete_edge_snapshot(id: String) -> Result<(), String> {
     if id.is_empty() || id.len() > 40 || !id.bytes().all(|b| b.is_ascii_digit()) {
         return Err("Choose a saved backup ID".into());
+    }
+    if crate::edge_writer::backup_protected(&id)? {
+        return Err("This original backup belongs to an unfinished Edge transaction. Restore and verify it before deleting the backup.".into());
     }
     let path = root()?.join("edge-backups").join(format!("{id}.json"));
     let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
