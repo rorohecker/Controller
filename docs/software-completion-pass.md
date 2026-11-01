@@ -4,15 +4,15 @@ Baseline: 0.22.0. Hardware testing is deferred until the software pass is ready.
 
 ## Batch A — platform backends and boundaries
 
-- [ ] A1. Enforce a local-content CSP; audit IPC, imported content and bounded external helpers.
-- [ ] A2. Add calculation/protocol fault and stress checks; fix non-finite, range, timing and cancellation bugs found.
-- [ ] A3. Implement Linux virtual gamepad output, calibrated axes/triggers, neutral recovery and rumble routing with permission guidance.
-- [ ] A4. Enable real macOS/CoreAudio and Linux/PipeWire system-loopback capture, with source identity and feedback-loop protection.
+- [x] A1. Enforce a local-content CSP; audit IPC, imported content and bounded external helpers.
+- [x] A2. Add calculation/protocol fault and stress checks; fix non-finite, range, timing and cancellation bugs found.
+- [x] A3. Implement Linux virtual gamepad output, calibrated axes/triggers, neutral recovery and rumble routing with permission guidance.
+- [x] A4. Enable real macOS/CoreAudio and Linux PulseAudio/PipeWire-pulse system-loopback capture, with source identity and feedback-loop protection.
 - [ ] A5. Implement portable screen-color capture and consent/capability UI, with bounded workers and cancellation.
 
 ## Batch B — controller capabilities and ownership
 
-- [ ] B1. Implement a verified Edge profile write transaction: fresh original backup, exact device/slot checks, readback and recoverable failure handling. Automated tests never write hardware.
+- [x] B1. Implement a verified Edge profile write transaction: fresh original backup, exact device/slot checks, readback and recoverable failure handling. Automated tests never write hardware.
 - [ ] B2. Extend Bluetooth grip PCM into sustained bounded playback, with resampling, pacing, stop/underrun/reconnect handling and visible transport limits.
 - [ ] B3. Integrate an installed external native DualSense provider: inspect, controlled attach/detach, health, handoff and restore. Do not silently install/start privileged drivers.
 - [ ] B4. Separate background-core lifecycle from the window, with authenticated local IPC, bounded clients and safe reconnect/shutdown.
