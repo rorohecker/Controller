@@ -17,3 +17,12 @@ __pycache__/
 *.pyc
 *.key
 *.key.pub
+/dist/
+/icons/App.iconset/
+/icons/icon.icns
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+/preview-*.html
+/preview-*.png

@@ -1,16 +1,18 @@
 # Platform builds
 
-Windows is physically tested. The release workflow also publishes macOS and Linux packages after their tests, Cargo check, strict Clippy, and bundling pass. macOS/Linux hardware behavior still needs physical testing. Preview builds remain available from `portable-build.yml`.
+Windows USB is the only physically tested configuration, and several newer Windows features are still unverified (see the [hardware test checklist](hardware-test-checklist.md)). The release workflow also publishes macOS and Linux packages after their tests, Cargo check, strict Clippy, and bundling pass. macOS/Linux hardware behavior, permissions and audio endpoints still need physical testing; "implemented" below means the code path exists and builds, not that it has been run on a desktop with a controller. Preview builds are produced by `portable-build.yml` (also run on pull requests).
 
 | Capability | Windows | macOS preview | Ubuntu/Bazzite preview |
 | --- | --- | --- | --- |
 | DualSense HID input, lightbar, adaptive triggers, profile editing | Yes | Code path and build check | Code path and build check |
 | USB four-channel grip audio and controller speaker | Tested on Windows USB | Needs endpoint test | Needs endpoint test |
 | Desktop mouse, keyboard, PC macros, gyro pointer | Yes | Native events; Accessibility permission | Enigo X11 / Wayland / desktop portal; compositor dependent |
-| XInput virtual pad and HidHide | Yes, optional drivers | Not applicable | Pending `uinput`/`uhid` bridge |
+| Virtual gamepad | Xbox 360 via ViGEmBus; HidHide is manual and optional | Not applicable | Implemented via `/dev/uinput` with calibrated axes/triggers, neutral recovery and rumble routing; needs the `uinput` module and the bundled udev rule (`71-controller-uinput.rules`); unverified on hardware |
 | Foreground game matching | Yes | Application name via System Events | X11/XWayland via xprop; pure Wayland may need manual selection |
-| Screen color | Yes | Pending native API | Pending compositor-specific API |
-| System audio capture to grips | Windows WASAPI | Pending CoreAudio | Pending PipeWire |
+| Screen color | Yes (GDI, multi-monitor) | Implemented with ScreenCaptureKit; needs Screen Recording permission; unverified | Implemented through the desktop portal/PipeWire with a consent prompt; compositor dependent; unverified |
+| System audio capture to grips | Windows WASAPI (plus per-game capture on build 20348+) | Implemented with CoreAudio loopback on macOS 14.6+; unverified | Implemented through PulseAudio/PipeWire-pulse; unverified |
+| Background core service | Implemented (Settings); NSIS installer stops it before install/uninstall; not verified with a real installer | Implemented, no installer hook | Implemented, no installer hook |
+| Notifications and logging | Yes; rotating logs in the per-user local data folder | Same | Same |
 
 ## Install previews
 
@@ -24,9 +26,9 @@ No installer can force its HID reports to win over Steam Input or a game's own o
 
 ## Build
 
-The preview workflow runs Rust tests, check, Clippy, and a Tauri bundle on Ubuntu 22.04 and macOS. Linux packages use `tauri.linux.conf.json`; macOS uses `tauri.macos.conf.json`. The macOS bundle includes Intel and Apple Silicon binaries; CI checks both targets and runs native tests on Apple Silicon. Neither preview has an updater feed yet. Use Diagnostics ? Check platform to inspect Linux hidraw access and desktop requirements. Native input errors are reported rather than ignored.
+The preview workflow runs Rust tests, check, Clippy, and a Tauri bundle on Ubuntu 22.04 and macOS. Linux packages use `tauri.linux.conf.json`; macOS uses `tauri.macos.conf.json`. The macOS bundle includes Intel and Apple Silicon binaries; CI checks both targets and runs native tests on Apple Silicon. The release workflow builds signed updater artifacts and one combined feed for AppImage and macOS universal builds when the signing secret is configured; no such release has been published or installed end to end. Debian packages do not self-update. Use Diagnostics ? Check platform to inspect Linux hidraw access and desktop requirements. Native input errors are reported rather than ignored.
 
-The interface uses each platform's shortcut names and modifier keys: Ctrl/Windows key on Windows, Command/Option on macOS, and Ctrl/Super on Linux. Unsupported driver, XInput, screen-capture, system-audio-capture, and updater controls are hidden rather than shown as inactive options.
+The interface uses each platform's shortcut names and modifier keys: Ctrl/Windows key on Windows, Command/Option on macOS, and Ctrl/Super on Linux. Unsupported driver, XInput, screen-capture, system-audio-capture, per-game audio capture and updater controls are hidden rather than shown as inactive options.
 
 Desktop permission controls show separate macOS Accessibility (sending desktop input) and Input Monitoring (recording system shortcuts) status. The app can request access and open the relevant settings; macOS requires the user to grant it. Native shortcut recording runs only after Record is pressed, for up to ten seconds, and Escape cancels it. Common shortcuts and manual modifier buttons work without recording. A physical Mac is still required to verify the permission flow.
 
@@ -38,3 +40,7 @@ Native file playback uses the system file picker, Symphonia decoding and Rubato 
 ## Runtime diagnostics (0.21)
 
 All platforms compile the bounded audio-opening/capture workers, input trace analyzer and software timing checks. Core CPU counters are available on Windows/macOS/Linux; resident memory is currently reported on Windows/Linux. The portable CI also runs the real stdio integration checks in `--no-hid` mode. Physical endpoints and output feel after the scheduling change remain unverified. See [runtime reliability](runtime-reliability.md).
+
+## Linux build dependencies
+
+Ubuntu 22.04 packages needed to build from source (the same list CI uses): `libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libasound2-dev libudev-dev libxkbcommon-dev libpipewire-0.3-dev libdbus-1-dev libclang-dev`. Install the Tauri CLI with `cargo install tauri-cli --version 2.11.1 --locked` to produce bundles. For the virtual gamepad, load the `uinput` module and install `resources/71-controller-uinput.rules`; for hidraw access install `resources/70-controller-dualsense.rules` (the `.deb` installs the latter).

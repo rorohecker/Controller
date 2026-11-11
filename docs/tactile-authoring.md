@@ -32,3 +32,11 @@ Windows, Linux and universal macOS builds are checked in release CI. Actual trig
 ## Seeded comparison trials
 
 Haptics includes a four-trial X/Y comparison for audio conversion modes, with a fixed source excerpt, explicit playback, balanced seeded assignment, 0-5 strength/clarity ratings and export. Preparing a session is silent. Source/controller/settings changes and interrupted playback cancel it. Results include actual playback order/repetitions; no unentered score is generated. See [comparison protocol and limitations](runtime-reliability.md#reproducible-haptic-ab-trials).
+
+## Conversion kinds added after 0.22.0 (unverified on hardware)
+
+Native file conversion also offers a **3-band** mode (`bands:low,mid,high`, each gain 0-2) that splits the track into bass, mid and treble grip layers, and a **Beats** mode that emits short pulses on detected onsets. The system-audio bridge has matching 3-band, onset-pulse and pan-emphasis options (all off by default), a latency preset (low 10 ms, normal 20 ms, safe 40 ms) and a custom preset. **Preview envelope** (`previewEnvelope`) draws the grip output a kind would produce for a file without playing it; it decodes on a worker thread, uses 48 kHz-tuned filters and is representative rather than sample-exact. Whether the new kinds feel good is a subjective, hardware-only judgement and has not been tested. Per-profile lightbar and audio references are described in [daily use](daily-use.md).
+
+## Overall intensity
+
+Vibration > Try it has four overall intensity levels (Soft, Normal, Strong, Max) that set the grip output ceiling and the sustained-drive (thermal) cap. **Normal is the default** and is the behaviour earlier versions shipped, so nothing changes for existing users; Strong and Max are opt-in. Measured against Soft the levels are roughly 1x, 2x, 3x and 4.7x in RMS. Strong and Max are more intense and can warm the grips on long effects; thermal limiting still applies at every level (the limiter tracks mean |x|, not power, and a continuous Max drive settles at about twice the RMS of Normal). Changing the level mid-effect ramps over about 15 ms instead of stepping. Over Bluetooth the 6-bit PCM range is already near full scale at Normal, so Strong and Max step the peak only by a few counts. Not verified on all hardware.

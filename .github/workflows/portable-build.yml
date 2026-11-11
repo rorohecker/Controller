@@ -1,13 +1,77 @@
-name: macOS and Linux preview builds
+name: Build and checks
 
 on:
   push:
     branches: [main, port-preview]
+  pull_request:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      windows-checks:
+        description: Run the Windows lint/test job (the release workflow runs its own)
+        type: boolean
+        default: true
+      tag:
+        description: Release tag to compare with the package versions
+        type: string
+        default: ''
+
+# Called from release.yml, github.ref is the tag, so the group name must differ from the caller's.
+concurrency:
+  group: portable-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
+  lint:
+    name: Format and version consistency
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          components: rustfmt
+      - name: Cargo.toml and tauri.conf.json versions agree
+        run: python scripts/check_versions.py ${{ inputs.tag && format('--tag {0}', inputs.tag) || '' }}
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
+
+  windows:
+    name: Windows lint and tests
+    if: inputs.windows-checks != false
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Strict Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Rust tests
+        run: cargo test --workspace --all-targets
+      - name: Controller-free core checks
+        run: |
+          cargo build --bin controller
+          python tests/run_core_checks.py
+
   portable:
+    name: ${{ matrix.os }} bundle
     strategy:
       fail-fast: false
       matrix:
@@ -19,13 +83,20 @@ jobs:
             bundle: dmg
             config: tauri.macos.conf.json
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     env:
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.98.1
+          components: clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Linux build dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libasound2-dev libudev-dev libxkbcommon-dev libpipewire-0.3-dev libdbus-1-dev libclang-dev
@@ -41,7 +112,13 @@ jobs:
       - name: Controller-free core checks
         run: |
           cargo build --bin controller
-          python3 tests/run_core_checks.py target/debug/controller
+          python tests/run_core_checks.py target/debug/controller
+      - name: Browser UI smoke
+        if: runner.os == 'Linux'
+        run: |
+          python -m pip install -r tests/requirements.txt
+          python -m playwright install --with-deps chromium
+          python tests/run_ui_checks.py
       - name: Add Intel and Apple Silicon targets
         if: runner.os == 'macOS'
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin

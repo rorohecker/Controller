@@ -1,8 +1,8 @@
 # Compatibility and test record
 
-## Current software coverage: 0.21.1
+## Current software coverage: 0.23.0 (release candidate)
 
-Windows USB input, RGB/player lights, desktop controls and speaker/grip playback have prior physical test reports. This batch changes scheduling and presentation; physical output has not been revalidated for 0.21.1. macOS/Linux builds remain previews until their endpoints, permissions and controller behavior are physically checked. Bazzite has no dedicated runtime test in CI.
+Windows USB input, RGB/player lights, desktop controls and speaker/grip playback have prior physical test reports (the last on 27 October 2026, before 0.21). Nothing since has been revalidated on a controller: 0.21.1 changed scheduling and presentation, 0.22.0 added output calibration, and the uncommitted software-completion pass (see [what changed](docs/software-completion-changes.md)) added many hardware-visible features (extra adaptive-trigger modes, microphone LED, volumes, lightbar brightness and animations, Bluetooth grip PCM, background core, Edge writer, Linux virtual pad, portable screen colour and capture) that are all **unverified on hardware**. Use the [hardware test checklist](docs/hardware-test-checklist.md) to record results. macOS/Linux builds remain previews until their endpoints, permissions and controller behavior are physically checked. Bazzite has no dedicated runtime test in CI.
 
 | Area | Automated coverage | Physical limit |
 | --- | --- | --- |
@@ -10,9 +10,9 @@ Windows USB input, RGB/player lights, desktop controls and speaker/grip playback
 | Runtime | Nonblocking startup/cancellation, bounded workers/queues, stale callback isolation, preview fallback, scoped Stop and shutdown with stdin open | OS HID calls still have platform-dependent behavior |
 | UI/QoL | All tabs/scaling, rendered slider alignment, visible/hidden updates, background PCM, idle draws, source/state transitions | Headless Chromium is not a native desktop visual/hardware test |
 | Haptic comparison | Deterministic balanced assignment, explicit playback/completion, scores, interruption/cancellation and export | Subjective scores require a person; no new feel ratings are fabricated |
-| Platforms | Release CI runs Rust tests/check/strict Clippy and bundles Windows, macOS universal and Linux; core integration checks disable HID | CI does not certify Bluetooth feel, game compatibility, platform permissions or audio endpoints |
+| Platforms | CI (pull requests, `main` and releases) runs rustfmt, strict Clippy and Rust tests on Windows, Linux and macOS, bundles Linux and macOS universal, runs the browser gate on Linux, and releases bundle Windows; core integration checks disable HID | CI does not certify Bluetooth feel, game compatibility, platform permissions or audio endpoints |
 
-Current [implementation coverage](docs/implementation-coverage.md) and feature boundaries are in [platform support](docs/platform-support.md), [integrations](docs/platform-integrations.md), [hardware/research](docs/hardware-and-research.md) and [runtime checks](docs/runtime-reliability.md). Driver/output calibration remains backlog item 46. Native relay, Bluetooth haptic streaming and Edge draft support remain experimental.
+Current [implementation coverage](docs/implementation-coverage.md) and feature boundaries are in [platform support](docs/platform-support.md), [integrations](docs/platform-integrations.md), [hardware/research](docs/hardware-and-research.md) and [runtime checks](docs/runtime-reliability.md). Driver/output calibration (backlog item 46) was completed in 0.22.0 as app-level correction before the Windows virtual Xbox pad; there is no kernel or firmware calibration. The native provider bridge, Bluetooth haptic streaming and the Edge profile writer remain experimental: they build and pass software tests but have not been exercised on physical hardware or with an installed provider.
 
 ## Historical test notes
 
@@ -37,8 +37,8 @@ Last checked: 26 October 2026 on Windows 11. This page records observed results 
 | Setup | Input | Triggers and lightbar | Haptic audio | Game bridge |
 | --- | --- | --- | --- | --- |
 | Standard DualSense, USB (`054C:0CE6`) | Live checks: 231–237 reports/s, zero observed sequence gaps or rejected reports; user confirmed both sticks, touch, and triggers on the live map | User saw fixed lightbar color and felt low trigger resistance; experimental Bow reports were accepted, and Reset sent a neutral report | Windows opened the four-channel endpoint and requested PCM frames; user felt a haptic preview, but intensity and latency were not measured | Synthetic Forza Dash and local JSON packets decoded and produced UI telemetry |
-| Standard DualSense, Bluetooth | Full and short input layouts have unit tests; no live Bluetooth pad was available for this record | `0x31` output framing and CRC have unit tests; no live write check | Motor rumble is the app fallback. The separate `0x32` advanced-haptics encoder is test-only | No live game check |
-| DualSense Edge (`054C:0DF2`) | Edge button bits and identity have unit tests; no Edge hardware check | Firmware-dependent output behavior needs a physical Edge check | No Edge endpoint check | No live game check |
+| Standard DualSense, Bluetooth | Full and short input layouts have unit tests; no live Bluetooth pad was available for this record | `0x31` output framing and CRC have unit tests; no live write check | Motor rumble is the app fallback. Opt-in `0x32` advanced-haptics frames (Diagnostics lab, sustained Bluetooth grip audio) are implemented and never tested on a Bluetooth pad | No live game check |
+| DualSense Edge (`054C:0DF2`) | Edge button bits and identity have unit tests; no Edge hardware check | Firmware-dependent output behavior needs a physical Edge check; the opt-in Edge profile writer has never run on an Edge | No Edge endpoint check | No live game check |
 
 The optional XInput bridge needs an installed ViGEmBus driver. Its command path builds, but a three-game playability check has not been completed. Forza Motorsport 2023 and Horizon 4/5 packet layouts have synthetic decoder tests; no live racing session was used for this record.
 
