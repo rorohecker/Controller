@@ -1,6 +1,6 @@
 # Compatibility and test record
 
-## Current software coverage: 0.23.0 (release candidate)
+## Current software coverage: 0.23.0
 
 Windows USB input, RGB/player lights, desktop controls and speaker/grip playback have prior physical test reports (the last on 27 October 2026, before 0.21). Nothing since has been revalidated on a controller: 0.21.1 changed scheduling and presentation, 0.22.0 added output calibration, and the uncommitted software-completion pass (see [what changed](docs/software-completion-changes.md)) added many hardware-visible features (extra adaptive-trigger modes, microphone LED, volumes, lightbar brightness and animations, Bluetooth grip PCM, background core, Edge writer, Linux virtual pad, portable screen colour and capture) that are all **unverified on hardware**. Use the [hardware test checklist](docs/hardware-test-checklist.md) to record results. macOS/Linux builds remain previews until their endpoints, permissions and controller behavior are physically checked. Bazzite has no dedicated runtime test in CI.
 
