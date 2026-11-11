@@ -83,6 +83,7 @@ pub struct XInputBridge {
     enabled: bool,
     status: XInputStatus,
     last_error: Option<String>,
+    extras: crate::virtual_gamepad::PadExtras,
     #[cfg(any(windows, target_os = "linux"))]
     inner: Option<NativePad>,
 }
@@ -93,6 +94,7 @@ impl Default for XInputBridge {
             enabled: false,
             status: XInputStatus::Disabled,
             last_error: None,
+            extras: Default::default(),
             #[cfg(any(windows, target_os = "linux"))]
             inner: None,
         }
@@ -100,6 +102,14 @@ impl Default for XInputBridge {
 }
 
 impl XInputBridge {
+    /// Map touchpad click / mic button onto virtual pad buttons (default: unmapped).
+    pub fn set_extras(&mut self, extras: crate::virtual_gamepad::PadExtras) {
+        self.extras = extras;
+    }
+    #[allow(dead_code)]
+    pub fn extras(&self) -> crate::virtual_gamepad::PadExtras {
+        self.extras
+    }
     pub fn active(&self) -> bool {
         self.status == XInputStatus::Active
     }
@@ -204,6 +214,15 @@ impl XInputBridge {
         if self.status != XInputStatus::Active {
             return None;
         }
+        #[cfg(any(windows, target_os = "linux"))]
+        let merged;
+        #[cfg(any(windows, target_os = "linux"))]
+        let input = if self.extras.is_default() {
+            input
+        } else {
+            merged = self.extras.apply(input);
+            &merged
+        };
         #[cfg(any(windows, target_os = "linux"))]
         if let Some(pad) = self.inner.as_mut()
             && let Err(error) = pad.update(input)

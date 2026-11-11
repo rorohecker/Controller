@@ -1,3 +1,5 @@
+// Only `PadButton`/`PadExtras` are used on Windows; the uinput encoder and rumble bank are Linux.
+#![cfg_attr(not(any(target_os = "linux", test)), allow(dead_code))]
 //! Portable gamepad math. Linux performs no device I/O until explicitly enabled.
 use aftertouch_protocol::InputState;
 use std::time::{Duration, Instant};
@@ -37,6 +39,70 @@ impl Report {
                 i32::from(input.buttons[13] > 0.5) - i32::from(input.buttons[12] > 0.5),
             ],
         }
+    }
+}
+
+/// A virtual-pad button that a DualSense-only input (touchpad click, mic button) can drive.
+/// The value is the DualSense button index it is merged into before encoding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PadButton {
+    A,
+    B,
+    X,
+    Y,
+    Lb,
+    Rb,
+    Back,
+    Start,
+    LeftStick,
+    RightStick,
+    Guide,
+}
+// Only the Windows and Linux encoders merge extras; macOS (including its test build) never calls these.
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+impl PadButton {
+    pub fn source_index(self) -> usize {
+        match self {
+            Self::A => 0,
+            Self::B => 1,
+            Self::X => 2,
+            Self::Y => 3,
+            Self::Lb => 4,
+            Self::Rb => 5,
+            Self::Back => 8,
+            Self::Start => 9,
+            Self::LeftStick => 10,
+            Self::RightStick => 11,
+            Self::Guide => 16,
+        }
+    }
+}
+/// Optional extra virtual-pad bindings. Default: both unmapped.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PadExtras {
+    pub touchpad_click: Option<PadButton>,
+    pub mic: Option<PadButton>,
+}
+// Only the Windows and Linux encoders merge extras; macOS (including its test build) never calls these.
+#[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+impl PadExtras {
+    pub fn is_default(&self) -> bool {
+        self.touchpad_click.is_none() && self.mic.is_none()
+    }
+    /// A copy of `input` with touchpad click (button 17) and mic (button 18) merged into
+    /// their mapped pad buttons. Both encoders (ViGEm and uinput) read the result.
+    pub fn apply(&self, input: &InputState) -> InputState {
+        let mut merged = input.clone();
+        for (source, target) in [(17, self.touchpad_click), (18, self.mic)] {
+            if let Some(target) = target
+                && input.buttons[source] > 0.5
+            {
+                merged.buttons[target.source_index()] = 1.0;
+            }
+        }
+        merged
     }
 }
 

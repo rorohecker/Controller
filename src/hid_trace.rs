@@ -303,6 +303,8 @@ pub fn analyze(trace: &Trace) -> Result<Analysis, String> {
                     (Some("USB"), 64, Some(1))
                         | (Some("Bluetooth"), 78, Some(0x31))
                         | (Some("Bluetooth"), 10, Some(1))
+                        // Windows hidapi pads the 10-byte short report to 78 bytes.
+                        | (Some("Bluetooth"), 78, Some(1))
                 );
                 if let Some(input) = shape.then(|| protocol::parse_input(bytes)).flatten() {
                     result.valid_reports += 1;

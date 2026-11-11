@@ -252,7 +252,7 @@ fn scan(roots: Vec<PathBuf>) -> Vec<Game> {
     games
 }
 
-pub fn installed() -> Vec<Game> {
+fn steam_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Some(path) = std::env::var_os("STEAM_PATH") {
         roots.push(PathBuf::from(path));
@@ -271,12 +271,134 @@ pub fn installed() -> Vec<Game> {
             roots.push(PathBuf::from(path).join("Steam"));
         }
     }
-    scan(roots)
+    roots
+}
+
+pub fn installed() -> Vec<Game> {
+    scan(steam_roots())
+}
+
+/// Steam Input state relevant to a DualSense. Only read-only file/process inspection is used.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct InputStatus {
+    /// A Steam install folder with a config.vdf was found.
+    pub installed: bool,
+    /// Steam client process is running; `None` when this platform cannot tell.
+    pub running: Option<bool>,
+    /// Value of Steam's global "PlayStation Configuration Support"; `None` when unset or unknown.
+    pub playstation_support: Option<bool>,
+    /// True when Steam is running with PlayStation support on, so it can grab the controller.
+    pub may_conflict: bool,
+    pub note: String,
+}
+
+fn find_key<'a>(vdf: &'a Vdf, key: &str, depth: u8) -> Option<&'a str> {
+    if depth > 8 {
+        return None;
+    }
+    let Vdf::Object(map) = vdf else {
+        return None;
+    };
+    for (name, value) in map {
+        if name.eq_ignore_ascii_case(key)
+            && let Some(text) = value.text()
+        {
+            return Some(text);
+        }
+    }
+    map.values().find_map(|v| find_key(v, key, depth + 1))
+}
+
+fn playstation_support_in(config: &Vdf) -> Option<bool> {
+    match find_key(config, "SteamController_PSSupport", 0)?.trim() {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => None,
+    }
+}
+
+fn steam_running() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        use std::mem::size_of;
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, INVALID_HANDLE_VALUE},
+            System::Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+                TH32CS_SNAPPROCESS,
+            },
+        };
+        let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+        entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+        let mut found = false;
+        let mut has_entry = unsafe { Process32FirstW(snapshot, &mut entry) } != 0;
+        while has_entry && !found {
+            let end = entry
+                .szExeFile
+                .iter()
+                .position(|&c| c == 0)
+                .unwrap_or(entry.szExeFile.len());
+            found =
+                String::from_utf16_lossy(&entry.szExeFile[..end]).eq_ignore_ascii_case("steam.exe");
+            has_entry = unsafe { Process32NextW(snapshot, &mut entry) } != 0;
+        }
+        unsafe { CloseHandle(snapshot) };
+        Some(found)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let home = PathBuf::from(std::env::var_os("HOME")?);
+        let pid = fs::read_to_string(home.join(".steam/steam.pid")).ok()?;
+        let pid: u32 = pid.trim().parse().ok()?;
+        Some(Path::new(&format!("/proc/{pid}")).exists())
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
+    {
+        None
+    }
+}
+
+pub fn input_status() -> InputStatus {
+    let config = steam_roots()
+        .into_iter()
+        .map(|root| root.join("config").join("config.vdf"))
+        .find_map(|path| read(&path));
+    let running = steam_running();
+    let playstation_support = config.as_ref().and_then(playstation_support_in);
+    let may_conflict = running == Some(true) && playstation_support == Some(true);
+    let note = match (config.is_some(), running, playstation_support) {
+        (false, _, _) => "Steam was not found.".into(),
+        (_, _, Some(true)) if running == Some(true) => "Steam is running with PlayStation Configuration Support on. Steam Input can take over the controller and compete with CONTROLLER; turn the option off in Steam > Settings > Controller, or use per-game Steam Input off.".into(),
+        (_, _, Some(true)) => "Steam has PlayStation Configuration Support on. It only matters while Steam is running.".into(),
+        (_, _, Some(false)) => "Steam Input PlayStation support is off.".into(),
+        _ => "Steam's PlayStation Configuration Support is not set in config.vdf (per-game or per-controller overrides are not inspected).".into(),
+    };
+    InputStatus {
+        installed: config.is_some(),
+        running,
+        playstation_support,
+        may_conflict,
+        note,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn detects_playstation_support_flag_case_insensitively() {
+        let on = parse("\"InstallConfigStore\" { \"Software\" { \"Valve\" { \"Steam\" { \"steamcontroller_pssupport\" \"1\" } } } }").unwrap();
+        assert_eq!(playstation_support_in(&on), Some(true));
+        let off = parse("\"InstallConfigStore\" { \"SteamController_PSSupport\" \"0\" }").unwrap();
+        assert_eq!(playstation_support_in(&off), Some(false));
+        let unset = parse("\"InstallConfigStore\" { \"Other\" \"1\" }").unwrap();
+        assert_eq!(playstation_support_in(&unset), None);
+    }
     #[test]
     fn parses_steam_escapes_and_rejects_truncated_documents() {
         let doc = parse(

@@ -48,6 +48,8 @@ impl ScreenSampler {
             *latest = None;
         }
     }
+    /// The portal picks the source; monitor selection is a no-op on this backend.
+    pub fn set_monitor(&self, _index: u32) {}
     pub fn take(&self) -> Option<Result<[u8; 3], String>> {
         self.shared.latest.lock().ok()?.take()
     }

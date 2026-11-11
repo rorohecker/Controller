@@ -1,7 +1,8 @@
 [package]
 name = "controller"
-version = "0.22.0"
+version = "0.23.0-rc.1"
 edition = "2024"
+rust-version = "1.89"
 autobins = false
 autoexamples = false
 build = "build.rs"
@@ -19,16 +20,19 @@ aftertouch-protocol = { path = "protocol" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 base64 = "0.22"
+getrandom = "0.3.4"
 rhai = { version = "1.27.0", features = ["sync"] }
 tauri = { version = "2.12.4", default-features = false, features = ["wry", "common-controls-v6", "tray-icon"] }
 tauri-plugin-updater = "2.13.3"
 tauri-plugin-autostart = "2.5.1"
 cpal = "0.18.2"
-tauri-plugin-single-instance = "2"
+tauri-plugin-single-instance = "~2.5"
 arc-swap = "1.9"
+log = "0.4"
 crossbeam-queue = "0.3"
 rubato = "0.16"
-tauri-plugin-dialog = "2"
+tauri-plugin-dialog = "~2.8"
+tauri-plugin-notification = "2.3"
 symphonia = { version = "0.5.5", features = ["aac", "mp3", "isomp4", "alac", "flac", "ogg", "pcm", "vorbis", "wav", "aiff"] }
 
 [target.'cfg(windows)'.dependencies]

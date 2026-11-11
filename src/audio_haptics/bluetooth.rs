@@ -51,7 +51,7 @@ impl Output {
             .spawn(move || {
                 let _done = Completion(complete);
                 let mut position = 0;
-                let mut state = RenderState::default();
+                let mut state = RenderState::with_duty(shared.duty_load());
                 let mut converter = Converter::default();
                 let mut data = [0.0; 512 * 4];
                 let mut next = Instant::now();
@@ -64,7 +64,7 @@ impl Output {
                     render_output(&mut data, &shared, &mut position, &mut state);
                     let packet = Packet {
                         created: Instant::now(),
-                        pcm: converter.convert(&data),
+                        pcm: converter.convert(&data, state.ceiling),
                     };
                     if cancel.load(Ordering::Acquire) {
                         break;
@@ -91,6 +91,9 @@ impl Output {
             dropped,
             underruns: 0,
         })
+    }
+    pub fn dropped_total(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
     pub fn take(&mut self, now: Instant) -> Result<Option<[i8; 64]>, String> {
         if self.done.load(Ordering::Acquire) {
@@ -119,6 +122,28 @@ impl Drop for Output {
         self.stop.store(true, Ordering::Release);
     }
 }
+/// Knee-input at which each level's full-strength peak (0.928 x its ceiling) lands, as a
+/// multiple of `ceiling`: the quantiser reference is `ceiling * BT_REFERENCE[level]`.
+/// Soft and Normal reproduce the shipped mapping exactly (reference 0.32). Strong and
+/// Max only have the last few counts of the 6-bit +/-31 range above Normal, so they step
+/// peak by a smaller amount than on USB; they are folded in with the same soft knee.
+const BT_REFERENCE: [f32; 4] = [2.0, 1.0, 0.889, 0.715];
+/// Maps grip drive to the +/-31 PCM range relative to the selected output `ceiling`
+/// (value / reference, soft knee, x 31). Never exceeds +/-31.
+fn quantize(value: f64, ceiling: f32) -> i8 {
+    if !value.is_finite() {
+        return 0;
+    }
+    let reference = LEVEL_CEILINGS
+        .iter()
+        .position(|c| (*c - ceiling).abs() < 1e-6)
+        .map_or(ceiling, |i| ceiling * BT_REFERENCE[i])
+        .max(0.01);
+    let x = (value / f64::from(reference)) as f32;
+    (f64::from(knee_curve(x).clamp(-1.0, 1.0)) * 31.0)
+        .round()
+        .clamp(-31.0, 31.0) as i8
+}
 #[derive(Default)]
 struct Converter {
     low: [[f32; 2]; 2],
@@ -126,7 +151,7 @@ struct Converter {
     high: [f32; 2],
 }
 impl Converter {
-    fn convert(&mut self, data: &[f32; 512 * 4]) -> [i8; 64] {
+    fn convert(&mut self, data: &[f32; 512 * 4], ceiling: f32) -> [i8; 64] {
         let mut result = [0; 64];
         for (index, block) in data.as_chunks::<64>().0.iter().enumerate() {
             let mut sum = [0.0f64; 2];
@@ -145,9 +170,7 @@ impl Converter {
                 }
             }
             for side in 0..2 {
-                result[index * 2 + side] = ((sum[side] / 16.0).clamp(-0.25, 0.25) * 127.0)
-                    .round()
-                    .clamp(-31.0, 31.0) as i8;
+                result[index * 2 + side] = quantize(sum[side] / 16.0, ceiling);
             }
         }
         result
@@ -156,6 +179,44 @@ impl Converter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Full-strength drive peaks at 0.928 x ceiling (knee of 1.0) for every level.
+    fn full_peak(level: usize) -> i8 {
+        quantize(
+            f64::from(knee_curve(1.0) * LEVEL_CEILINGS[level]),
+            LEVEL_CEILINGS[level],
+        )
+    }
+    #[test]
+    fn each_level_maps_its_full_strength_peak_to_a_stepped_pcm_value() {
+        // Soft and Normal are the shipped mapping; Strong and Max step above Normal.
+        assert_eq!(
+            [full_peak(0), full_peak(1), full_peak(2), full_peak(3)],
+            [14, 28, 29, 31]
+        );
+        // Below the knee the mapping is exactly the old linear one against 0.32.
+        assert_eq!(quantize(f64::from(MAX_AMPLITUDE) / 2.0, MAX_AMPLITUDE), 16);
+        assert_eq!(quantize(0.08, LEVEL_CEILINGS[0]), 8);
+        assert_eq!(quantize(-0.08, LEVEL_CEILINGS[0]), -8);
+        assert_eq!(quantize(0.0, MAX_AMPLITUDE), 0);
+        assert_eq!(quantize(5.0, MAX_AMPLITUDE), 31);
+        assert_eq!(quantize(f64::NAN, MAX_AMPLITUDE), 0);
+    }
+    #[test]
+    fn quantize_is_monotonic_bounded_and_covers_every_ceiling() {
+        for ceiling in LEVEL_CEILINGS {
+            let mut last = i8::MIN;
+            for step in 0..=1200 {
+                let value = f64::from(step) / 1000.0 - 0.6;
+                let q = quantize(value, ceiling);
+                assert!((-31..=31).contains(&q) && q >= last);
+                last = q;
+            }
+            assert!(quantize(f64::from(ceiling), ceiling) <= 31);
+            assert!(quantize(-f64::from(ceiling), ceiling) >= -31);
+        }
+        // The same absolute drive is quieter at a higher level's reference.
+        assert!(quantize(0.2, 0.32) > quantize(0.2, 0.75));
+    }
     #[test]
     fn downsampling_preserves_sides_limits_and_finite_output() {
         let mut data = [0.0; 512 * 4];
@@ -166,19 +227,22 @@ mod tests {
             frame[3] = -1.0;
         }
         let mut convert = Converter::default();
-        let out = convert.convert(&data);
+        let out = convert.convert(&data, MAX_AMPLITUDE);
         assert!(
             out.as_chunks::<2>()
                 .0
                 .iter()
                 .all(|p| (0..=32).contains(&p[0]) && (-32..=0).contains(&p[1]))
         );
-        assert!(out[62] >= 30 && out[63] <= -30);
+        // A unit step decays through the 0.9974 high-pass to about 0.28 by the last block,
+        // which the full-range quantiser (0.32 -> 31) maps to 27. The old test expected 30+
+        // because the previous gain saturated at 0.25.
+        assert!(out[62] >= 25 && out[63] <= -25);
         data.fill(f32::NAN);
         for _ in 0..4 {
-            convert.convert(&data);
+            convert.convert(&data, MAX_AMPLITUDE);
         }
-        assert_eq!(convert.convert(&data), [0; 64]);
+        assert_eq!(convert.convert(&data, MAX_AMPLITUDE), [0; 64]);
     }
     #[test]
     fn pacing_drops_stale_data_without_catchup_and_underrun_sends_silence() {

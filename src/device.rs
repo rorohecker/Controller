@@ -33,6 +33,19 @@ use base64::Engine;
 use hidapi::{BusType, HidApi, HidDevice};
 use serde::Deserialize;
 use serde_json::json;
+#[cfg(windows)]
+static GUI_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub fn set_gui_pid(pid: u32) {
+    #[cfg(windows)]
+    GUI_PID.store(pid, std::sync::atomic::Ordering::Release);
+    #[cfg(not(windows))]
+    let _ = pid;
+}
+#[cfg(windows)]
+fn gui_pid() -> Option<u32> {
+    let pid = GUI_PID.load(std::sync::atomic::Ordering::Acquire);
+    (pid != 0).then_some(pid)
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase")]
@@ -112,6 +125,10 @@ pub enum DeviceCommand {
     SetControlProfile {
         settings: ControlProfile,
     },
+    /// Slow background gyro bias tracking while the controller is perfectly still.
+    SetAutoBias {
+        enabled: bool,
+    },
     SetMotionBias {
         #[serde(rename = "biasDps")]
         bias_dps: [f32; 3],
@@ -163,9 +180,18 @@ pub enum DeviceCommand {
     },
     SetScreenLightbar {
         enabled: bool,
+        /// Monitor index to sample (0 = primary). Omitted keeps the current choice.
+        #[serde(default)]
+        monitor: Option<u32>,
     },
     SetTouchMouse {
         enabled: bool,
+        /// Touchpad pointer gain, 0.2..=3.0. Omitted keeps the current value.
+        #[serde(default)]
+        sensitivity: Option<f32>,
+        /// Pointer acceleration, 0..=1. Omitted keeps the current value.
+        #[serde(default)]
+        acceleration: Option<f32>,
     },
     SetTouchGestures {
         enabled: bool,
@@ -175,10 +201,11 @@ pub enum DeviceCommand {
         #[serde(default = "default_sens")]
         sensitivity: f32,
         #[serde(default = "default_axis")]
+        #[serde(rename = "yawScale", alias = "yaw_scale")]
         yaw_scale: f32,
-        #[serde(default = "default_axis")]
+        #[serde(default = "default_axis", rename = "pitchScale", alias = "pitch_scale")]
         pitch_scale: f32,
-        #[serde(default)]
+        #[serde(default, rename = "invertY", alias = "invert_y")]
         invert_y: bool,
         #[serde(default = "default_activation")]
         activation: String,
@@ -188,6 +215,24 @@ pub enum DeviceCommand {
         deadzone: u16,
         #[serde(default = "default_gyro_smoothing")]
         smoothing: f32,
+        /// "hold" (default), "disable" (ratchet) or "toggle".
+        #[serde(default = "default_gyro_gate")]
+        gate: String,
+        /// Gyro pauses while the right stick is deflected past this radius (0 = never).
+        #[serde(default, rename = "stickOffThreshold", alias = "stick_off_threshold")]
+        stick_off_threshold: f32,
+        /// Smoothing applies only below this speed in deg/s (0 = always).
+        #[serde(default, rename = "smoothThreshold", alias = "smooth_threshold")]
+        smooth_threshold: f32,
+        /// Extra gain on fast turns, 0..=2 (0 = linear).
+        #[serde(default)]
+        acceleration: f32,
+        /// Speed in deg/s where acceleration starts (0 = 75).
+        #[serde(default, rename = "accelThreshold", alias = "accel_threshold")]
+        accel_threshold: f32,
+        /// Let flick stick run while gyro aim itself is off.
+        #[serde(default, rename = "flickWithoutGyro", alias = "flick_without_gyro")]
+        flick_without_gyro: bool,
     },
     SetRemap {
         enabled: bool,
@@ -205,6 +250,25 @@ pub enum DeviceCommand {
         click_threshold: f32,
         pointer_sensitivity: f32,
         reverse_scroll: bool,
+        /// PC pointer acceleration, 0..=1.
+        #[serde(default, alias = "pointerAcceleration")]
+        pointer_acceleration: f32,
+        /// Left stick in PC mode: "off", "mouse" or "wasd".
+        #[serde(default, alias = "leftStick")]
+        left_stick: crate::input_map::LeftStickMode,
+    },
+    /// Remap key hold and inter-key gap in milliseconds (15..=500 / 5..=500).
+    SetRemapTiming {
+        #[serde(rename = "holdMs", alias = "hold_ms")]
+        hold_ms: u16,
+        #[serde(rename = "gapMs", alias = "gap_ms")]
+        gap_ms: u16,
+    },
+    /// Map touchpad click / mic button onto virtual-pad buttons (A B X Y Lb Rb Back
+    /// Start LeftStick RightStick Guide); null leaves it unmapped.
+    SetPadExtras {
+        #[serde(flatten)]
+        extras: crate::virtual_gamepad::PadExtras,
     },
     SetCalibration {
         calibration: InputCalibration,
@@ -212,6 +276,7 @@ pub enum DeviceCommand {
         measuring: bool,
     },
     ReloadOutputCalibration {
+        #[serde(rename = "controllerId", alias = "controller_id")]
         controller_id: String,
     },
     SetXinput {
@@ -262,9 +327,55 @@ pub enum DeviceCommand {
     SetAudioBridge {
         enabled: bool,
         gain: f32,
+        /// Fixed preset name or "custom" (see SetBridgeCustom).
         preset: String,
         #[serde(default)]
         source: CaptureSource,
+    },
+    /// Bridge latency: "low" 10 ms, "normal" 20 ms, "safe" 40 ms.
+    SetBridgeLatency {
+        value: String,
+    },
+    /// Overall intensity: "soft", "normal", "strong" or "max" grip output ceiling.
+    SetHapticOutputLevel {
+        level: String,
+    },
+    /// Parameters of the "custom" bridge preset; live while that preset runs.
+    SetBridgeCustom {
+        cutoff: f32,
+        bass: f32,
+        transient: f32,
+        gate: f32,
+    },
+    /// Three-band mode, onset pulses and pan emphasis for the bridge.
+    SetBridgeOptions {
+        /// "standard" or "threeBand".
+        #[serde(default = "default_bridge_mode")]
+        mode: String,
+        #[serde(
+            default = "default_band_gains",
+            rename = "bandGains",
+            alias = "band_gains"
+        )]
+        band_gains: [f32; 3],
+        #[serde(default)]
+        onset: f32,
+        #[serde(default, rename = "panEmphasis", alias = "pan_emphasis")]
+        pan_emphasis: f32,
+    },
+    /// Re-attach to a restarted captured app for up to 30 s (next capture).
+    SetProcessReattach {
+        enabled: bool,
+    },
+    /// Waveform preview of a conversion kind for a file; answered with an `envelope`
+    /// event. Runs on a worker thread.
+    PreviewEnvelope {
+        path: String,
+        kind: String,
+        #[serde(default = "default_envelope_points")]
+        points: usize,
+        #[serde(default, alias = "requestId")]
+        id: u64,
     },
     SetTelemetry {
         enabled: bool,
@@ -298,6 +409,46 @@ pub enum DeviceCommand {
     },
     SetLowBatteryAlert {
         enabled: bool,
+    },
+    /// Warning and critical battery levels (percent) for the low-battery alert.
+    SetLowBatteryThresholds {
+        warn: u8,
+        critical: u8,
+    },
+    /// Unverified-on-hardware trigger modes; a `None` side is left unchanged.
+    SetAdaptiveTrigger {
+        #[serde(default)]
+        left: Option<protocol::ExtraTrigger>,
+        #[serde(default)]
+        right: Option<protocol::ExtraTrigger>,
+    },
+    /// Microphone LED mode. UNVERIFIED on hardware: report layout is from community
+    /// documentation and has not been confirmed on a physical controller.
+    SetMicrophoneLed {
+        mode: u8,
+    },
+    /// Headphone / speaker / microphone volumes. UNVERIFIED on hardware.
+    SetAudioVolumes {
+        #[serde(default)]
+        headphone: Option<u8>,
+        #[serde(default)]
+        speaker: Option<u8>,
+        #[serde(default)]
+        microphone: Option<u8>,
+    },
+    /// Lightbar brightness and setup. UNVERIFIED on hardware.
+    SetLedBrightness {
+        #[serde(default)]
+        brightness: Option<u8>,
+        #[serde(default, rename = "lightbarSetup")]
+        lightbar_setup: Option<u8>,
+    },
+    SetLightbarAnimation {
+        mode: String,
+        #[serde(default)]
+        rgb: Option<[u8; 3]>,
+        #[serde(default, rename = "periodMs")]
+        period_ms: Option<u32>,
     },
     SetHapticTimer {
         seconds: u32,
@@ -359,6 +510,9 @@ impl DeviceCommand {
                 | Self::SetGyroAim { enabled: false, .. }
                 | Self::SetUiFocused { .. }
                 | Self::SetPcMode { .. }
+                | Self::SetRemapTiming { .. }
+                | Self::SetPadExtras { .. }
+                | Self::PreviewEnvelope { .. }
                 | Self::StopMacros
                 | Self::StopEffectClip { .. }
                 | Self::StopLinkExperiment
@@ -482,6 +636,59 @@ pub struct RemapBindingDto {
     pub launch_args: Vec<String>,
     #[serde(default)]
     pub program: Option<crate::macros::Program>,
+    /// What pressing a program button does while it is running (PC mode only).
+    #[serde(default, rename = "programMode", alias = "program_mode")]
+    pub program_mode: Option<crate::input_map::ProgramMode>,
+    /// Layer modifiers, long-press / double-tap triggers, turbo and consume.
+    #[serde(flatten)]
+    pub extras: crate::input_map::RemapExtras,
+}
+
+impl RemapBindingDto {
+    /// Distinct bindings differ in button, layer or trigger.
+    fn identity(&self) -> (u8, Vec<u8>, u16, u16) {
+        let mut modifiers: Vec<u8> = self
+            .modifier
+            .into_iter()
+            .chain(self.extras.modifiers.iter().copied())
+            .collect();
+        modifiers.sort_unstable();
+        (
+            self.button,
+            modifiers,
+            self.extras.long_press_ms,
+            self.extras.double_tap_ms,
+        )
+    }
+    fn into_binding(self, modifier: Option<u8>) -> RemapBinding {
+        self.extras.apply(RemapBinding {
+            button: self.button,
+            vk: self.vk,
+            modifier,
+            behavior: RemapBehavior::from_label(&self.behavior).unwrap_or(RemapBehavior::Hold),
+            sequence: self.sequence,
+            chord: self.chord,
+            ..Default::default()
+        })
+    }
+}
+
+/// Sequence/chord rules shared by PC shortcut and remap bindings.
+fn macro_fields_valid(b: &RemapBindingDto) -> bool {
+    let is_macro = b.behavior == "macro";
+    let sequence_ok = if is_macro {
+        !b.sequence.is_empty() && b.sequence.len() <= 5 && b.chord.is_empty()
+    } else {
+        b.sequence.is_empty()
+    };
+    sequence_ok
+        && b.chord.len() <= 8
+        && b.chord
+            .iter()
+            .all(|&vk| crate::input_map::supported_key(vk))
+        && b.sequence
+            .iter()
+            .all(|&vk| crate::input_map::supported_key(vk))
 }
 
 fn default_remap_behavior() -> String {
@@ -512,6 +719,18 @@ fn default_kick_style() -> String {
 }
 fn default_gyro_deadzone() -> u16 {
     90
+}
+fn default_bridge_mode() -> String {
+    "standard".into()
+}
+fn default_band_gains() -> [f32; 3] {
+    crate::audio_haptics::BridgeOptions::default().band_gains
+}
+fn default_gyro_gate() -> String {
+    "hold".into()
+}
+fn default_envelope_points() -> usize {
+    256
 }
 fn default_gyro_smoothing() -> f32 {
     0.18
@@ -548,6 +767,142 @@ fn sensor_color(sensor_byte: u8) -> [u8; 3] {
         blend([230, 165, 45], [220, 45, 50], sensor_byte - 127, 128)
     }
 }
+
+/// hidapi on Windows pads writes up to the report length; Ok(0) means unknown.
+/// How long a game's last non-zero rumble is kept alive without any new update from the game.
+const GAME_RUMBLE_SILENCE: Duration = Duration::from_secs(30);
+#[derive(Debug, PartialEq, Eq)]
+enum RumbleKeepalive {
+    Wait,
+    Refresh,
+    Expire,
+}
+/// The audio side expires rumble after 10 s, so steady rumble is refreshed every 2 s, but only
+/// while the game has produced a real update recently; otherwise a killed game would leave
+/// the motors running forever.
+fn rumble_keepalive(
+    last_real: Option<Instant>,
+    last_refresh: Option<Instant>,
+    now: Instant,
+) -> RumbleKeepalive {
+    if last_real.is_none_or(|at| now.saturating_duration_since(at) >= GAME_RUMBLE_SILENCE) {
+        return RumbleKeepalive::Expire;
+    }
+    if last_refresh.is_none_or(|at| now.saturating_duration_since(at) >= Duration::from_secs(2)) {
+        RumbleKeepalive::Refresh
+    } else {
+        RumbleKeepalive::Wait
+    }
+}
+fn full_write(written: usize, len: usize) -> bool {
+    // Windows HID drivers can report 0 for a successful write; elsewhere 0 is a failure.
+    (cfg!(windows) && written == 0) || written >= len
+}
+
+/// UI/clip rumble levels are 0-100; the report bytes are 0-255.
+fn percent_to_motor(percent: u8) -> u8 {
+    ((u16::from(percent.min(100)) * 255 + 50) / 100) as u8
+}
+
+/// Adaptive trigger "off" block.
+const TRIGGER_OFF: [u8; 11] = protocol::TRIGGER_OFF;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LightAnimKind {
+    Breathe,
+    Pulse,
+    Rainbow,
+    LowBatteryBlink,
+}
+
+impl LightAnimKind {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "breathe" => Some(Self::Breathe),
+            "pulse" => Some(Self::Pulse),
+            "rainbow" => Some(Self::Rainbow),
+            "lowBatteryBlink" => Some(Self::LowBatteryBlink),
+            _ => None,
+        }
+    }
+}
+
+/// Core-driven lightbar animation; off unless a client starts one.
+struct LightAnim {
+    kind: LightAnimKind,
+    rgb: [u8; 3],
+    period_ms: u32,
+    started: Instant,
+    next: Instant,
+}
+
+fn hsv_to_rgb(hue: f32) -> [u8; 3] {
+    let h = hue.rem_euclid(360.0) / 60.0;
+    let x = 1.0 - (h % 2.0 - 1.0).abs();
+    let (r, g, b) = match h as u32 {
+        0 => (1.0, x, 0.0),
+        1 => (x, 1.0, 0.0),
+        2 => (0.0, 1.0, x),
+        3 => (0.0, x, 1.0),
+        4 => (x, 0.0, 1.0),
+        _ => (1.0, 0.0, x),
+    };
+    [r, g, b].map(|channel: f32| (channel * 255.0).round() as u8)
+}
+
+/// Colour for an animation frame; pure so the shapes are testable.
+fn animation_color(
+    kind: LightAnimKind,
+    base: [u8; 3],
+    period_ms: u32,
+    elapsed_ms: u64,
+    battery: Option<u8>,
+    warn: u8,
+) -> [u8; 3] {
+    let period = u64::from(period_ms.max(1));
+    let phase = (elapsed_ms % period) as f32 / period as f32;
+    let scale = |factor: f32| base.map(|c| (f32::from(c) * factor.clamp(0.0, 1.0)).round() as u8);
+    match kind {
+        LightAnimKind::Breathe => {
+            scale(0.1 + 0.9 * (0.5 - 0.5 * (phase * std::f32::consts::TAU).cos()))
+        }
+        LightAnimKind::Pulse => scale((1.0 - phase).powi(2)),
+        LightAnimKind::Rainbow => hsv_to_rgb(phase * 360.0),
+        LightAnimKind::LowBatteryBlink => {
+            if battery.is_some_and(|level| level <= warn) {
+                if phase < 0.5 {
+                    [255, 40, 40]
+                } else {
+                    [0, 0, 0]
+                }
+            } else {
+                base
+            }
+        }
+    }
+}
+
+/// Output state the user explicitly set, kept per controller id across reconnects.
+#[derive(Clone, Debug, PartialEq)]
+struct Remembered {
+    light: Option<[u8; 3]>,
+    player_leds: Option<u8>,
+    mic_muted: Option<bool>,
+    low_battery: Option<(u8, u8)>,
+}
+
+impl Remembered {
+    fn is_empty(&self) -> bool {
+        self.light.is_none()
+            && self.player_leds.is_none()
+            && self.mic_muted.is_none()
+            && self.low_battery.is_none()
+    }
+}
+
+static OUTPUT_MEMORY: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, Remembered>>,
+> = std::sync::LazyLock::new(Default::default);
 
 struct Connected {
     hid: HidDevice,
@@ -593,8 +948,17 @@ struct Connected {
     opened_at: Instant,
     panic_latched: bool,
     firmware: Option<String>,
+    /// Feature version as `major.minor` (e.g. 2.21), parsed from report 0x20.
+    firmware_version: Option<String>,
+    /// Firmware older than 2.21 uses the legacy rumble flags.
+    legacy_rumble: bool,
+    /// Build date/time strings from report 0x20.
+    firmware_build: Option<String>,
     last_trigger: Option<([u8; 11], [u8; 11])>,
     last_light: Option<[u8; 3]>,
+    /// Colour the user explicitly set; re-applied after a reconnect.
+    user_light: Option<[u8; 3]>,
+    anim: Option<LightAnim>,
     battery_light: bool,
     sensor_light: bool,
     last_sensor: Option<u8>,
@@ -602,6 +966,8 @@ struct Connected {
     screen_color: Option<[u8; 3]>,
     last_rumble: Option<[u8; 2]>,
     game_rumble: [u8; 2],
+    /// Last time the game itself (not our keep-alive) sent rumble.
+    game_feedback_at: Option<Instant>,
     game_audio_retry_at: Option<Instant>,
     input_effect: Option<InputEffect>,
     input_effect_until: Option<Instant>,
@@ -613,9 +979,23 @@ struct Connected {
     timeline_generation: u64,
     personal: PersonalSettings,
     low_battery_alert: bool,
+    /// Player-LED mask the user set explicitly (not the saved assignment).
+    user_player_leds: Option<u8>,
+    mic_user_set: bool,
+    /// Events produced by `reset()` (it has no event channel); drained by the main loop.
+    pending_events: Vec<serde_json::Value>,
+    game_refresh_at: Option<Instant>,
     low_battery_latched: bool,
+    low_battery_critical_latched: bool,
+    /// (warn, critical) percent thresholds for the low-battery alert.
+    battery_thresholds: (u8, u8),
+    battery_key: Option<(Option<u8>, protocol::ChargeState)>,
+    battery_unknown_sent: bool,
+    jacks: Option<(bool, bool)>,
     last_battery: Option<u8>,
     haptic_timer: Option<Instant>,
+    /// (brightness, lightbar setup) were changed by the user and must be restored on reset.
+    led_brightness_dirty: (bool, bool),
 }
 
 struct TimelineRun {
@@ -941,7 +1321,7 @@ impl Connected {
                 protocol::bt_haptic_report_sequences(&[0; 64], self.sequence, run.sequence);
             self.sequence = self.sequence.wrapping_add(1) & 15;
             let written = self.hid.write(&silence).map_err(|e| e.to_string())?;
-            if written != silence.len() {
+            if !full_write(written, silence.len()) {
                 return Err("Short Bluetooth experiment stop write".into());
             }
             self.write_rumble([0, 0])?;
@@ -976,7 +1356,7 @@ impl Connected {
             run.sequence = run.sequence.wrapping_add(1);
             let start = Instant::now();
             let n = self.hid.write(&frame).map_err(|e| e.to_string())?;
-            if n != frame.len() {
+            if !full_write(n, frame.len()) {
                 return Err("Short Bluetooth experiment write".into());
             }
             run.write_us = run.write_us.max(start.elapsed().as_micros() as u64);
@@ -1003,7 +1383,7 @@ impl Connected {
         self.sequence = self.sequence.wrapping_add(1) & 15;
         self.bt_audio_sequence = self.bt_audio_sequence.wrapping_add(1);
         let count = self.hid.write(&report).map_err(|e| e.to_string())?;
-        if count != report.len() {
+        if !full_write(count, report.len()) {
             return Err("Short Bluetooth grip-audio write.".into());
         }
         Ok(())
@@ -1152,12 +1532,7 @@ impl Connected {
             );
         }
         if rule.left_trigger.is_some() || rule.right_trigger.is_some() {
-            let off = protocol::encode_trigger(&TriggerSetting {
-                mode: "off".into(),
-                curve: vec![0.; 11],
-                ..TriggerSetting::default()
-            })
-            .map_err(str::to_string)?;
+            let off = TRIGGER_OFF;
             let (base_left, base_right) = self.last_trigger.unwrap_or((off, off));
             let left = rule
                 .left_trigger
@@ -1234,7 +1609,7 @@ impl Connected {
             } else {
                 timeline.clip.trigger_mask()
             };
-            let off = [0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            let off = TRIGGER_OFF;
             let (left, right) = if expired {
                 (off, off)
             } else {
@@ -1259,12 +1634,7 @@ impl Connected {
             self.trigger_active = left[0] != 5 || right[0] != 5;
             return Ok(());
         }
-        let off = protocol::encode_trigger(&TriggerSetting {
-            mode: "off".into(),
-            curve: vec![0.; 11],
-            ..TriggerSetting::default()
-        })
-        .map_err(str::to_string)?;
+        let off = TRIGGER_OFF;
         let (left, right) = self.last_trigger.unwrap_or((off, off));
         self.write(protocol::usb_report(
             0x0c,
@@ -1305,6 +1675,7 @@ impl Connected {
             self.microphone_muted = previous;
             return Err(error);
         }
+        self.mic_user_set = true;
         Ok(())
     }
 
@@ -1361,6 +1732,7 @@ impl Connected {
         .map_err(|error| format!("Controller write failed: {error}"))
     }
 
+    /// `motors` are raw report levels (0-255); use `percent_to_motor` for 0-100 input.
     fn write_rumble(&mut self, motors: [u8; 2]) -> Result<(), String> {
         let result = if self.last_rumble == Some(motors) {
             Ok(())
@@ -1389,6 +1761,11 @@ impl Connected {
         self.motion.reset();
         self.controls = ControlProfile::default();
         self.haptic = None;
+        if self.audio.bluetooth_enabled() {
+            self.pending_events.push(
+                json!({"type":"bluetoothAudioStatus","controllerId":self.controller_id,"enabled":false}),
+            );
+        }
         self.audio.set_bluetooth(false);
         self.game_rumble = [0, 0];
         self.game_audio_retry_at = None;
@@ -1400,12 +1777,34 @@ impl Connected {
         self.input_effect = None;
         self.input_effect_until = None;
         self.bows = [None, None];
+        if self.low_battery_alert {
+            self.pending_events
+                .push(json!({"type":"hapticAlertStatus","lowBattery":false}));
+        }
+        if self.haptic_timer.is_some() {
+            self.pending_events
+                .push(json!({"type":"hapticAlertStatus","timerSeconds":0}));
+        }
         self.low_battery_alert = false;
         self.low_battery_latched = false;
+        self.low_battery_critical_latched = false;
         self.haptic_timer = None;
+        self.user_light = None;
+        self.anim = None;
+        self.user_player_leds = None;
+        self.mic_user_set = false;
         self.screen_light = false;
         self.screen_color = None;
         self.sensor_light = false;
+        if self.led_brightness_dirty != (false, false) {
+            let (brightness, setup) = self.led_brightness_dirty;
+            if let Ok(report) =
+                protocol::led_brightness_report(brightness.then_some(0), setup.then_some(0))
+                && self.write(report).is_ok()
+            {
+                self.led_brightness_dirty = (false, false);
+            }
+        }
         self.game_actions = ActionMapper::default();
         self.timeline = None;
         self.timeline_generation = self.timeline_generation.saturating_add(1);
@@ -1419,13 +1818,7 @@ impl Connected {
         {
             return Ok(());
         }
-        let off = protocol::encode_trigger(&TriggerSetting {
-            mode: "off".into(),
-            strength: 0.0,
-            curve: vec![0.0; 11],
-            ..TriggerSetting::default()
-        })
-        .unwrap();
+        let off = TRIGGER_OFF;
         let valid0 = (if self.trigger_active { 0x0c } else { 0 })
             | if self.rumble_active {
                 self.rumble_flags.0
@@ -1463,10 +1856,172 @@ impl Connected {
         self.last_light = None;
         self.battery_light = false;
         self.last_rumble = None;
+        // Reset releases effects, not the player number the user assigned to this pad.
+        self.restore_assigned_player_leds();
         Ok(())
     }
 
+    /// Re-light the saved player-number assignment (used after `reset()` clears the LEDs).
+    fn restore_assigned_player_leds(&mut self) {
+        if let Ok(Some(record)) = crate::hardware::assignment(&self.controller_id)
+            && (1..=5).contains(&record.player)
+            && self
+                .write(protocol::player_leds_report(
+                    [0, 4, 10, 21, 27, 31][usize::from(record.player)],
+                ))
+                .is_ok()
+        {
+            self.player_leds_active = true;
+        }
+    }
+
+    /// Remember only what the user explicitly set so it survives a reconnect or transport switch.
+    fn remember(&self) {
+        let remembered = Remembered {
+            light: self.user_light,
+            player_leds: self.user_player_leds,
+            mic_muted: self.mic_user_set.then_some(self.microphone_muted).flatten(),
+            low_battery: self.low_battery_alert.then_some(self.battery_thresholds),
+        };
+        if let Ok(mut map) = OUTPUT_MEMORY.lock() {
+            if remembered.is_empty() {
+                map.remove(&self.controller_id);
+            } else {
+                map.insert(self.controller_id.clone(), remembered);
+            }
+        }
+    }
+
+    /// Re-apply remembered output state for this controller id; conservative and best-effort.
+    fn restore_remembered(&mut self, proxy: &Sender<serde_json::Value>) {
+        let Some(remembered) = OUTPUT_MEMORY
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&self.controller_id))
+        else {
+            return;
+        };
+        let mut restored = Vec::new();
+        if let Some(rgb) = remembered.light
+            && self.set_light(rgb).is_ok()
+        {
+            self.user_light = Some(rgb);
+            restored.push("lightbar");
+        }
+        if let Some(mask) = remembered.player_leds
+            && self.write(protocol::player_leds_report(mask)).is_ok()
+        {
+            self.player_leds_active = true;
+            self.user_player_leds = Some(mask);
+            restored.push("playerLeds");
+        }
+        if let Some(muted) = remembered.mic_muted
+            && self.set_microphone_mute(muted).is_ok()
+        {
+            emit(proxy, json!({"type":"microphoneStatus","muted":muted}));
+            restored.push("microphone");
+        }
+        if let Some((warn, critical)) = remembered.low_battery {
+            self.low_battery_alert = true;
+            self.battery_thresholds = (warn, critical);
+            emit(
+                proxy,
+                json!({"type":"hapticAlertStatus","lowBattery":true,"warn":warn,"critical":critical}),
+            );
+            restored.push("lowBatteryAlert");
+        }
+        if !restored.is_empty() {
+            emit(
+                proxy,
+                json!({"type":"outputRestored","controllerId":self.controller_id,"restored":restored}),
+            );
+        }
+    }
+
+    /// Unconditional lightbar write that keeps the cached state in step.
+    fn write_light(&mut self, rgb: [u8; 3]) -> Result<(), String> {
+        self.write(protocol::usb_report(
+            0,
+            0x04,
+            0,
+            None,
+            None,
+            Some(rgb),
+            None,
+            false,
+        ))?;
+        self.light_active = true;
+        self.last_light = Some(rgb);
+        Ok(())
+    }
+
+    /// Lightbar write that skips redundant reports.
+    fn set_light(&mut self, rgb: [u8; 3]) -> Result<(), String> {
+        if self.last_light == Some(rgb) {
+            self.light_active = true;
+            return Ok(());
+        }
+        self.write_light(rgb)
+    }
+
+    /// Emit `battery` and `audioJacks` events when the reported state changes.
+    fn track_status(&mut self, info: &protocol::BatteryInfo, proxy: &Sender<serde_json::Value>) {
+        self.battery_unknown_sent = false;
+        let key = (info.percent, info.charge_state);
+        if self.battery_key != Some(key) {
+            self.battery_key = Some(key);
+            if let Ok(mut live) = LIVE_BATTERY.lock() {
+                *live = Some((self.path_display.clone(), info.percent, info.charging));
+            }
+            let faults = battery_faults(info.charge_state);
+            emit(
+                proxy,
+                json!({"type":"battery","controllerId":self.controller_id,"available":true,
+                "level":info.percent,"levelTenths":info.level_tenths,"charging":info.charging,
+                "chargeState":info.charge_state,"label":info.charge_state.label(),
+                "fault":!faults.is_empty(),"faults":faults}),
+            );
+        }
+        let jacks = (info.headphone_jack, info.microphone_jack);
+        if self.jacks != Some(jacks) {
+            self.jacks = Some(jacks);
+            emit(
+                proxy,
+                json!({"type":"audioJacks","controllerId":self.controller_id,"headphones":jacks.0,"microphone":jacks.1}),
+            );
+        }
+    }
+
+    /// Advance the optional lightbar animation (20 Hz at most).
+    fn tick_light_animation(&mut self) {
+        let Some(anim) = self.anim.as_ref() else {
+            return;
+        };
+        if self.battery_light || self.screen_light || self.sensor_light {
+            self.anim = None;
+            return;
+        }
+        let now = Instant::now();
+        if now < anim.next {
+            return;
+        }
+        let color = animation_color(
+            anim.kind,
+            anim.rgb,
+            anim.period_ms,
+            now.duration_since(anim.started).as_millis() as u64,
+            self.last_battery,
+            self.battery_thresholds.0,
+        );
+        if let Some(anim) = self.anim.as_mut() {
+            anim.next = now + Duration::from_millis(50);
+        }
+        let _ = self.set_light(color);
+    }
+
     fn release_lightbar(&mut self) -> Result<(), String> {
+        self.anim = None;
+        self.user_light = None;
         if !self.light_active {
             return Ok(());
         }
@@ -1483,13 +2038,7 @@ impl Connected {
         if self.input_effect_until.is_none() {
             return Ok(());
         }
-        let off = protocol::encode_trigger(&TriggerSetting {
-            mode: "off".into(),
-            strength: 0.0,
-            curve: vec![0.0; 11],
-            ..TriggerSetting::default()
-        })
-        .unwrap();
+        let off = TRIGGER_OFF;
         let right = self.last_trigger.map(|(_, right)| right).unwrap_or(off);
         self.write(protocol::usb_report(
             0x04,
@@ -1572,11 +2121,7 @@ impl Connected {
                 && let Some((left, right)) = self.last_trigger
             {
                 let baseline = if side == 0 { left } else { right };
-                let effect = if unloaded {
-                    [0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
-                } else {
-                    baseline
-                };
+                let effect = if unloaded { TRIGGER_OFF } else { baseline };
                 self.write(protocol::usb_report(
                     if side == 0 { 0x08 } else { 0x04 },
                     0,
@@ -1637,24 +2182,79 @@ fn identify_controller(info: &hidapi::DeviceInfo, hid: &HidDevice) -> (String, O
     } else {
         format!("path:{}", path_key(info))
     };
-    // Opaque stable local identifier; never include the hardware address in shareable diagnostics.
-    let identity = format!("{:04x}:{address}", info.product_id());
-    let hash = identity.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
-        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
-    });
     (
-        format!("pad-{hash:016x}"),
+        hash_identity(info.product_id(), &address),
         crate::native_provider::normalize_address(&address).ok(),
     )
 }
 
+/// Opaque stable local identifier; never include the hardware address in shareable diagnostics.
+fn hash_identity(product_id: u16, address: &str) -> String {
+    let identity = format!("{product_id:04x}:{address}");
+    let hash = identity.bytes().fold(0xcbf29ce484222325u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    format!("pad-{hash:016x}")
+}
+
+/// Controller id derivable from the enumeration record alone (no open). Only
+/// available when the HID serial is the 12-digit Bluetooth address.
+fn serial_controller_id(info: &hidapi::DeviceInfo) -> Option<String> {
+    let serial = info
+        .serial_number()
+        .unwrap_or("")
+        .replace([':', '-'], "")
+        .to_ascii_lowercase();
+    (serial.len() == 12 && serial.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| hash_identity(info.product_id(), &serial))
+}
+
+/// Which controller the user wants. The id is authoritative; the path is only a hint
+/// because HID paths change between USB and Bluetooth and across reconnects.
+#[derive(Clone, Debug, Default)]
+struct Preference {
+    path: Option<String>,
+    controller_id: Option<String>,
+}
+
+impl Preference {
+    fn pin(&mut self, found: &Connected) {
+        self.path = Some(found.path_display.clone());
+        self.controller_id = Some(found.controller_id.clone());
+    }
+}
+
+/// Order candidates: same controller id, then same path, then USB before Bluetooth.
+fn candidate_rank(pref: &Preference, id: Option<&str>, path: &str, usb: bool) -> (bool, bool, u8) {
+    let id_match = pref.controller_id.as_deref().is_some_and(|w| id == Some(w));
+    let path_match = pref.path.as_deref().is_some_and(|w| path == w);
+    (!id_match, !path_match, u8::from(!usb))
+}
+
+static DEVICE_CACHE: std::sync::Mutex<Vec<serde_json::Value>> = std::sync::Mutex::new(Vec::new());
+/// (hid path, battery percent, charging) for the open controller, used in list entries.
+static LIVE_BATTERY: std::sync::Mutex<Option<(String, Option<u8>, bool)>> =
+    std::sync::Mutex::new(None);
+
 fn list_devices(api: &HidApi) -> Vec<serde_json::Value> {
+    let live = LIVE_BATTERY.lock().ok().and_then(|live| live.clone());
     let mut items: Vec<_> = api
         .device_list()
         .filter(|info| is_controller(info))
         .map(|info| {
+            let path = path_key(info);
+            let controller_id = serial_controller_id(info);
+            let assigned = controller_id
+                .as_deref()
+                .and_then(|id| crate::hardware::assignment(id).ok().flatten())
+                .map(|record| record.name);
+            let battery = live.as_ref().filter(|(p, _, _)| *p == path);
             json!({
-                "path": path_key(info),
+                "controllerId": controller_id,
+                "assignedName": assigned,
+                "battery": battery.and_then(|(_, level, _)| *level),
+                "charging": battery.map(|(_, _, charging)| *charging),
+                "path": path,
                 "name": info.product_string().unwrap_or("DualSense"),
                 "transport": if matches!(info.bus_type(), BusType::Bluetooth) { "Bluetooth" } else { "USB" },
                 "productId": format!("{:04x}", info.product_id()),
@@ -1667,40 +2267,158 @@ fn list_devices(api: &HidApi) -> Vec<serde_json::Value> {
 }
 
 fn emit_device_list(api: &HidApi, proxy: &Sender<serde_json::Value>, selected: Option<&str>) {
+    let items = list_devices(api);
+    if let Ok(mut cache) = DEVICE_CACHE.lock() {
+        *cache = items.clone();
+    }
     emit(
         proxy,
         json!({
             "type": "devices",
-            "items": list_devices(api),
+            "items": items,
             "selected": selected,
+            "stale": false,
         }),
     );
 }
 
-fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, String> {
+fn emit_device_list_if_changed(
+    api: &HidApi,
+    proxy: &Sender<serde_json::Value>,
+    selected: Option<&str>,
+) {
+    let items = list_devices(api);
+    let changed = DEVICE_CACHE
+        .lock()
+        .map(|mut cache| {
+            let changed = *cache != items;
+            if changed {
+                *cache = items.clone();
+            }
+            changed
+        })
+        .unwrap_or(true);
+    if changed {
+        emit(
+            proxy,
+            json!({"type":"devices","items":items,"selected":selected,"stale":false}),
+        );
+    }
+}
+
+/// Fault names for the battery event (empty when the charge state is healthy).
+fn battery_faults(state: protocol::ChargeState) -> Vec<&'static str> {
+    match state {
+        protocol::ChargeState::VoltageOrTempFault => vec!["VoltageOrTempFault"],
+        protocol::ChargeState::TemperatureFault => vec!["TemperatureFault"],
+        protocol::ChargeState::ChargingError => vec!["ChargingError"],
+        _ => Vec::new(),
+    }
+}
+
+/// `0x0215` -> "2.21".
+fn feature_version_label(feature: u16) -> String {
+    format!("{}.{:02}", feature >> 8, feature & 0xff)
+}
+
+/// Build date (bytes 1..12) and time (12..20) of feature report 0x20, when printable.
+fn firmware_build(report: &[u8; 64]) -> Option<String> {
+    let text = |range: std::ops::Range<usize>| {
+        let raw = &report[range];
+        let end = raw.iter().position(|b| *b == 0).unwrap_or(raw.len());
+        let value = std::str::from_utf8(&raw[..end]).ok()?.trim().to_string();
+        (!value.is_empty() && value.bytes().all(|b| b.is_ascii_graphic() || b == b' '))
+            .then_some(value)
+    };
+    let date = text(1..12)?;
+    Some(match text(12..20) {
+        Some(time) => format!("{date} {time}"),
+        None => date,
+    })
+}
+
+/// True while a background Edge profile read is using the controller.
+fn edge_busy() -> bool {
+    crate::hardware::EDGE_READING.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Cached list for moments when enumeration must not touch HID (native handoff, Edge job).
+fn emit_cached_device_list(proxy: &Sender<serde_json::Value>, selected: Option<&str>) {
+    let items = DEVICE_CACHE
+        .lock()
+        .map(|cache| cache.clone())
+        .unwrap_or_default();
+    emit(
+        proxy,
+        json!({"type":"devices","items":items,"selected":selected,"stale":true}),
+    );
+}
+
+/// (sorted enumerated controller paths, path -> controller id of pads rejected by a strict probe).
+type StrictRejected = (Vec<String>, std::collections::BTreeMap<String, String>);
+static STRICT_REJECTED: std::sync::Mutex<StrictRejected> =
+    std::sync::Mutex::new((Vec::new(), std::collections::BTreeMap::new()));
+
+fn open_path(api: &HidApi, wanted: &Preference) -> Result<Option<Connected>, String> {
+    open_filtered(api, wanted, false, false)
+}
+
+/// `usb_only` limits candidates to USB; `strict_id` additionally requires the preferred
+/// controller id (no fallback to other pads).
+fn open_filtered(
+    api: &HidApi,
+    wanted: &Preference,
+    usb_only: bool,
+    strict_id: bool,
+) -> Result<Option<Connected>, String> {
     let mut candidates: Vec<_> = api
         .device_list()
         .filter(|info| is_controller(info))
+        .filter(|info| !usb_only || matches!(info.bus_type(), BusType::Usb))
         .collect();
-    candidates.sort_by_key(|info| {
-        let usb = matches!(info.bus_type(), BusType::Usb);
-        let preferred = wanted.is_some_and(|w| path_key(info) == w);
-        (!preferred, if usb { 0 } else { 1 })
-    });
-    if let Some(wanted) = wanted {
-        candidates.retain(|info| path_key(info) == wanted);
-        if candidates.is_empty() {
-            return Err(format!(
-                "Selected controller is no longer available: {wanted}"
-            ));
+    let want_id = wanted.controller_id.as_deref();
+    if strict_id {
+        let Some(want) = want_id else {
+            return Ok(None);
+        };
+        // A serial-derived id that differs is certainly another pad; unknown ids are verified after open.
+        candidates.retain(|info| serial_controller_id(info).is_none_or(|id| id == want));
+        // Paths already probed and found to belong to another pad are skipped until the
+        // set of enumerated controllers changes.
+        let mut signature: Vec<String> = api
+            .device_list()
+            .filter(|info| is_controller(info))
+            .map(path_key)
+            .collect();
+        signature.sort();
+        if let Ok(mut cache) = STRICT_REJECTED.lock() {
+            if cache.0 != signature {
+                *cache = (signature, std::collections::BTreeMap::new());
+            }
+            candidates.retain(|info| {
+                cache
+                    .1
+                    .get(&path_key(info))
+                    .is_none_or(|rejected_id| rejected_id == want)
+            });
         }
     }
+    candidates.sort_by_key(|info| {
+        candidate_rank(
+            wanted,
+            serial_controller_id(info).as_deref(),
+            &path_key(info),
+            matches!(info.bus_type(), BusType::Usb),
+        )
+    });
     let mut last_error = None;
+    let mut fallback: Option<Connected> = None;
     for info in candidates {
         match info.open_device(api) {
             Ok(hid) => {
                 let mut firmware_report = [0u8; 64];
                 firmware_report[0] = 0x20;
+                let mut build = None;
                 let (firmware, feature_version) = match hid.get_feature_report(&mut firmware_report)
                 {
                     Ok(length) if length >= 46 => {
@@ -1708,6 +2426,7 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                         let fw = u32::from_le_bytes(firmware_report[28..32].try_into().unwrap());
                         let feature =
                             u16::from_le_bytes(firmware_report[44..46].try_into().unwrap());
+                        build = firmware_build(&firmware_report);
                         (
                             Some(format!("FW {fw:08X} / HW {hw:08X} / FEATURE {feature:04X}")),
                             Some(feature),
@@ -1798,6 +2517,10 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     opened_at: Instant::now(),
                     panic_latched: false,
                     firmware,
+                    firmware_version: feature_version.map(feature_version_label),
+                    legacy_rumble: info.product_id() != protocol::EDGE_PID
+                        && feature_version.is_some_and(|v| v < 0x0215),
+                    firmware_build: build,
                     last_trigger: None,
                     game_actions: ActionMapper::default(),
                     action_until: None,
@@ -1806,6 +2529,8 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     timeline_generation: 0,
                     personal: PersonalSettings::default(),
                     last_light: None,
+                    user_light: None,
+                    anim: None,
                     battery_light: false,
                     sensor_light: false,
                     last_sensor: None,
@@ -1813,26 +2538,70 @@ fn open_path(api: &HidApi, wanted: Option<&str>) -> Result<Option<Connected>, St
                     screen_color: None,
                     last_rumble: None,
                     game_rumble: [0, 0],
+                    game_feedback_at: None,
                     game_audio_retry_at: None,
                     input_effect: None,
                     input_effect_until: None,
                     bows: [None, None],
                     low_battery_alert: false,
+                    user_player_leds: None,
+                    mic_user_set: false,
+                    pending_events: Vec::new(),
+                    game_refresh_at: None,
                     low_battery_latched: false,
+                    low_battery_critical_latched: false,
+                    battery_thresholds: (20, 5),
+                    battery_key: None,
+                    battery_unknown_sent: false,
+                    jacks: None,
                     last_battery: None,
                     haptic_timer: None,
+                    led_brightness_dirty: (false, false),
                 };
+                if strict_id && want_id != Some(found.controller_id.as_str()) {
+                    if let Ok(mut cache) = STRICT_REJECTED.lock() {
+                        cache
+                            .1
+                            .insert(found.path_display.clone(), found.controller_id.clone());
+                    }
+                    continue;
+                }
+                // Candidates with an unknown serial are ranked blindly; keep looking for the
+                // pad whose opened id really matches and only fall back to the first other pad.
+                if let Some(want) = want_id
+                    && found.controller_id != want
+                {
+                    if fallback.is_none() {
+                        fallback = Some(found);
+                    }
+                    continue;
+                }
                 let _ = found.load_assignment();
                 return Ok(Some(found));
             }
             Err(error) => last_error = Some(error.to_string()),
         }
     }
+    if let Some(mut found) = fallback {
+        let _ = found.load_assignment();
+        return Ok(Some(found));
+    }
     if let Some(error) = last_error {
         Err(format!("Controller found, but could not open it: {error}"))
     } else {
         Ok(None)
     }
+}
+
+/// Single teardown path for a controller that is being released: remembers its settings,
+/// resets the hardware and flushes events the reset produced.
+fn teardown(old: &mut Connected, proxy: &Sender<serde_json::Value>) -> Result<(), String> {
+    old.remember();
+    let result = old.reset();
+    for event in old.pending_events.drain(..) {
+        emit(proxy, event);
+    }
+    result
 }
 
 #[allow(clippy::too_many_arguments)] // Disconnect cleanup coordinates every active input and color worker.
@@ -1854,12 +2623,29 @@ fn drop_device(
         json!({"type":"triggerLease","active":false,"durationMs":0}),
     );
     if let Some(mut old) = device.take() {
-        let _ = old.reset();
+        let _ = teardown(&mut old, proxy);
     }
+    if let Ok(mut live) = LIVE_BATTERY.lock() {
+        *live = None;
+    }
+    let (state, reason) = disconnect_state(message);
     emit(
         proxy,
-        json!({"type":"device","connected":false,"message":message}),
+        json!({"type":"device","connected":false,"state":state,"reason":reason,"message":message}),
     );
+}
+
+/// Map a human disconnect message to the structured (state, reason) pair.
+fn disconnect_state(message: &str) -> (&'static str, &'static str) {
+    if message.starts_with("Stream stalled") {
+        ("stalled", "stream-stalled")
+    } else if message.starts_with("Controller disconnected") {
+        ("reconnecting", "read-error")
+    } else if message.starts_with("Disconnected") {
+        ("disconnected", "removed")
+    } else {
+        ("disconnected", "other")
+    }
 }
 
 fn stop_input_mappers(
@@ -1874,6 +2660,9 @@ fn stop_input_mappers(
     gyro.set_config(GyroAimConfig::default());
     remap.set(false, Vec::new());
     xinput.shutdown();
+    // Key-ups first, while the input backend still exists.
+    #[cfg(not(windows))]
+    crate::native_input::release_all();
     emit(proxy, json!({"type":"mouseMode","enabled":false}));
     emit(proxy, json!({"type":"touchGestures","enabled":false}));
     emit(proxy, json!({"type":"gyroAim","enabled":false}));
@@ -1890,6 +2679,12 @@ fn emit_connected(proxy: &Sender<serde_json::Value>, found: &Connected) {
         json!({
             "type": "device",
             "connected": true,
+            "state": "connected",
+            "reason": serde_json::Value::Null,
+            "firmwareVersion": found.firmware_version,
+            "firmwareBuild": found.firmware_build,
+            "legacyRumble": found.legacy_rumble,
+            "battery": found.last_battery,
             "name": assignment.as_ref().map(|r|r.name.as_str()).unwrap_or(&found.name),
             "hardwareName":found.name,"assignmentError":found.assignment_error,
             "assignment":assignment,"audioEndpointId":found.audio.configured_endpoint(),
@@ -1921,8 +2716,8 @@ fn handle_command(
     script: &mut Option<ScriptProgram>,
     screen: &ScreenSampler,
     telemetry_stale_latched: &mut bool,
-    api: &HidApi,
-    preferred_path: &mut Option<String>,
+    api: &mut HidApi,
+    preferred: &mut Preference,
 ) -> bool {
     if device.as_ref().is_some_and(|d| d.link_experiment.is_some())
         && !matches!(
@@ -1961,7 +2756,7 @@ fn handle_command(
             let result = crate::input_map::prepare_desktop();
             emit(
                 proxy,
-                json!({"type":"desktopInputStatus","ready":result.is_ok(),"message":result.err().unwrap_or_else(||"Desktop backend opened. No input was sent.".into()),"environment":crate::integrations::environment()}),
+                json!({"type":"desktopInputStatus","ready":result.is_ok(),"message":result.err().unwrap_or_else(||"Desktop backend opened. No input was sent.".into()),"environment":crate::integrations::environment(),"pointerPrecision":crate::input_map::pointer_precision_enabled()}),
             );
             return true;
         }
@@ -2037,10 +2832,13 @@ fn handle_command(
             return true;
         }
         DeviceCommand::Scan | DeviceCommand::ListDevices => {
+            // Refresh so a Scan never answers from a stale enumeration.
+            let _ = api.refresh_devices();
             emit_device_list(
                 api,
                 proxy,
-                preferred_path
+                preferred
+                    .path
                     .as_deref()
                     .or(device.as_ref().map(|d| d.path_display.as_str())),
             );
@@ -2057,17 +2855,27 @@ fn handle_command(
             stop_input_mappers(mouse, gyro, remap, xinput, proxy);
             screen.set_enabled(false);
             if let Some(mut old) = device.take() {
-                let _ = old.reset();
+                let _ = teardown(&mut old, proxy);
+            }
+            if let Ok(mut live) = LIVE_BATTERY.lock() {
+                *live = None;
             }
             emit(proxy, json!({"type":"lightMode","battery":false}));
             emit(
                 proxy,
                 json!({"type":"triggerLease","active":false,"durationMs":0}),
             );
-            *preferred_path = Some(path.clone());
-            match open_path(api, Some(&path)) {
-                Ok(Some(found)) => {
+            let _ = api.refresh_devices();
+            // Only pin once the open succeeded, so a failed selection never leaves a bad path behind.
+            let request = Preference {
+                path: Some(path.clone()),
+                controller_id: None,
+            };
+            match open_filtered(api, &request, false, false) {
+                Ok(Some(mut found)) if found.path_display == path => {
+                    preferred.pin(&found);
                     emit_connected(proxy, &found);
+                    found.restore_remembered(proxy);
                     emit_device_list(api, proxy, Some(&found.path_display));
                     *device = Some(found);
                     emit(
@@ -2075,19 +2883,42 @@ fn handle_command(
                         json!({"type":"notice","message":"Controller selected"}),
                     );
                 }
-                Ok(None) => {
+                Ok(_) => {
+                    // The chosen pad vanished; do not silently substitute another one.
+                    *preferred = Preference::default();
                     emit(
                         proxy,
-                        json!({"type":"device","connected":false,"message":"Controller not found"}),
+                        json!({"type":"device","connected":false,"state":"disconnected","reason":"selection-not-found","message":"Controller not found"}),
+                    );
+                    emit(
+                        proxy,
+                        json!({"type":"error","code":"selection-not-found","message":"The selected controller is no longer available"}),
                     );
                 }
                 Err(error) => {
-                    emit(proxy, json!({"type":"error","message":error}));
+                    *preferred = Preference::default();
+                    emit(
+                        proxy,
+                        json!({"type":"error","code":"open-failed","message":error}),
+                    );
                 }
             }
             return true;
         }
-        DeviceCommand::SetTouchMouse { enabled } => {
+        DeviceCommand::SetTouchMouse {
+            enabled,
+            sensitivity,
+            acceleration,
+        } => {
+            if sensitivity.is_some_and(|v| !v.is_finite() || !(0.2..=3.0).contains(&v))
+                || acceleration.is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
+            {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Touchpad pointer settings are out of range."}),
+                );
+                return true;
+            }
             if enabled && let Err(message) = crate::input_map::prepare_desktop() {
                 emit(proxy, json!({"type":"error","message":message}));
                 return true;
@@ -2109,6 +2940,14 @@ fn handle_command(
                     json!({"type":"error","message":"PC control already owns the touchpad pointer. Turn off PC control before using the separate touchpad mouse mode."}),
                 );
                 return true;
+            }
+            // Apply pointer settings only once the request is known to be acceptable.
+            if sensitivity.is_some() || acceleration.is_some() {
+                let (current_s, current_a) = mouse.pointer();
+                mouse.set_pointer(
+                    sensitivity.unwrap_or(current_s),
+                    acceleration.unwrap_or(current_a),
+                );
             }
             mouse.set_enabled(enabled);
             emit(proxy, json!({"type":"mouseMode","enabled":enabled}));
@@ -2169,10 +3008,19 @@ fn handle_command(
             click_threshold,
             pointer_sensitivity,
             reverse_scroll,
+            pointer_acceleration,
+            left_stick,
         } => {
             let Some(device) = device.as_mut() else {
                 return true;
             };
+            if !pointer_acceleration.is_finite() || !(0.0..=1.0).contains(&pointer_acceleration) {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Pointer acceleration must be between 0 and 1."}),
+                );
+                return true;
+            }
             let mut seen = std::collections::HashSet::new();
             if !click_threshold.is_finite()
                 || !(0.05..=0.95).contains(&click_threshold)
@@ -2213,18 +3061,10 @@ fn handle_command(
                                 || b.launch_path
                                     .as_deref()
                                     .is_none_or(|p| !valid_launch_path(p))))
-                        || (b.behavior == "macro"
-                            && (b.sequence.is_empty() || b.sequence.len() > 5))
-                        || (b.behavior != "macro" && !b.sequence.is_empty())
-                        || b.chord.len() > 8
-                        || b.chord
-                            .iter()
-                            .any(|&vk| !crate::input_map::supported_key(vk))
-                        || (b.behavior == "macro" && !b.chord.is_empty())
-                        || b.sequence
-                            .iter()
-                            .any(|&vk| !crate::input_map::supported_key(vk))
-                        || !seen.insert(b.button)
+                        || !macro_fields_valid(b)
+                        || !seen.insert(b.identity())
+                        || (matches!(b.behavior.as_str(), "launch" | "program")
+                            && bindings.iter().filter(|o| o.button == b.button).count() > 1)
                 })
             {
                 emit(
@@ -2246,19 +3086,23 @@ fn handle_command(
                 .iter()
                 .filter_map(|b| b.program.clone().map(|p| (b.button, p)))
                 .collect();
-            device.desktop.set_programs(programs);
+            let modes = bindings
+                .iter()
+                .filter(|b| b.behavior == "program")
+                .map(|b| (b.button, b.program_mode.unwrap_or_default()))
+                .collect();
             let mapped = bindings
                 .into_iter()
                 .filter(|b| !matches!(b.behavior.as_str(), "launch" | "program"))
-                .map(|b| RemapBinding {
-                    button: b.button,
-                    vk: b.vk,
-                    modifier: None,
-                    behavior: RemapBehavior::from_label(&b.behavior).unwrap_or(RemapBehavior::Hold),
-                    sequence: b.sequence,
-                    chord: b.chord,
-                })
-                .collect();
+                .map(|b| b.into_binding(None))
+                .collect::<Vec<_>>();
+            if let Err(message) = RemapBinding::validate_set(&mapped) {
+                emit(proxy, json!({"type":"error","message":message}));
+                return true;
+            }
+            // Only touch the live mapper once the whole set is known to be valid.
+            device.desktop.set_programs(programs);
+            device.desktop.set_program_modes(modes);
             device.desktop.set_bindings(
                 mapped,
                 click_threshold,
@@ -2266,6 +3110,10 @@ fn handle_command(
                 reverse_scroll,
                 launches,
             );
+            device
+                .desktop
+                .set_pointer_acceleration(pointer_acceleration);
+            device.desktop.set_left_stick_mode(left_stick);
             emit(
                 proxy,
                 json!({"type":"pcBindings","count":seen.len(),"clickThreshold":click_threshold}),
@@ -2342,6 +3190,12 @@ fn handle_command(
             bias,
             deadzone,
             smoothing,
+            gate,
+            stick_off_threshold,
+            smooth_threshold,
+            acceleration,
+            accel_threshold,
+            flick_without_gyro,
         } => {
             if enabled && let Err(message) = crate::input_map::prepare_desktop() {
                 emit(proxy, json!({"type":"error","message":message}));
@@ -2361,7 +3215,22 @@ fn handle_command(
                 );
                 return true;
             };
+            let Some(gate_mode) = crate::input_map::GyroGate::from_label(&gate) else {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Gyro gate must be hold, disable or toggle."}),
+                );
+                return true;
+            };
             if !(0.05..=8.0).contains(&sensitivity)
+                || !stick_off_threshold.is_finite()
+                || !(0.0..=1.0).contains(&stick_off_threshold)
+                || !smooth_threshold.is_finite()
+                || !(0.0..=1000.0).contains(&smooth_threshold)
+                || !acceleration.is_finite()
+                || !(0.0..=2.0).contains(&acceleration)
+                || !accel_threshold.is_finite()
+                || !(0.0..=1000.0).contains(&accel_threshold)
                 || !(0.0..=4.0).contains(&yaw_scale)
                 || !(0.0..=4.0).contains(&pitch_scale)
                 || bias.iter().any(|n| i32::from(*n).abs() > 4096)
@@ -2384,6 +3253,13 @@ fn handle_command(
                 activation: activation_mode,
                 deadzone,
                 smoothing,
+                bias,
+                gate: gate_mode,
+                stick_off_threshold,
+                smooth_threshold,
+                acceleration,
+                accel_threshold,
+                flick_without_gyro,
             });
             emit(
                 proxy,
@@ -2417,18 +3293,8 @@ fn handle_command(
                             .is_some_and(|modifier| modifier >= 23 || modifier == b.button)
                         || RemapBehavior::from_label(&b.behavior).is_none()
                         || b.launch_path.is_some()
-                        || (b.behavior == "macro"
-                            && (b.sequence.is_empty() || b.sequence.len() > 5))
-                        || (b.behavior != "macro" && !b.sequence.is_empty())
-                        || b.chord.len() > 8
-                        || b.chord
-                            .iter()
-                            .any(|&vk| !crate::input_map::supported_key(vk))
-                        || (b.behavior == "macro" && !b.chord.is_empty())
-                        || b.sequence
-                            .iter()
-                            .any(|&vk| !crate::input_map::supported_key(vk))
-                        || !seen.insert((b.button, b.modifier))
+                        || !macro_fields_valid(b)
+                        || !seen.insert(b.identity())
                 })
             {
                 emit(
@@ -2439,21 +3305,75 @@ fn handle_command(
             }
             let mapped = bindings
                 .into_iter()
-                .map(|b| RemapBinding {
-                    button: b.button,
-                    vk: b.vk,
-                    modifier: b.modifier,
-                    behavior: RemapBehavior::from_label(&b.behavior).unwrap_or(RemapBehavior::Hold),
-                    sequence: b.sequence,
-                    chord: b.chord,
+                .map(|b| {
+                    let modifier = b.modifier;
+                    b.into_binding(modifier)
                 })
-                .collect();
+                .collect::<Vec<_>>();
+            if let Err(message) = RemapBinding::validate_set(&mapped) {
+                emit(proxy, json!({"type":"error","message":message}));
+                return true;
+            }
             remap.set(enabled, mapped);
             emit(proxy, json!({"type":"remap","enabled":enabled}));
             emit(
                 proxy,
                 json!({"type":"notice","message":if enabled {"Remap on"} else {"Remap off"}}),
             );
+            return true;
+        }
+        DeviceCommand::SetRemapTiming { hold_ms, gap_ms } => {
+            if !(15..=500).contains(&hold_ms) || !(5..=500).contains(&gap_ms) {
+                emit(
+                    proxy,
+                    json!({"type":"error","message":"Key hold must be 15-500 ms and gap 5-500 ms."}),
+                );
+                return true;
+            }
+            remap.set_timing(hold_ms, gap_ms);
+            if let Some(d) = device.as_mut() {
+                d.desktop.set_remap_timing(hold_ms, gap_ms);
+            }
+            emit(
+                proxy,
+                json!({"type":"remapTiming","holdMs":hold_ms,"gapMs":gap_ms}),
+            );
+            return true;
+        }
+        DeviceCommand::SetPadExtras { extras } => {
+            xinput.set_extras(extras);
+            emit(proxy, json!({"type":"padExtras","extras":extras}));
+            return true;
+        }
+        DeviceCommand::PreviewEnvelope {
+            path,
+            kind,
+            points,
+            id,
+        } => {
+            if !crate::audio_haptics::file::valid_kind(&kind) || path.is_empty() {
+                emit(
+                    proxy,
+                    json!({"type":"envelope","id":id,"path":path,"kind":kind,"error":"Choose a file and a valid content type."}),
+                );
+                return true;
+            }
+            let proxy = proxy.clone();
+            std::thread::spawn(move || {
+                let event = match crate::audio_haptics::file::preview_envelope(
+                    std::path::Path::new(&path),
+                    &kind,
+                    points,
+                ) {
+                    Ok(values) => {
+                        json!({"type":"envelope","id":id,"path":path,"kind":kind,"points":values})
+                    }
+                    Err(error) => {
+                        json!({"type":"envelope","id":id,"path":path,"kind":kind,"error":error})
+                    }
+                };
+                let _ = proxy.send(event);
+            });
             return true;
         }
         DeviceCommand::SetXinput { enabled } => {
@@ -2509,6 +3429,7 @@ fn handle_command(
                             {
                                 let _ = connected.release_lightbar();
                             }
+                            connected.anim = None;
                             connected.battery_light = false;
                             connected.sensor_light = false;
                             connected.last_sensor = None;
@@ -2635,6 +3556,11 @@ fn handle_command(
             if let Err(message)=&result{emit(proxy,json!({"type":"controlProfile","applied":false,"message":message}));}
             result
         }
+        DeviceCommand::SetAutoBias { enabled } => {
+            device.motion.set_auto_bias(enabled);
+            emit(proxy, json!({"type":"autoBias","enabled":device.motion.auto_bias()}));
+            Ok(if enabled { "Automatic gyro bias on" } else { "Automatic gyro bias off" })
+        }
         DeviceCommand::SetMotionBias {bias_dps} => device.motion.set_bias(bias_dps).map(|_|"Still bias restored").map_err(str::to_string),
         DeviceCommand::CalibrateMotion {enabled} => {
             device.motion.calibrate(enabled);
@@ -2644,7 +3570,7 @@ fn handle_command(
         DeviceCommand::CancelRadial => {device.radial.cancel();Ok("Radial menu cancelled")}
 
         DeviceCommand::PlayPersonalTest {side,strength} => {
-            if side>1 || strength>100 || !matches!(device.transport,BusType::Usb) {Err("Choose a grip and 0?100% strength over USB".into())}
+            if side>1 || strength>100 || !matches!(device.transport,BusType::Usb) {Err("Choose a grip and 0-100% strength over USB".into())}
             else { device.stop_action();let mut voice=VoiceClip::new("sine",90,10,180,strength,if side==0{-100}else{100});voice.raw_test=true;device.play_voice(voice).map(|_|"Raw grip test") }
         }
         DeviceCommand::PlayEffectClip {clip,play_id} => {
@@ -2739,25 +3665,11 @@ fn handle_command(
                     json!({"type":"telemetryStatus","enabled":false,"message":"Telemetry light released for manual color"}),
                 );
             }
-            let result = if device.last_light == Some(rgb) {
-                Ok(())
-            } else {
-                device.write(protocol::usb_report(
-                    0,
-                    0x04,
-                    0,
-                    None,
-                    None,
-                    Some(rgb),
-                    None,
-                    false,
-                ))
-            };
-            result.map(|_| {
+            device.anim = None;
+            device.set_light(rgb).map(|_| {
                 device.battery_light = false;
+                device.user_light = Some(rgb);
                 emit(proxy, json!({"type":"lightMode","battery":false}));
-                device.light_active = true;
-                device.last_light = Some(rgb);
                 "Lightbar set"
             })
         }
@@ -2767,6 +3679,7 @@ fn handle_command(
             } else {
                 device.write(protocol::player_leds_report(mask)).map(|_| {
                     device.player_leds_active = mask != 0;
+                    device.user_player_leds = (mask != 0).then_some(mask);
                     "Player indicators set"
                 })
             }
@@ -2816,7 +3729,10 @@ fn handle_command(
                 device.release_lightbar().map(|_| "Battery light off")
             }
         }
-        DeviceCommand::SetScreenLightbar { enabled } => {
+        DeviceCommand::SetScreenLightbar { enabled, monitor } => {
+            if let Some(index) = monitor {
+                screen.set_monitor(index);
+            }
             if !enabled && !device.screen_light {
                 emit(
                     proxy,
@@ -2889,6 +3805,9 @@ fn handle_command(
                 device.release_lightbar().map(|_| "Sensor color off")
             }
         }
+        DeviceCommand::PlayHaptic { shape, .. } if !VoiceClip::is_known_shape(&shape) => {
+            Err("Unknown haptic shape. Use sine, square, saw, noise, triangle, pulse, double or swell.".into())
+        }
         DeviceCommand::PlayHaptic {
             shape,
             frequency,
@@ -2928,6 +3847,138 @@ fn handle_command(
                 device.rumble_until = Some(Instant::now() + clip.duration());
                 device.haptic = Some(clip);
                 Ok("Bluetooth motor haptic playing")
+            }
+        }
+        DeviceCommand::SetAdaptiveTrigger { left, right } => {
+            let encode = |side: &Option<protocol::ExtraTrigger>| {
+                side.as_ref().map(protocol::encode_extra_trigger).transpose()
+            };
+            match (encode(&left), encode(&right)) {
+                (Ok(left_block), Ok(right_block)) => {
+                    if left_block.is_none() && right_block.is_none() {
+                        Err("Choose at least one trigger effect.".into())
+                    } else if device.personal.enabled {
+                        // Personal limits cannot scale these experimental modes (they would be
+                        // written as OFF), so refuse instead of reporting them as applied.
+                        Err("Extra trigger modes are unavailable while personal limits are on.".into())
+                    } else {
+                        let _ = device.restore_action();
+                        let (base_left, base_right) =
+                            device.last_trigger.unwrap_or((TRIGGER_OFF, TRIGGER_OFF));
+                        let report = protocol::usb_report(
+                            (if left_block.is_some() { 0x08 } else { 0 })
+                                | (if right_block.is_some() { 0x04 } else { 0 }),
+                            0,
+                            0,
+                            right_block,
+                            left_block,
+                            None,
+                            None,
+                            false,
+                        );
+                        device.write(report).map(|_| {
+                            device.last_trigger = Some((
+                                left_block.unwrap_or(base_left),
+                                right_block.unwrap_or(base_right),
+                            ));
+                            device.input_effect_until = None;
+                            device.bows = [None, None];
+                            device.trigger_active = true;
+                            device.trigger_until = Some(Instant::now() + Duration::from_secs(15));
+                            emit(
+                                proxy,
+                                json!({"type":"triggerLease","active":true,"durationMs":15000}),
+                            );
+                            "Extra trigger mode applied (15s, unverified on hardware)"
+                        })
+                    }
+                }
+                (Err(error), _) | (_, Err(error)) => Err(error.into()),
+            }
+        }
+        DeviceCommand::SetMicrophoneLed { mode } => match protocol::microphone_led_report(mode) {
+            Ok(report) => device.write(report).map(|_| {
+                // The LED-only report does not mute the microphone; report both separately.
+                emit(
+                    proxy,
+                    json!({"type":"microphoneStatus","muted":device.microphone_muted.unwrap_or(false),"led":mode}),
+                );
+                "Microphone light set"
+            }),
+            Err(error) => Err(error.into()),
+        },
+        DeviceCommand::SetAudioVolumes {
+            headphone,
+            speaker,
+            microphone,
+        } => match protocol::audio_volume_report(headphone, speaker, microphone) {
+            Ok(report) => device.write(report).map(|_| {
+                emit(
+                    proxy,
+                    json!({"type":"audioVolumes","controllerId":device.controller_id,"headphone":headphone,"speaker":speaker,"microphone":microphone}),
+                );
+                "Controller volumes set"
+            }),
+            Err(error) => Err(error.into()),
+        },
+        DeviceCommand::SetLedBrightness {
+            brightness,
+            lightbar_setup,
+        } => match protocol::led_brightness_report(brightness, lightbar_setup) {
+            Ok(report) => device.write(report).map(|_| {
+                device.led_brightness_dirty.0 |= brightness.is_some();
+                device.led_brightness_dirty.1 |= lightbar_setup.is_some();
+                emit(
+                    proxy,
+                    json!({"type":"ledBrightness","controllerId":device.controller_id,"brightness":brightness,"lightbarSetup":lightbar_setup}),
+                );
+                "LED brightness set"
+            }),
+            Err(error) => Err(error.into()),
+        },
+        DeviceCommand::SetLightbarAnimation {
+            mode,
+            rgb,
+            period_ms,
+        } => {
+            if mode == "off" {
+                let had = device.anim.take().is_some();
+                let restored = match device.user_light {
+                    Some(color) if had => device.set_light(color),
+                    _ if had => device.release_lightbar(),
+                    _ => Ok(()),
+                };
+                restored.map(|_| {
+                    emit(proxy, json!({"type":"lightAnimation","mode":"off"}));
+                    "Lightbar animation off"
+                })
+            } else if let Some(kind) = LightAnimKind::parse(&mode) {
+                screen.set_enabled(false);
+                device.screen_light = false;
+                device.screen_color = None;
+                device.sensor_light = false;
+                device.last_sensor = None;
+                device.battery_light = false;
+                if telemetry.enabled() {
+                    let _ = telemetry.set(false, 0, false);
+                }
+                let period_ms = period_ms.unwrap_or(3000).clamp(300, 20_000);
+                let rgb = rgb.or(device.user_light).unwrap_or([77, 202, 177]);
+                device.anim = Some(LightAnim {
+                    kind,
+                    rgb,
+                    period_ms,
+                    started: Instant::now(),
+                    next: Instant::now(),
+                });
+                emit(proxy, json!({"type":"lightMode","battery":false}));
+                emit(
+                    proxy,
+                    json!({"type":"lightAnimation","mode":mode,"rgb":rgb,"periodMs":period_ms}),
+                );
+                Ok("Lightbar animation on")
+            } else {
+                Err("Animation must be off, breathe, pulse, rainbow or lowBatteryBlink.".into())
             }
         }
         DeviceCommand::SetMicrophoneMute { enabled } => {
@@ -3051,6 +4102,70 @@ fn handle_command(
                 })
             }
         }
+        DeviceCommand::SetBridgeLatency { value } => device
+            .audio
+            .set_bridge_latency(&value)
+            .inspect(|_| emit(proxy, json!({"type":"bridgeLatency","value":value})))
+            .map(|_| "Bridge latency set (USB period changes when the stream reopens)"),
+        DeviceCommand::SetHapticOutputLevel { level } => device
+            .audio
+            .set_output_level(&level)
+            .inspect(|name| emit(proxy, json!({"type":"hapticOutputLevel","level":name})))
+            .map(|name| match name {
+                "soft" => "Overall intensity: Soft",
+                "normal" => "Overall intensity: Normal",
+                "max" => "Overall intensity: Max",
+                _ => "Overall intensity: Strong",
+            }),
+        DeviceCommand::SetBridgeCustom {
+            cutoff,
+            bass,
+            transient,
+            gate,
+        } => device
+            .audio
+            .set_bridge_custom(crate::audio_haptics::BridgeCustom {
+                cutoff,
+                bass,
+                transient,
+                gate,
+            })
+            .inspect(|_| {
+                emit(
+                    proxy,
+                    json!({"type":"bridgeCustom","cutoff":cutoff,"bass":bass,"transient":transient,"gate":gate}),
+                )
+            })
+            .map(|_| "Custom bridge preset saved"),
+        DeviceCommand::SetBridgeOptions {
+            mode,
+            band_gains,
+            onset,
+            pan_emphasis,
+        } => device
+            .audio
+            .set_bridge_options(crate::audio_haptics::BridgeOptions {
+                mode: mode.clone(),
+                band_gains,
+                onset,
+                pan_emphasis,
+            })
+            .inspect(|_| {
+                emit(
+                    proxy,
+                    json!({"type":"bridgeOptions","mode":mode,"bandGains":band_gains,"onset":onset,"panEmphasis":pan_emphasis}),
+                )
+            })
+            .map(|_| "Bridge options saved"),
+        DeviceCommand::SetProcessReattach { enabled } => {
+            device.audio.set_process_reattach(enabled);
+            emit(proxy, json!({"type":"processReattach","enabled":enabled}));
+            Ok(if enabled {
+                "Process capture will re-attach after the app restarts"
+            } else {
+                "Process re-attach off"
+            })
+        }
         DeviceCommand::SetInputEffects {
             enabled,
             threshold,
@@ -3099,6 +4214,20 @@ fn handle_command(
                 "Low battery alert off"
             })
         }
+        DeviceCommand::SetLowBatteryThresholds { warn, critical } => {
+            if warn > 100 || critical == 0 || critical >= warn {
+                Err("Choose a warning level above the critical level (1-100%).".into())
+            } else {
+                device.battery_thresholds = (warn, critical);
+                device.low_battery_latched = false;
+                device.low_battery_critical_latched = false;
+                emit(
+                    proxy,
+                    json!({"type":"hapticAlertStatus","lowBattery":device.low_battery_alert,"warn":warn,"critical":critical}),
+                );
+                Ok("Low battery thresholds set")
+            }
+        }
         DeviceCommand::SetHapticTimer { seconds } => {
             if seconds > 3600 {
                 Err("Choose a timer up to 60 minutes.".into())
@@ -3123,7 +4252,7 @@ fn handle_command(
         } => {
             device.haptic = None;
             let duration = duration_ms.clamp(20, 500);
-            let motors = [left.min(100), right.min(100)];
+            let motors = [percent_to_motor(left), percent_to_motor(right)];
             device.write_rumble(motors).map(|_| {
                 device.rumble_until = Some(Instant::now() + Duration::from_millis(duration));
                 "Rumble playing"
@@ -3165,6 +4294,9 @@ fn handle_command(
         | DeviceCommand::SetTouchGestures { .. }
         | DeviceCommand::SetGyroAim { .. }
         | DeviceCommand::SetRemap { .. }
+        | DeviceCommand::SetRemapTiming { .. }
+        | DeviceCommand::SetPadExtras { .. }
+        | DeviceCommand::PreviewEnvelope { .. }
         | DeviceCommand::SetXinput { .. }
         | DeviceCommand::SetTelemetry { .. }
         | DeviceCommand::SetScript { .. }
@@ -3227,10 +4359,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
     let mut game_link = GameLink::default();
     let mut next_game_error = Instant::now();
     let mut script: Option<ScriptProgram> = None;
+    let mut last_suspension: (Option<&'static str>, Option<&'static str>) = (None, None);
     let mut last_script_cue: Option<Instant> = None;
     let screen = ScreenSampler::new();
     emit(&proxy, xinput.status_event());
-    let mut preferred_path: Option<String> = None;
+    let mut preferred = Preference::default();
     let mut next_scan = Instant::now();
     let mut native_handoff = false;
     let mut edge_worker: Option<crate::edge_writer::Worker> = None;
@@ -3242,9 +4375,12 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
     let mut input_report = [0u8; 78];
     let mut next_process_check = Instant::now();
     #[cfg(windows)]
-    let gui_pid = std::env::var("CONTROLLER_GUI_PID")
+    if let Some(pid) = std::env::var("CONTROLLER_GUI_PID")
         .ok()
-        .and_then(|value| value.parse::<u32>().ok());
+        .and_then(|value| value.parse::<u32>().ok())
+    {
+        set_gui_pid(pid);
+    }
     #[cfg(windows)]
     let mut next_focus_check = Instant::now();
     let mut last_conflicts = Vec::<&'static str>::new();
@@ -3358,7 +4494,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
             next_metrics = now + Duration::from_secs(1);
         }
         #[cfg(windows)]
-        if let Some(gui_pid) = gui_pid
+        if let Some(gui_pid) = gui_pid()
             && Instant::now() >= next_focus_check
         {
             let focused = processes::gui_window_focused(gui_pid);
@@ -3471,7 +4607,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                 emit(&proxy, json!({"type":"pcMode","enabled":false}));
                 emit(
                     &proxy,
-                    json!({"type":"desktopInputStatus","ready":false,"message":message,"environment":crate::integrations::environment()}),
+                    json!({"type":"desktopInputStatus","ready":false,"message":message,"environment":crate::integrations::environment(),"pointerPrecision":crate::input_map::pointer_precision_enabled()}),
                 );
                 emit(&proxy, json!({"type":"error","message":message}));
             }
@@ -3562,7 +4698,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                                         .to_string(),
                                 );
                             }
-                            if edge_worker.is_some() {
+                            if edge_worker.is_some() || edge_busy() {
                                 return Err("Wait for the Edge profile operation to finish.".into());
                             }
                             if operation == crate::native_provider::Operation::Attach {
@@ -3595,13 +4731,13 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                                     &proxy,
                                 );
                                 let reset = if let Some(mut active) = device.take() {
-                                    active.reset()
+                                    teardown(&mut active, &proxy)
                                 } else {
                                     Ok(())
                                 };
                                 emit(
                                     &proxy,
-                                    json!({"type":"device","connected":false,"message":"App monitoring paused for native bridge"}),
+                                    json!({"type":"device","connected":false,"state":"handoff","reason":"native-bridge","message":"App monitoring paused for native bridge"}),
                                 );
                                 emit(&proxy, json!({"type":"safetyReset"}));
                                 reset?;
@@ -3620,6 +4756,21 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                         emit(
                             &proxy,
                             json!({"type":"nativeHandoff","enabled":native_handoff||native_provider.owns_controller()}),
+                        );
+                        continue;
+                    }
+                    if matches!(command, DeviceCommand::Scan | DeviceCommand::ListDevices)
+                        && (native_handoff
+                            || native_provider.owns_controller()
+                            || edge_worker.is_some()
+                            || edge_busy())
+                    {
+                        emit_cached_device_list(
+                            &proxy,
+                            preferred
+                                .path
+                                .as_deref()
+                                .or(device.as_ref().map(|d| d.path_display.as_str())),
                         );
                         continue;
                     }
@@ -3679,6 +4830,12 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                             if disable_hid {
                                 return Err("HID is disabled for this session.".to_string());
                             }
+                            if edge_busy() {
+                                return Err(
+                                    "An Edge read is still finishing; try again in a moment."
+                                        .to_string(),
+                                );
+                            }
                             let selected = device
                                 .as_ref()
                                 .filter(|d| {
@@ -3697,8 +4854,8 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                             game_link.stop();let _=telemetry.set(false,0,false);script=None;screen.set_enabled(false);cancel_audio_commands(&mut deferred_audio,&proxy,"Audio cancelled for the Edge profile write.");deferred_owner=None;
                             stop_input_mappers(&mut mouse,&mut gyro,&mut remap,&mut xinput,&proxy);
                             let mut active=device.take().ok_or("The selected controller disconnected.")?;
-                            let reset=active.reset();drop(active);
-                            emit(&proxy,json!({"type":"device","connected":false,"message":"Saving Edge profile; monitoring is paused"}));reset?;
+                            let reset=teardown(&mut active,&proxy);drop(active);
+                            emit(&proxy,json!({"type":"device","connected":false,"state":"edge-busy","reason":"edge-write","message":"Saving Edge profile; monitoring is paused"}));reset?;
                             emit(&proxy,json!({"type":"safetyReset"}));
                             crate::edge_writer::start(path,data,slot,edit,request_id)
                         });
@@ -3728,7 +4885,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                         emit_device_list(&api, &proxy, None);
                         emit(
                             &proxy,
-                            json!({"type":"device","connected":false,"message":"HID disabled for this core session"}),
+                            json!({"type":"device","connected":false,"state":"disconnected","reason":"hid-disabled","message":"HID disabled for this core session"}),
                         );
                         continue;
                     }
@@ -3886,11 +5043,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                                 &proxy,
                             );
                             if let Some(mut active) = device.take() {
-                                let _ = active.reset();
+                                let _ = teardown(&mut active, &proxy);
                             }
                             emit(
                                 &proxy,
-                                json!({"type":"device","connected":false,"message":"Controller released for native game feedback"}),
+                                json!({"type":"device","connected":false,"state":"handoff","reason":"native-feedback","message":"Controller released for native game feedback"}),
                             );
                             emit(&proxy, json!({"type":"safetyReset"}));
                         } else {
@@ -3928,8 +5085,8 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                         &mut script,
                         &screen,
                         &mut telemetry_stale_latched,
-                        &api,
-                        &mut preferred_path,
+                        &mut api,
+                        &mut preferred,
                     ) {
                         return;
                     }
@@ -3962,16 +5119,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                         if update.reset {
                             let _ = d.restore_action();
                             if let Some(rgb) = d.last_light {
-                                let _ = d.write(protocol::usb_report(
-                                    0,
-                                    4,
-                                    0,
-                                    None,
-                                    None,
-                                    Some(rgb),
-                                    None,
-                                    false,
-                                ));
+                                let _ = d.write_light(rgb);
                             } else {
                                 let _ = d.release_lightbar();
                             }
@@ -3984,6 +5132,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                             let mut report =
                                 protocol::usb_report(0, 1, 0, None, None, None, None, false);
                             report[9] = mode;
+                            // LED only: it must not change the tracked mute state.
                             let _ = d.write(report);
                         }
                         if update.triggers.iter().any(Option::is_some) {
@@ -4009,17 +5158,9 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                             let _ = d.play_action(&rule);
                         }
                         if let Some(rgb) = update.rgb {
-                            let _ = d.write(protocol::usb_report(
-                                0,
-                                4,
-                                0,
-                                None,
-                                None,
-                                Some(rgb),
-                                None,
-                                false,
-                            ));
-                            d.light_active = true;
+                            // Game-link color owns the lightbar; stop a running animation.
+                            d.anim = None;
+                            let _ = d.set_light(rgb);
                         }
                         for event in &update.events {
                             let rules = d.game_actions.event(event, Instant::now());
@@ -4095,14 +5236,11 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                 );
             }
             if let Some(connected) = device.as_mut() {
-                if tick.emit_ui && connected.last_light != Some(color) {
-                    let report =
-                        protocol::usb_report(0, 0x04, 0, None, None, Some(color), None, false);
-                    if connected.write(report).is_ok() {
-                        connected.last_light = Some(color);
-                        connected.light_active = true;
-                        connected.battery_light = false;
-                    }
+                if tick.emit_ui
+                    && connected.last_light != Some(color)
+                    && connected.write_light(color).is_ok()
+                {
+                    connected.battery_light = false;
                 }
                 if let Some(cue) = scripted.and_then(|effect| effect.cue) {
                     let due =
@@ -4151,14 +5289,8 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                 Ok(raw) => {
                     let color = screen_color::smooth(connected.screen_color, raw);
                     connected.screen_color = Some(color);
-                    if connected.last_light != Some(color) {
-                        let report =
-                            protocol::usb_report(0, 0x04, 0, None, None, Some(color), None, false);
-                        if connected.write(report).is_ok() {
-                            connected.last_light = Some(color);
-                            connected.light_active = true;
-                            emit(&proxy, json!({"type":"screenColor","rgb":color}));
-                        }
+                    if connected.last_light != Some(color) && connected.write_light(color).is_ok() {
+                        emit(&proxy, json!({"type":"screenColor","rgb":color}));
                     }
                 }
                 Err(error) => {
@@ -4200,17 +5332,28 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                     );
                     next_scan = Instant::now();
                 } else if matches!(current.transport, BusType::Bluetooth)
-                    && preferred_path.is_none()
                     && api
                         .device_list()
                         .any(|info| is_controller(info) && matches!(info.bus_type(), BusType::Usb))
-                    && let Ok(Some(found)) = open_path(&api, None)
+                    // Only hand over to a USB pad that is the same physical controller.
+                    && let Ok(Some(mut found)) = open_filtered(
+                        &api,
+                        &Preference {
+                            path: None,
+                            controller_id: Some(current.controller_id.clone()),
+                        },
+                        true,
+                        true,
+                    )
                     && found.path != current.path
                 {
+                    if preferred.controller_id.is_some() {
+                        preferred.pin(&found);
+                    }
                     stop_input_mappers(&mut mouse, &mut gyro, &mut remap, &mut xinput, &proxy);
                     screen.set_enabled(false);
                     if let Some(old) = device.as_mut() {
-                        let _ = old.reset();
+                        let _ = teardown(old, &proxy);
                     }
                     emit(&proxy, json!({"type":"lightMode","battery":false}));
                     emit(
@@ -4218,20 +5361,28 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                         json!({"type":"triggerLease","active":false,"durationMs":0}),
                     );
                     emit_connected(&proxy, &found);
+                    found.restore_remembered(&proxy);
                     emit_device_list(&api, &proxy, Some(&found.path_display));
+                    if let Ok(mut live) = LIVE_BATTERY.lock() {
+                        *live = None;
+                    }
                     device = Some(found);
                 }
             }
-            emit_device_list(
+            emit_device_list_if_changed(
                 &api,
                 &proxy,
-                preferred_path
+                preferred
+                    .path
                     .as_deref()
                     .or(device.as_ref().map(|d| d.path_display.as_str())),
             );
         }
         remap.tick();
         if let Some(connected) = device.as_mut() {
+            for event in connected.pending_events.drain(..) {
+                emit(&proxy, event);
+            }
             match connected.tick_link_experiment() {
                 Ok(Some(event)) => emit(&proxy, event),
                 Ok(None) => {}
@@ -4267,6 +5418,34 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
             } else {
                 None
             };
+            // The audio side expires game rumble after 10 s without an update, so keep
+            // steady non-zero rumble alive while the virtual pad is up.
+            if feedback.is_some_and(|m| m != [0, 0]) {
+                connected.game_feedback_at = Some(Instant::now());
+            }
+            let action = if feedback.is_none()
+                && xinput.active()
+                && connected.game_rumble != [0, 0]
+                && !connected.input_stale
+            {
+                rumble_keepalive(
+                    connected.game_feedback_at,
+                    connected.game_refresh_at,
+                    Instant::now(),
+                )
+            } else {
+                RumbleKeepalive::Wait
+            };
+            let refresh = action == RumbleKeepalive::Refresh;
+            let feedback = match action {
+                RumbleKeepalive::Refresh => Some(connected.game_rumble),
+                // The game stopped talking (killed or hung) while its last rumble was non-zero.
+                RumbleKeepalive::Expire => Some([0, 0]),
+                RumbleKeepalive::Wait => feedback,
+            };
+            if feedback.is_some() {
+                connected.game_refresh_at = Some(Instant::now());
+            }
             if let Some(motors) = feedback {
                 let motors = if connected.input_stale {
                     [0, 0]
@@ -4301,10 +5480,12 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                     Ok(())
                 };
                 connected.game_rumble = motors;
-                emit(
-                    &proxy,
-                    json!({"type":"gameFeedback","motors":motors,"delivered":result.is_ok() && !suppressed,"suppressed":suppressed}),
-                );
+                if !refresh {
+                    emit(
+                        &proxy,
+                        json!({"type":"gameFeedback","motors":motors,"delivered":result.is_ok() && !suppressed,"suppressed":suppressed}),
+                    );
+                }
                 if let Err(message) = result
                     && !recovering
                 {
@@ -4336,6 +5517,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
             {
                 emit(&proxy, json!({"type":"error","message":error}));
             }
+            connected.tick_light_animation();
             if connected
                 .haptic_timer
                 .is_some_and(|at| Instant::now() >= at)
@@ -4364,13 +5546,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                 .trigger_until
                 .is_some_and(|deadline| Instant::now() >= deadline)
             {
-                let off = protocol::encode_trigger(&TriggerSetting {
-                    mode: "off".into(),
-                    strength: 0.0,
-                    curve: vec![0.0; 11],
-                    ..TriggerSetting::default()
-                })
-                .unwrap();
+                let off = TRIGGER_OFF;
                 let held = connected
                     .timeline
                     .as_ref()
@@ -4405,7 +5581,7 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                 if clip.due() {
                     match clip.sample_motors() {
                         Some(motors) => {
-                            let _ = connected.write_rumble(motors);
+                            let _ = connected.write_rumble(motors.map(percent_to_motor));
                         }
                         None => {
                             let _ = connected.write_rumble([0, 0]);
@@ -4446,12 +5622,23 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                             .record(crate::runtime_diagnostics::elapsed_us(input_started));
                     }
                     if let Some(mut input) = parsed {
-                        connected.last_battery = input.battery;
-                        if connected.microphone_muted.is_none() {
-                            connected.microphone_muted = Some(input.battery_info.microphone_muted);
+                        if input.full_report {
+                            connected.last_battery = input.battery;
+                            connected.track_status(&input.battery_info, &proxy);
+                            if connected.microphone_muted.is_none() {
+                                connected.microphone_muted =
+                                    Some(input.battery_info.microphone_muted);
+                                emit(
+                                    &proxy,
+                                    json!({"type":"microphoneStatus","muted":input.battery_info.microphone_muted}),
+                                );
+                            }
+                        } else if !connected.battery_unknown_sent {
+                            // Short Bluetooth reports carry no battery or jack state.
+                            connected.battery_unknown_sent = true;
                             emit(
                                 &proxy,
-                                json!({"type":"microphoneStatus","muted":input.battery_info.microphone_muted}),
+                                json!({"type":"battery","controllerId":connected.controller_id,"available":false,"reason":"short-report","level":null,"charging":false,"faults":[]}),
                             );
                         }
                         if input.buttons[18] > 0.5 && !connected.last_input_buttons[18] {
@@ -4465,18 +5652,35 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                         }
                         connected.last_valid_report = Instant::now();
                         raw_reports += 1;
-                        if input.charging || input.battery.is_some_and(|level| level >= 30) {
-                            connected.low_battery_latched = false;
-                        } else if connected.low_battery_alert
-                            && !connected.low_battery_latched
-                            && let Some(level) = input.battery.filter(|level| *level <= 20)
-                        {
-                            connected.low_battery_latched = true;
-                            connected.play_feedback("square", 155, 3, 120, 32, 0);
-                            emit(
-                                &proxy,
-                                json!({"type":"hapticAlert","message":format!("Battery low: {level}%")}),
-                            );
+                        if input.full_report {
+                            let (warn, critical) = connected.battery_thresholds;
+                            let clear = warn.saturating_add(10).min(100);
+                            if input.charging || input.battery.is_some_and(|level| level >= clear) {
+                                connected.low_battery_latched = false;
+                                connected.low_battery_critical_latched = false;
+                            } else if connected.low_battery_alert
+                                && let Some(level) = input.battery
+                            {
+                                if level <= critical && !connected.low_battery_critical_latched {
+                                    connected.low_battery_critical_latched = true;
+                                    connected.low_battery_latched = true;
+                                    connected.play_feedback("square", 155, 3, 160, 45, 0);
+                                    emit(
+                                        &proxy,
+                                        json!({"type":"hapticAlert","level":"critical","message":format!("Battery critical: {level}%")}),
+                                    );
+                                } else if level <= warn
+                                    && level > critical
+                                    && !connected.low_battery_latched
+                                {
+                                    connected.low_battery_latched = true;
+                                    connected.play_feedback("square", 155, 3, 120, 32, 0);
+                                    emit(
+                                        &proxy,
+                                        json!({"type":"hapticAlert","level":"warn","message":format!("Battery low: {level}%")}),
+                                    );
+                                }
+                            }
                         }
                         if let Some(sequence) = input.sequence {
                             if let Some(previous) = connected.input_sequence {
@@ -4497,44 +5701,14 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                             } else {
                                 [255, 65, 77]
                             };
-                            if connected.last_light != Some(color) {
-                                let report = protocol::usb_report(
-                                    0,
-                                    0x04,
-                                    0,
-                                    None,
-                                    None,
-                                    Some(color),
-                                    None,
-                                    false,
-                                );
-                                if connected.write(report).is_ok() {
-                                    connected.last_light = Some(color);
-                                    connected.light_active = true;
-                                }
-                            }
+                            let _ = connected.set_light(color);
                         }
                         if connected.sensor_light
                             && let Some(sensor_byte) = input.battery_info.sensor_byte
                         {
                             let color = sensor_color(sensor_byte);
                             let changed = connected.last_sensor != Some(sensor_byte);
-                            if connected.last_light != Some(color) {
-                                let report = protocol::usb_report(
-                                    0,
-                                    0x04,
-                                    0,
-                                    None,
-                                    None,
-                                    Some(color),
-                                    None,
-                                    false,
-                                );
-                                if connected.write(report).is_ok() {
-                                    connected.last_light = Some(color);
-                                    connected.light_active = true;
-                                }
-                            }
+                            let _ = connected.set_light(color);
                             if changed && connected.last_light == Some(color) {
                                 connected.last_sensor = Some(sensor_byte);
                                 emit(
@@ -4597,27 +5771,51 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                             connected.desktop.update(&input);
                             cue
                         };
-                        gyro.update(
-                            &input,
-                            &motion,
-                            &connected.controls.motion,
-                            connected.desktop.ui_focused()
-                                || connected.desktop.enabled()
-                                || radial.consume,
-                        );
-                        remap.set_suspended(
-                            connected.desktop.ui_focused()
-                                || connected.desktop.enabled()
-                                || radial.consume,
-                        );
+                        // Flick output is suspended while the UI has focus, PC control owns the
+                        // pointer, or the radial menu consumes the stick.
+                        let flick_suspended = connected.desktop.ui_focused()
+                            || connected.desktop.enabled()
+                            || radial.consume;
+                        gyro.update(&input, &motion, &connected.controls.motion, flick_suspended);
+                        remap.set_suspended(flick_suspended);
                         remap.update(&input);
-                        if gyro.config.enabled
+                        if (gyro.config.enabled || gyro.config.flick_without_gyro)
                             && motion.valid
                             && connected.controls.motion.flick_enabled
-                            && !connected.desktop.enabled()
+                            && !flick_suspended
                         {
                             game_input.axes[2] = 0.0;
                             game_input.axes[3] = 0.0;
+                        }
+                        // Buttons a consuming binding handles are hidden from the virtual pad.
+                        for (index, consumed) in remap
+                            .consumed()
+                            .into_iter()
+                            .zip(connected.desktop.consumed_buttons())
+                            .map(|(a, b)| a || b)
+                            .enumerate()
+                        {
+                            if consumed && let Some(value) = game_input.buttons.get_mut(index) {
+                                *value = 0.0;
+                            }
+                        }
+                        let suspension = (
+                            connected.desktop.suspension_reason(),
+                            gyro.inactive_reason()
+                                .filter(|_| gyro.config.enabled || gyro.config.flick_without_gyro),
+                        );
+                        if suspension != last_suspension {
+                            last_suspension = suspension;
+                            emit(
+                                &proxy,
+                                json!({"type":"suspended","controllerId":connected.controller_id,"pc":suspension.0,"gyro":suspension.1}),
+                            );
+                        }
+                        if remap.take_queue_overflow() || connected.desktop.take_queue_overflow() {
+                            emit(
+                                &proxy,
+                                json!({"type":"queueOverflow","message":"A macro was dropped because the key queue was full."}),
+                            );
                         }
                         let virtual_axes = game_input.axes;
                         if let Some(message) = connected.desktop.take_launch_error() {
@@ -4768,25 +5966,50 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
                 && !native_handoff
                 && !native_provider.owns_controller()
                 && edge_worker.is_none()
+                && !edge_busy()
                 && Instant::now() >= next_scan
             {
                 let _ = api.refresh_devices();
-                match open_path(&api, preferred_path.as_deref()) {
-                    Ok(Some(found)) => {
+                // A pinned controller is never silently replaced by another pad.
+                let opened = if preferred.controller_id.is_some() {
+                    open_filtered(&api, &preferred, false, true)
+                } else {
+                    open_path(&api, &preferred)
+                };
+                match opened {
+                    Ok(Some(mut found)) => {
+                        let substituted = preferred
+                            .controller_id
+                            .as_deref()
+                            .is_some_and(|id| id != found.controller_id);
+                        if substituted {
+                            emit(
+                                &proxy,
+                                json!({"type":"notice","code":"pinned-missing","message":"The selected controller is unavailable; using another connected DualSense"}),
+                            );
+                        } else if preferred.controller_id.is_some() {
+                            // Same pad, possibly on a new transport/path: keep the pin current.
+                            preferred.pin(&found);
+                        }
                         emit_connected(&proxy, &found);
+                        found.restore_remembered(&proxy);
                         emit_device_list(&api, &proxy, Some(&found.path_display));
+                        if let Ok(mut live) = LIVE_BATTERY.lock() {
+                            *live = None;
+                        }
                         device = Some(found);
                     }
                     Ok(None) => {
+                        let pinned = preferred.controller_id.is_some();
                         emit(
                             &proxy,
-                            json!({ "type": "device", "connected": false, "message": "No DualSense found" }),
+                            json!({ "type": "device", "connected": false, "state": if pinned {"pinned-missing"} else {"disconnected"}, "reason": if pinned {"pinned-missing"} else {"none-found"}, "message": "No DualSense found" }),
                         );
-                        emit_device_list(&api, &proxy, preferred_path.as_deref());
+                        emit_device_list_if_changed(&api, &proxy, preferred.path.as_deref());
                     }
                     Err(error) => emit(
                         &proxy,
-                        json!({ "type": "device", "connected": false, "message": error }),
+                        json!({ "type": "device", "connected": false, "state": "disconnected", "reason": "open-failed", "message": error }),
                     ),
                 }
                 next_scan = Instant::now() + Duration::from_secs(2);
@@ -4798,6 +6021,19 @@ pub fn run(rx: Receiver<DeviceCommand>, proxy: Sender<serde_json::Value>, disabl
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn game_rumble_keepalive_stops_after_the_game_goes_silent() {
+        use super::{RumbleKeepalive as K, rumble_keepalive};
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let at = |s| t0 + Duration::from_secs(s);
+        assert_eq!(rumble_keepalive(Some(t0), Some(t0), at(1)), K::Wait);
+        assert_eq!(rumble_keepalive(Some(t0), Some(t0), at(3)), K::Refresh);
+        assert_eq!(rumble_keepalive(Some(t0), None, at(3)), K::Refresh);
+        // Refreshes do not count as real updates, so a dead game is cut off.
+        assert_eq!(rumble_keepalive(Some(t0), Some(at(29)), at(31)), K::Expire);
+        assert_eq!(rumble_keepalive(None, None, at(1)), K::Expire);
+    }
     #[test]
     fn reset_rejects_pending_playback_and_checkpoint_before_they_can_restart() {
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -4845,6 +6081,88 @@ mod tests {
         BowReturn, DeviceCommand, InputEffect, KickStyle, TriggerSetting, WeaponKind,
         encode_live_trigger, sensor_color,
     };
+
+    #[test]
+    fn rumble_percent_scales_to_the_full_byte_range() {
+        assert_eq!(super::percent_to_motor(0), 0);
+        assert_eq!(super::percent_to_motor(100), 255);
+        assert_eq!(super::percent_to_motor(50), 128);
+        assert_eq!(super::percent_to_motor(250), 255);
+    }
+
+    #[test]
+    fn full_write_accepts_padded_and_unknown_counts() {
+        assert_eq!(super::full_write(0, 142), cfg!(windows));
+        assert!(super::full_write(142, 142));
+        assert!(super::full_write(143, 142));
+        assert!(!super::full_write(20, 142));
+    }
+
+    #[test]
+    fn disconnect_messages_map_to_structured_states() {
+        assert_eq!(
+            super::disconnect_state("Stream stalled \u{2014} reconnecting").0,
+            "stalled"
+        );
+        assert_eq!(
+            super::disconnect_state("Controller disconnected: x").0,
+            "reconnecting"
+        );
+        assert_eq!(
+            super::disconnect_state("Disconnected"),
+            ("disconnected", "removed")
+        );
+    }
+
+    #[test]
+    fn candidate_rank_prefers_controller_id_then_path_then_usb() {
+        let pref = super::Preference {
+            path: Some("p1".into()),
+            controller_id: Some("pad-a".into()),
+        };
+        let same_id_bt = super::candidate_rank(&pref, Some("pad-a"), "other", false);
+        let other_id_same_path = super::candidate_rank(&pref, Some("pad-b"), "p1", true);
+        let other = super::candidate_rank(&pref, None, "x", true);
+        assert!(same_id_bt < other_id_same_path);
+        assert!(other_id_same_path < other);
+    }
+
+    #[test]
+    fn animations_follow_their_shapes() {
+        use super::{LightAnimKind::*, animation_color};
+        let base = [200, 100, 50];
+        assert_eq!(animation_color(Pulse, base, 1000, 0, None, 20), base);
+        assert!(animation_color(Breathe, base, 1000, 0, None, 20)[0] < 40);
+        assert_eq!(
+            animation_color(Rainbow, base, 1000, 0, None, 20),
+            [255, 0, 0]
+        );
+        assert_eq!(
+            animation_color(LowBatteryBlink, base, 1000, 100, Some(10), 20),
+            [255, 40, 40]
+        );
+        assert_eq!(
+            animation_color(LowBatteryBlink, base, 1000, 600, Some(10), 20),
+            [0, 0, 0]
+        );
+        assert_eq!(
+            animation_color(LowBatteryBlink, base, 1000, 600, Some(80), 20),
+            base
+        );
+    }
+
+    #[test]
+    fn firmware_labels_and_build_strings_parse() {
+        assert_eq!(super::feature_version_label(0x0215), "2.21");
+        let mut report = [0u8; 64];
+        report[1..12].copy_from_slice(b"Sep 20 2020");
+        report[12..20].copy_from_slice(b"12:34:56");
+        assert_eq!(
+            super::firmware_build(&report).as_deref(),
+            Some("Sep 20 2020 12:34:56")
+        );
+        assert_eq!(super::firmware_build(&[0u8; 64]), None);
+    }
     use aftertouch_protocol as protocol;
     use std::time::{Duration, Instant};
 
@@ -5087,5 +6405,92 @@ mod tests {
         assert_eq!((packed >> 15) & 7, 7);
         assert_eq!(packed & 7, 0);
         assert_eq!((packed >> 12) & 7, 0);
+    }
+
+    #[test]
+    fn ui_camel_case_field_names_reach_the_core() {
+        // The UI sends camelCase; these used to be rejected or silently dropped.
+        let reload: DeviceCommand = serde_json::from_value(
+            serde_json::json!({"action":"reloadOutputCalibration","controllerId":"pad-1"}),
+        )
+        .expect("controllerId must be accepted");
+        assert!(matches!(
+            reload,
+            DeviceCommand::ReloadOutputCalibration { controller_id } if controller_id == "pad-1"
+        ));
+        let gyro: DeviceCommand = serde_json::from_value(serde_json::json!({
+            "action":"setGyroAim","enabled":true,"sensitivity":1.0,
+            "yawScale":1.5,"pitchScale":0.5,"invertY":true,"activation":"l2"
+        }))
+        .expect("camelCase gyro fields must be accepted");
+        match gyro {
+            DeviceCommand::SetGyroAim {
+                yaw_scale,
+                pitch_scale,
+                invert_y,
+                ..
+            } => {
+                assert_eq!(yaw_scale, 1.5);
+                assert_eq!(pitch_scale, 0.5);
+                assert!(invert_y, "Invert pitch must not be dropped");
+            }
+            other => panic!("unexpected command {other:?}"),
+        }
+        // Old snake_case callers keep working.
+        assert!(serde_json::from_value::<DeviceCommand>(
+            serde_json::json!({"action":"setGyroAim","enabled":false,"invert_y":true,"activation":"l2"})
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn new_commands_deserialize_and_ignore_the_persistent_flag() {
+        use serde_json::json;
+        let parse = |v: serde_json::Value| serde_json::from_value::<super::DeviceCommand>(v);
+        assert!(
+            parse(json!({"action":"setBridgeLatency","value":"low","persistent":true})).is_ok()
+        );
+        assert!(
+            parse(json!({"action":"setHapticOutputLevel","level":"max","persistent":true})).is_ok()
+        );
+        assert!(parse(json!({"action":"setHapticOutputLevel"})).is_err());
+        assert!(parse(json!({"action":"setBridgeCustom","cutoff":180.0,"bass":0.7,"transient":0.2,"gate":0.0})).is_ok());
+        assert!(parse(json!({"action":"setBridgeOptions","mode":"threeBand","bandGains":[1,1,0.5],"onset":0.2,"panEmphasis":1})).is_ok());
+        assert!(parse(json!({"action":"setProcessReattach","enabled":true})).is_ok());
+        assert!(
+            parse(json!({"action":"previewEnvelope","path":"a.wav","kind":"bands:1,1,1"})).is_ok()
+        );
+        assert!(parse(json!({"action":"setRemapTiming","holdMs":40,"gapMs":20})).is_ok());
+        assert!(
+            parse(
+                json!({"action":"setPadExtras","touchpadClick":"a","mic":null,"persistent":true})
+            )
+            .is_ok()
+        );
+        assert!(parse(json!({"action":"setScreenLightbar","enabled":true,"monitor":1})).is_ok());
+        assert!(parse(json!({"action":"setTouchMouse","enabled":true,"sensitivity":1.2,"acceleration":0.3})).is_ok());
+        let gyro = parse(json!({"action":"setGyroAim","enabled":true,"gate":"toggle","stickOffThreshold":0.4,"smoothThreshold":30,"acceleration":1,"accelThreshold":60,"flickWithoutGyro":true,"persistent":true})).unwrap();
+        assert!(matches!(
+            gyro,
+            super::DeviceCommand::SetGyroAim {
+                flick_without_gyro: true,
+                ..
+            }
+        ));
+        let remap = parse(json!({"action":"setRemap","enabled":true,"persistent":true,"bindings":[
+            {"button":1,"vk":65,"modifier":4,"modifiers":[5],"layerOnly":true,"longPressMs":400,"turboMs":0,"consume":true}]})).unwrap();
+        let super::DeviceCommand::SetRemap { bindings, .. } = remap else {
+            panic!()
+        };
+        assert_eq!(bindings[0].extras.modifiers, vec![5]);
+        assert!(bindings[0].extras.consume);
+        let old =
+            parse(json!({"action":"setRemap","enabled":true,"bindings":[{"button":1,"vk":65}]}))
+                .unwrap();
+        assert!(matches!(old, super::DeviceCommand::SetRemap { .. }));
+        let pc = parse(
+            json!({"action":"setPcBindings","bindings":[],"click_threshold":0.5,"pointer_sensitivity":1.0,"reverse_scroll":true,"pointer_acceleration":0.2,"left_stick":"wasd"}),
+        );
+        assert!(pc.is_ok());
     }
 }

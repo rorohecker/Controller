@@ -173,6 +173,76 @@ pub struct TelemetryBridge {
     last_brake_cue: Option<Instant>,
     last_kerb_cue: Option<Instant>,
     last_slip_cue: Option<Instant>,
+    allowed_source: Option<IpAddr>,
+    allowed_checked: Option<Instant>,
+}
+
+/// Optional sender allow-list for LAN telemetry. The setting lives in a small file next to the
+/// profiles so the GUI process can change it while the (possibly background) core reads it.
+fn allowed_source_file() -> Option<std::path::PathBuf> {
+    Some(
+        crate::profiles::config_base()
+            .ok()?
+            .join("CONTROLLER")
+            .join("telemetry-allowed-source.txt"),
+    )
+}
+pub fn read_allowed_source() -> Option<IpAddr> {
+    read_allowed_source_checked().unwrap_or(None)
+}
+/// `Ok(None)` means no allow-list is set (file missing); any other read or parse failure is an
+/// `Err` so callers can keep their previous value instead of silently opening the filter.
+fn read_allowed_source_checked() -> Result<Option<IpAddr>, ()> {
+    let Some(path) = allowed_source_file() else {
+        return Err(());
+    };
+    match std::fs::read_to_string(path) {
+        Ok(text) => text
+            .trim()
+            .parse::<IpAddr>()
+            .map(|ip| Some(ip.to_canonical()))
+            .map_err(|_| ()),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(()),
+    }
+}
+/// Matches nothing, so an unreadable allow-list at startup fails closed.
+const DENY_ALL: IpAddr = IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED);
+/// Persists (or, with `None`/empty, clears) the only IP address LAN telemetry is accepted from.
+pub fn write_allowed_source(ip: Option<&str>) -> Result<Option<IpAddr>, String> {
+    let path = allowed_source_file().ok_or("Settings folder is unavailable")?;
+    let parsed = match ip.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(text) => Some(
+            text.parse::<IpAddr>()
+                .map_err(|_| "Enter a valid IPv4 address, or leave it empty.")?
+                .to_canonical(),
+        ),
+        None => None,
+    };
+    if parsed.is_some_and(|ip| ip.is_ipv6()) {
+        return Err("LAN telemetry listens on IPv4 only; enter an IPv4 address (IPv4-mapped IPv6 addresses are converted).".into());
+    }
+    match parsed {
+        Some(ip) => {
+            std::fs::create_dir_all(path.parent().ok_or("Settings folder is unavailable")?)
+                .map_err(|e| e.to_string())?;
+            crate::profiles::write_archive(&path, ip.to_string().as_bytes())?;
+        }
+        None => match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::NotFound => {}
+            Err(e) => return Err(e.to_string()),
+        },
+    }
+    Ok(parsed)
+}
+fn source_allowed(allowed: Option<IpAddr>, remote: IpAddr) -> bool {
+    match allowed {
+        Some(only) => remote.to_canonical() == only.to_canonical(),
+        None => {
+            matches!(remote.to_canonical(), IpAddr::V4(ip) if ip.is_private() || ip.is_link_local() || ip.is_loopback())
+        }
+    }
 }
 
 pub struct TelemetryTick {
@@ -238,6 +308,7 @@ impl TelemetryBridge {
             return Ok(());
         }
         *self = Self::default(); // release the previous binding before changing address or port
+        let allowed_source = read_allowed_source_checked().unwrap_or(Some(DENY_ALL));
         let address = if lan { "0.0.0.0" } else { "127.0.0.1" };
         let socket = UdpSocket::bind((address, port))
             .map_err(|e| format!("Could not listen on {address}:{port}: {e}"))?;
@@ -248,12 +319,24 @@ impl TelemetryBridge {
             lan,
             format,
             started: Some(Instant::now()),
+            allowed_source,
+            allowed_checked: Some(Instant::now()),
             ..Self::default()
         };
         Ok(())
     }
     pub fn poll(&mut self) -> Option<TelemetryTick> {
         let socket = self.socket.as_ref()?;
+        if self.lan
+            && self
+                .allowed_checked
+                .is_none_or(|t| t.elapsed() >= Duration::from_secs(2))
+        {
+            if let Ok(current) = read_allowed_source_checked() {
+                self.allowed_source = current;
+            }
+            self.allowed_checked = Some(Instant::now());
+        }
         let mut latest = None;
         let mut buf = [0u8; 513];
         for _ in 0..8 {
@@ -262,9 +345,7 @@ impl TelemetryBridge {
                     if n > 512 {
                         continue;
                     }
-                    if self.lan
-                        && !matches!(remote.ip(), IpAddr::V4(ip) if ip.is_private() || ip.is_link_local() || ip.is_loopback())
-                    {
+                    if self.lan && !source_allowed(self.allowed_source, remote.ip()) {
                         continue;
                     }
                     let sample = match self.format {
@@ -333,6 +414,24 @@ pub fn rev_color(sample: Sample) -> [u8; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn lan_source_allow_list_overrides_private_range_rule() {
+        let lan: IpAddr = "192.168.1.20".parse().unwrap();
+        let other: IpAddr = "192.168.1.21".parse().unwrap();
+        let public: IpAddr = "8.8.8.8".parse().unwrap();
+        assert!(source_allowed(None, lan));
+        assert!(!source_allowed(None, public));
+        assert!(source_allowed(Some(lan), lan));
+        assert!(!source_allowed(Some(lan), other));
+        assert!(!source_allowed(Some(lan), public));
+        let mapped: IpAddr = "::ffff:192.168.1.5".parse().unwrap();
+        assert!(source_allowed(None, mapped));
+        assert!(source_allowed(Some(mapped.to_canonical()), mapped));
+        assert!(source_allowed(Some(mapped), "192.168.1.5".parse().unwrap()));
+        assert!(!source_allowed(Some(lan), mapped));
+        assert!(!source_allowed(Some(DENY_ALL), lan));
+        assert!(write_allowed_source(Some("fe80::1")).is_err());
+    }
     #[test]
     fn decodes_fm_and_horizon_dash_offsets() {
         for (len, base) in [(311, 232), (324, 244), (331, 232)] {

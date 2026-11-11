@@ -128,18 +128,64 @@ impl MixerSettings {
     }
 }
 
+/// Which grip a solo setting keeps: 0 = both, 1 = left only, 2 = right only.
+pub(super) fn solo_code(solo: &str) -> u8 {
+    match solo {
+        "left" => 1,
+        "right" => 2,
+        _ => 0,
+    }
+}
+
 #[derive(Default)]
 pub(super) struct RenderState {
     pub duty: [f32; 2],
+    /// Smoothed output ceiling and thermal cap (0 = not initialised yet).
+    pub ceiling: f32,
+    pub cap: f32,
     pub duck: f32,
+    /// Bridge jitter buffer: playback starts once the ring is half full.
+    pub bridge_primed: bool,
+    pub bridge_last: [f32; 2],
+    pub bridge_hold: f32,
+    pub bridge_gap: u32,
+    pub drift_tick: u32,
+    pub bridge_wait: u32,
+    pub bridge_wait_len: usize,
+    pub bridge_held_frames: u64,
 }
 impl RenderState {
+    pub fn with_duty(duty: [f32; 2]) -> Self {
+        Self {
+            duty,
+            ..Self::default()
+        }
+    }
+    #[cfg(test)]
     pub fn mix_grips(
         &mut self,
         cue: [f32; 2],
         background: [f32; 2],
         settings: &MixerSettings,
         cue_active: bool,
+    ) -> [f32; 2] {
+        self.mix_grips_solo(
+            cue,
+            background,
+            settings,
+            cue_active,
+            solo_code(&settings.solo),
+        )
+    }
+    /// `solo` comes from `solo_code`, computed once per buffer instead of comparing
+    /// strings for every sample.
+    pub fn mix_grips_solo(
+        &mut self,
+        cue: [f32; 2],
+        background: [f32; 2],
+        settings: &MixerSettings,
+        cue_active: bool,
+        solo: u8,
     ) -> [f32; 2] {
         let target = if cue_active { settings.ducking } else { 0.0 };
         let speed = if target > self.duck { 0.01 } else { 0.0002 };
@@ -148,10 +194,10 @@ impl RenderState {
         for i in 0..2 {
             result[i] = cue[i] * settings.cue_gain + background[i] * (1.0 - self.duck);
         }
-        if settings.solo == "left" {
+        if solo == 1 {
             result[1] = 0.0;
         }
-        if settings.solo == "right" {
+        if solo == 2 {
             result[0] = 0.0;
         }
         result

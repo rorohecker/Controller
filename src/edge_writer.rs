@@ -66,41 +66,74 @@ trait SlotIo {
     fn read(&mut self) -> Result<EdgeSnapshot, String>;
     fn set(&mut self, report: &[u8]) -> Result<(), String>;
 }
+/// Valid transaction records plus a description of every file that had to be skipped.
+type TransactionScan = (Vec<(std::path::PathBuf, Value)>, Vec<(String, String)>);
+
 fn transactions() -> Result<Vec<(std::path::PathBuf, Value)>, String> {
+    transaction_scan().map(|(records, _)| records)
+}
+fn transaction_scan() -> Result<TransactionScan, String> {
     let folder = crate::hardware::root()?.join("edge-transactions");
     let entries = match std::fs::read_dir(folder) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), Vec::new())),
         Err(e) => return Err(e.to_string()),
     };
     let mut records = Vec::new();
+    let mut skipped = Vec::new();
     for entry in entries.take(1024) {
-        let entry = entry.map_err(|e| e.to_string())?;
+        let Ok(entry) = entry else {
+            continue;
+        };
         let path = entry.path();
         if path.extension().is_none_or(|s| s != "json") {
             continue;
         }
-        let metadata = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() > 16 * 1024 {
-            return Err("An Edge transaction record is not a normal bounded file.".into());
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        // A malformed, oversized or unsupported record is reported and skipped; it must
+        // not block every other transaction.
+        let loaded = (|| {
+            let metadata = std::fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+            if !metadata.is_file()
+                || metadata.file_type().is_symlink()
+                || metadata.len() > 16 * 1024
+            {
+                return Err("not a normal bounded file".to_string());
+            }
+            let data: Value =
+                serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            if data["schemaVersion"] != 1 {
+                return Err("unsupported version".to_string());
+            }
+            Ok(data)
+        })();
+        match loaded {
+            Ok(data) => records.push((path, data)),
+            Err(reason) => skipped.push((name, reason)),
         }
-        let data: Value = serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-        if data["schemaVersion"] != 1 {
-            return Err("An Edge transaction record has an unsupported version.".into());
-        }
-        records.push((path, data));
         if records.len() > 128 {
             return Err("Too many Edge transaction records; export older history.".into());
         }
     }
-    Ok(records)
+    Ok((records, skipped))
 }
 pub fn backup_protected(id: &str) -> Result<bool, String> {
-    Ok(transactions()?.iter().any(|(_, record)| {
-        record["originalBackupId"].as_str() == Some(id)
-            && !matches!(record["phase"].as_str(), Some("verified" | "recovered"))
-    }))
+    let (records, skipped) = transaction_scan()?;
+    // An unreadable record might be the one that references this backup, so deleting is
+    // refused (fail closed) until it is dealt with.
+    Ok(!skipped.is_empty()
+        || records
+            .iter()
+            .any(|(_, record)| backup_is_pending(record, id)))
+}
+fn backup_is_pending(record: &Value, id: &str) -> bool {
+    record["originalBackupId"].as_str() == Some(id)
+        && !matches!(record["phase"].as_str(), Some("verified" | "recovered"))
 }
 fn mark_recovered(source: &EdgeSnapshot, slot: usize) -> Result<(), String> {
     for (path, mut record) in transactions()? {
@@ -140,14 +173,19 @@ fn mark_recovered(source: &EdgeSnapshot, slot: usize) -> Result<(), String> {
 #[tauri::command]
 pub async fn edge_transactions() -> Result<Vec<Value>, String> {
     tauri::async_runtime::spawn_blocking(|| {
-        transactions().map(|records| {
-            records
+        transaction_scan().map(|(records, skipped)| {
+            let mut items: Vec<Value> = records
                 .into_iter()
                 .map(|(path, mut record)| {
                     record["id"] = json!(path.file_stem().and_then(|s| s.to_str()).unwrap_or(""));
                     record
                 })
-                .collect()
+                .collect();
+            // Report unreadable records instead of hiding them.
+            items.extend(skipped.into_iter().map(|(id, reason)| {
+                json!({"id":id,"phase":"unreadable","error":format!("Skipped unreadable Edge transaction record: {reason}")})
+            }));
+            items
         })
     })
     .await
@@ -208,11 +246,18 @@ fn transact(
         io.set(&report)?;
         progress.written += 1;
     }
-    let after = io.read()?;
+    // The slot can take a moment to settle after the third SET; retry the readback briefly.
+    let mut after = io.read()?;
     after.validate()?;
-    if after.controller_id != fresh.controller_id
-        || content(&after.slots[slot]) != content(&desired)
-    {
+    for delay_ms in [30u64, 60, 120] {
+        if content(&after.slots[slot]) == content(&desired) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(delay_ms));
+        after = io.read()?;
+        after.validate()?;
+    }
+    if content(&after.slots[slot]) != content(&desired) {
         return Err("Readback did not match. Keep the original backup and restore it before using this slot.".into());
     }
     for other in 0..4 {
@@ -278,7 +323,8 @@ pub fn start(
         let mut progress=Progress::default();
         let operation=(|| {
             let dir=crate::hardware::root()?.join("edge-transactions");std::fs::create_dir_all(&dir).map_err(|e|e.to_string())?;
-            if transactions()?.len()>=128 {return Err("Export and archive older Edge transactions before writing another profile.".into());}
+            let (records,skipped)=transaction_scan()?;
+            if records.len()+skipped.len()>=128 {return Err("Export and archive older Edge transactions before writing another profile.".into());}
             let id=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e|e.to_string())?.as_nanos();
             let journal_path=dir.join(format!("{id}.json"));
             let mut journal=|phase:&str,p:&Progress| crate::profiles::write_archive(&journal_path,&serde_json::to_vec_pretty(&json!({"schemaVersion":1,"controllerId":source.controller_id,"slot":slot,"phase":phase,"originalBackupId":p.backup,"pagesAcknowledged":p.written,"requestId":request_id})).map_err(|e|e.to_string())?);
@@ -361,16 +407,17 @@ impl SlotIo for UsbSlot {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pending_transactions_protect_their_backup() {
+        let pending = serde_json::json!({"originalBackupId":"42","phase":"written"});
+        let done = serde_json::json!({"originalBackupId":"42","phase":"verified"});
+        assert!(super::backup_is_pending(&pending, "42"));
+        assert!(!super::backup_is_pending(&pending, "43"));
+        assert!(!super::backup_is_pending(&done, "42"));
+    }
     use super::*;
     fn crc(bytes: impl Iterator<Item = u8>) -> u32 {
-        let mut crc = !0u32;
-        for byte in bytes {
-            crc ^= u32::from(byte);
-            for _ in 0..8 {
-                crc = (crc >> 1) ^ (0xedb88320u32.wrapping_mul(crc & 1));
-            }
-        }
-        !crc
+        aftertouch_protocol::crc32(bytes)
     }
     fn fixture() -> EdgeSnapshot {
         let mut data = EdgeSnapshot {

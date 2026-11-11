@@ -271,9 +271,10 @@ pub async fn record_shortcut() -> Result<Vec<u16>, String> {
                 if chord.contains(&27) {
                     return Err("Recording canceled.".into());
                 }
-                if current.iter().any(|key| {
-                    !previous.contains(key) && !matches!(key,16..=18 | 91 | 92 | 160..=165)
-                }) {
+                if current
+                    .iter()
+                    .any(|key| !previous.contains(key) && !crate::macros::is_modifier_key(*key))
+                {
                     return Ok(chord);
                 }
                 previous = current;

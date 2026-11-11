@@ -112,12 +112,29 @@ pub fn load_library() -> Result<Library, String> {
     if !p.exists() {
         return Ok(Library::default());
     }
+    // The device scan asks for assignments every couple of seconds; reuse the parsed library
+    // while the file is unchanged (keyed on modification time and length).
+    let key = fs::metadata(&p)
+        .ok()
+        .and_then(|m| m.modified().ok().map(|t| (t, m.len())));
+    if let Some(key) = key
+        && let Ok(cache) = LIBRARY_CACHE.lock()
+        && let Some((cached_key, library)) = cache.as_ref()
+        && *cached_key == key
+    {
+        return Ok(library.clone());
+    }
     let data = read_bounded(&p, 256 * 1024)?;
     let library: Library = serde_json::from_slice(&data)
         .map_err(|e| format!("Controller library could not be read: {e}"))?;
     library.validate()?;
+    if let (Some(key), Ok(mut cache)) = (key, LIBRARY_CACHE.lock()) {
+        *cache = Some((key, library.clone()));
+    }
     Ok(library)
 }
+type LibraryCache = Option<((std::time::SystemTime, u64), Library)>;
+static LIBRARY_CACHE: std::sync::Mutex<LibraryCache> = std::sync::Mutex::new(None);
 fn read_bounded(path: &std::path::Path, limit: u64) -> Result<Vec<u8>, String> {
     use std::io::Read;
     let f = fs::File::open(path).map_err(|e| e.to_string())?;
@@ -139,6 +156,9 @@ pub fn save_controller_library(data: Library) -> Result<(), String> {
     data.validate()?;
     let root = root()?;
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    if let Ok(mut cache) = LIBRARY_CACHE.lock() {
+        *cache = None;
+    }
     crate::profiles::write_archive(
         &root.join("controllers.json"),
         &serde_json::to_vec_pretty(&data).map_err(|e| e.to_string())?,
@@ -197,18 +217,8 @@ pub struct EdgeSlot {
     pub grip_level: u8,
     pub trigger_level: u8,
 }
-fn crc32(data: impl IntoIterator<Item = u8>) -> u32 {
-    let mut crc = !0u32;
-    for b in data {
-        crc ^= u32::from(b);
-        for _ in 0..8 {
-            crc = (crc >> 1) ^ (0xedb88320u32.wrapping_mul(crc & 1));
-        }
-    }
-    !crc
-}
 fn content_crc(chunks: &[Vec<u8>]) -> u32 {
-    crc32(
+    aftertouch_protocol::crc32(
         chunks[0][2..60]
             .iter()
             .chain(&chunks[1][2..60])
@@ -368,9 +378,12 @@ pub fn edge_snapshots() -> Result<Vec<serde_json::Value>, String> {
     }
     let mut entries = Vec::new();
     for f in fs::read_dir(p).map_err(|e| e.to_string())?.take(256) {
-        let f = f.map_err(|e| e.to_string())?;
+        // One unreadable directory entry must not hide every other backup.
+        let Ok(f) = f else {
+            continue;
+        };
         let path = f.path();
-        if f.file_type().map_err(|e| e.to_string())?.is_file()
+        if f.file_type().is_ok_and(|kind| kind.is_file())
             && path.extension().is_some_and(|s| s == "json")
         {
             let id = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");

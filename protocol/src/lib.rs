@@ -10,6 +10,8 @@ pub const USB_OUTPUT_LEN: usize = 63;
 pub const BT_OUTPUT_LEN: usize = 78;
 pub const BT_HAPTIC_LEN: usize = 142;
 pub const MAX_TRIGGER_LEVEL: u8 = 6; // conservative ceiling; firmware supports 0..8
+/// Adaptive trigger block that releases the trigger (mode 0x05, no parameters).
+pub const TRIGGER_OFF: [u8; 11] = [0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -337,10 +339,12 @@ fn decode_buttons(b0: u8, b1: u8, b2: u8, l2: u8, r2: u8) -> [f32; 23] {
 }
 
 pub fn parse_input(data: &[u8]) -> Option<InputState> {
-    if data.len() == 10 && data[0] == 0x01 {
+    // Bluetooth short report: 10 bytes, or padded to 78 by Windows hidapi. Byte 7
+    // bits 2-7 are a frame counter, not mute/Edge buttons.
+    if data.first() == Some(&0x01) && (data.len() == 10 || data.len() == BT_OUTPUT_LEN) {
         let battery_info = BatteryInfo::empty();
         return Some(InputState {
-            buttons: decode_buttons(data[5], data[6], data[7], data[8], data[9]),
+            buttons: decode_buttons(data[5], data[6], data[7] & 0x03, data[8], data[9]),
             axes: [
                 normalized_axis(data[1]),
                 normalized_axis(data[2]),
@@ -408,8 +412,7 @@ pub fn encode_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str
     let max_level = setting.force_cap.unwrap_or(MAX_TRIGGER_LEVEL);
     let mut block = [0u8; 11];
     if setting.mode == "off" || setting.strength < 1.0 {
-        block[0] = 0x05;
-        return Ok(block);
+        return Ok(TRIGGER_OFF);
     }
     let mut levels = [0u8; 10];
     for (i, level) in levels.iter_mut().enumerate() {
@@ -503,6 +506,202 @@ pub fn encode_trigger(setting: &TriggerSetting) -> Result<[u8; 11], &'static str
         _ => unreachable!(),
     }
     Ok(block)
+}
+
+/// Additional adaptive-trigger modes. UNVERIFIED ON HARDWARE: byte layouts follow public
+/// community documentation (Nielk1 trigger research, DualSense-Windows, pydualsense).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(
+    tag = "mode",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ExtraTrigger {
+    /// Mode 0x01: constant resistance from `position` (0-9) with `strength` (1-8).
+    SimpleFeedback { position: u8, strength: u8 },
+    /// Mode 0x02: click between `start` (2-7) and `end` (start+1..=8).
+    SimpleWeapon { start: u8, end: u8, strength: u8 },
+    /// Mode 0x06: vibration from `position` (0-9) at `frequency` Hz and `amplitude` (1-8).
+    SimpleVibration {
+        position: u8,
+        amplitude: u8,
+        frequency: u8,
+    },
+    /// Mode 0x23: two-foot galloping between `start` (0-8) and `end` (start+1..=9).
+    Galloping {
+        start: u8,
+        end: u8,
+        first_foot: u8,
+        second_foot: u8,
+        frequency: u8,
+    },
+    /// Mode 0x27: alternating amplitudes `amplitude_a`/`amplitude_b` (0-7) at `frequency` Hz.
+    Machine {
+        start: u8,
+        end: u8,
+        amplitude_a: u8,
+        amplitude_b: u8,
+        frequency: u8,
+        period: u8,
+    },
+}
+
+fn zone_mask(start: u8, end: u8) -> [u8; 2] {
+    ((1u16 << start) | (1u16 << end)).to_le_bytes()
+}
+
+pub fn encode_extra_trigger(effect: &ExtraTrigger) -> Result<[u8; 11], &'static str> {
+    let mut block = [0u8; 11];
+    match *effect {
+        ExtraTrigger::SimpleFeedback { position, strength } => {
+            if position > 9 || !(1..=8).contains(&strength) {
+                return Err("Feedback needs a start zone 0-9 and strength 1-8");
+            }
+            block[0] = 0x01;
+            block[1] = position;
+            block[2] = strength.min(MAX_TRIGGER_LEVEL);
+        }
+        ExtraTrigger::SimpleWeapon {
+            start,
+            end,
+            strength,
+        } => {
+            if !(2..=7).contains(&start) || end <= start || end > 8 || !(1..=8).contains(&strength)
+            {
+                return Err("Weapon needs start 2-7, end above start (max 8) and strength 1-8");
+            }
+            block[0] = 0x02;
+            block[1] = start;
+            block[2] = end;
+            block[3] = strength.min(MAX_TRIGGER_LEVEL);
+        }
+        ExtraTrigger::SimpleVibration {
+            position,
+            amplitude,
+            frequency,
+        } => {
+            if position > 9 || !(1..=8).contains(&amplitude) || frequency == 0 {
+                return Err("Vibration needs a start zone 0-9, amplitude 1-8 and frequency 1-255");
+            }
+            block[0] = 0x06;
+            block[1] = frequency;
+            block[2] = amplitude.min(MAX_TRIGGER_LEVEL);
+            block[3] = position;
+        }
+        ExtraTrigger::Galloping {
+            start,
+            end,
+            first_foot,
+            second_foot,
+            frequency,
+        } => {
+            if start > 8
+                || end > 9
+                || end <= start
+                || first_foot > 6
+                || second_foot > 7
+                || second_foot <= first_foot
+                || frequency == 0
+            {
+                return Err("Galloping zones, feet (0-6 / 1-7, ordered) or frequency are invalid");
+            }
+            block[0] = 0x23;
+            block[1..3].copy_from_slice(&zone_mask(start, end));
+            block[3] = ((second_foot & 7) << 3) | (first_foot & 7);
+            block[4] = frequency;
+        }
+        ExtraTrigger::Machine {
+            start,
+            end,
+            amplitude_a,
+            amplitude_b,
+            frequency,
+            period,
+        } => {
+            if start > 8
+                || end > 9
+                || end <= start
+                || amplitude_a > 7
+                || amplitude_b > 7
+                || frequency == 0
+            {
+                return Err("Machine zones, amplitudes (0-7) or frequency are invalid");
+            }
+            block[0] = 0x27;
+            block[1..3].copy_from_slice(&zone_mask(start, end));
+            // Raw amplitude N is force level N+1; keep within the normal ceiling.
+            let ceiling = MAX_TRIGGER_LEVEL - 1;
+            block[3] = ((amplitude_b.min(ceiling) & 7) << 3) | (amplitude_a.min(ceiling) & 7);
+            block[4] = frequency;
+            block[5] = period;
+        }
+    }
+    Ok(block)
+}
+
+/// Microphone LED: 0 off, 1 solid (muted), 2 pulse. UNVERIFIED pulse mode.
+pub fn microphone_led_report(mode: u8) -> Result<[u8; USB_OUTPUT_LEN], &'static str> {
+    if mode > 2 {
+        return Err("Microphone LED mode must be 0 (off), 1 (on) or 2 (pulse)");
+    }
+    let mut report = usb_report(0, 0x01, 0, None, None, None, None, false);
+    report[9] = mode;
+    Ok(report)
+}
+
+/// Headphone, speaker and microphone volume (valid0 bits 4/5/6; reports bytes 5/6/7).
+/// Headphone and microphone are 0-127, speaker 0-100. UNVERIFIED on hardware.
+pub fn audio_volume_report(
+    headphone: Option<u8>,
+    speaker: Option<u8>,
+    microphone: Option<u8>,
+) -> Result<[u8; USB_OUTPUT_LEN], &'static str> {
+    if headphone.is_some_and(|v| v > 0x7f)
+        || speaker.is_some_and(|v| v > 100)
+        || microphone.is_some_and(|v| v > 0x7f)
+    {
+        return Err("Volume out of range (headphone/microphone 0-127, speaker 0-100)");
+    }
+    let mut valid0 = 0;
+    let mut report = usb_report(0, 0, 0, None, None, None, None, false);
+    if let Some(v) = headphone {
+        valid0 |= 0x10;
+        report[5] = v;
+    }
+    if let Some(v) = speaker {
+        valid0 |= 0x20;
+        report[6] = v;
+    }
+    if let Some(v) = microphone {
+        valid0 |= 0x40;
+        report[7] = v;
+    }
+    report[1] = valid0;
+    Ok(report)
+}
+
+/// Lightbar and player-LED brightness (valid2 bit 0, byte 43: 0 bright, 1 medium, 2 dim) and
+/// lightbar setup (valid2 bit 1, byte 42). UNVERIFIED on hardware.
+pub fn led_brightness_report(
+    brightness: Option<u8>,
+    lightbar_setup: Option<u8>,
+) -> Result<[u8; USB_OUTPUT_LEN], &'static str> {
+    if brightness.is_some_and(|v| v > 2) {
+        return Err("LED brightness must be 0 (bright), 1 (medium) or 2 (dim)");
+    }
+    if lightbar_setup.is_some_and(|v| v > 2) {
+        return Err("Lightbar setup must be 0, 1 or 2");
+    }
+    let mut report = usb_report(0, 0, 0, None, None, None, None, false);
+    if let Some(v) = brightness {
+        report[39] |= 0x01;
+        report[43] = v;
+    }
+    if let Some(v) = lightbar_setup {
+        report[39] |= 0x02;
+        report[42] = v;
+    }
+    Ok(report)
 }
 
 #[allow(clippy::too_many_arguments)] // Mirrors the independent protocol control fields.
@@ -618,15 +817,22 @@ pub fn bt_haptic_report_sequences(
     report
 }
 
-pub fn crc32_seeded(seed: u8, data: &[u8]) -> u32 {
+/// Standard CRC-32 (IEEE, reflected, init/xorout 0xffffffff). The single implementation
+/// shared by every report and Edge-profile checksum in the app.
+pub fn crc32(data: impl IntoIterator<Item = u8>) -> u32 {
     let mut crc = 0xffff_ffffu32;
-    for byte in std::iter::once(&seed).chain(data.iter()) {
-        crc ^= *byte as u32;
+    for byte in data {
+        crc ^= u32::from(byte);
         for _ in 0..8 {
             crc = (crc >> 1) ^ if crc & 1 != 0 { 0xedb8_8320 } else { 0 };
         }
     }
     !crc
+}
+
+/// CRC-32 over `seed` followed by `data` (Sony's Bluetooth reports prefix a type byte).
+pub fn crc32_seeded(seed: u8, data: &[u8]) -> u32 {
+    crc32(std::iter::once(seed).chain(data.iter().copied()))
 }
 
 #[cfg(test)]
@@ -979,6 +1185,175 @@ mod tests {
         assert_eq!(&state.buttons[18..23], &[1.0; 5]);
         report[11] ^= 0x10;
         assert!(parse_input(&report).is_none());
+    }
+
+    #[test]
+    fn extra_trigger_blocks_match_community_layouts() {
+        let gallop = encode_extra_trigger(&ExtraTrigger::Galloping {
+            start: 2,
+            end: 7,
+            first_foot: 1,
+            second_foot: 4,
+            frequency: 20,
+        })
+        .unwrap();
+        assert_eq!(gallop[0], 0x23);
+        assert_eq!(
+            u16::from_le_bytes([gallop[1], gallop[2]]),
+            (1 << 2) | (1 << 7)
+        );
+        assert_eq!(gallop[3], (4 << 3) | 1);
+        assert_eq!(gallop[4], 20);
+        let machine = encode_extra_trigger(&ExtraTrigger::Machine {
+            start: 1,
+            end: 9,
+            amplitude_a: 3,
+            amplitude_b: 5,
+            frequency: 30,
+            period: 5,
+        })
+        .unwrap();
+        assert_eq!(&machine[..6], &[0x27, 0x02, 0x02, (5 << 3) | 3, 30, 5]);
+        assert_eq!(
+            &encode_extra_trigger(&ExtraTrigger::SimpleFeedback {
+                position: 3,
+                strength: 5
+            })
+            .unwrap()[..3],
+            &[0x01, 3, 5]
+        );
+        assert_eq!(
+            &encode_extra_trigger(&ExtraTrigger::SimpleWeapon {
+                start: 3,
+                end: 6,
+                strength: 4
+            })
+            .unwrap()[..4],
+            &[0x02, 3, 6, 4]
+        );
+        assert_eq!(
+            &encode_extra_trigger(&ExtraTrigger::SimpleVibration {
+                position: 2,
+                amplitude: 6,
+                frequency: 40
+            })
+            .unwrap()[..4],
+            &[0x06, 40, 6, 2]
+        );
+    }
+
+    #[test]
+    fn extra_trigger_strengths_are_clamped_to_the_normal_ceiling() {
+        let feedback = encode_extra_trigger(&ExtraTrigger::SimpleFeedback {
+            position: 3,
+            strength: 8,
+        })
+        .unwrap();
+        assert_eq!(feedback[2], MAX_TRIGGER_LEVEL);
+        let weapon = encode_extra_trigger(&ExtraTrigger::SimpleWeapon {
+            start: 3,
+            end: 6,
+            strength: 8,
+        })
+        .unwrap();
+        assert_eq!(weapon[3], MAX_TRIGGER_LEVEL);
+        let vibration = encode_extra_trigger(&ExtraTrigger::SimpleVibration {
+            position: 2,
+            amplitude: 8,
+            frequency: 40,
+        })
+        .unwrap();
+        assert_eq!(vibration[2], MAX_TRIGGER_LEVEL);
+        let machine = encode_extra_trigger(&ExtraTrigger::Machine {
+            start: 1,
+            end: 9,
+            amplitude_a: 7,
+            amplitude_b: 7,
+            frequency: 30,
+            period: 5,
+        })
+        .unwrap();
+        assert_eq!(
+            machine[3],
+            ((MAX_TRIGGER_LEVEL - 1) << 3) | (MAX_TRIGGER_LEVEL - 1)
+        );
+    }
+
+    #[test]
+    fn extra_trigger_rejects_out_of_range_parameters() {
+        assert!(
+            encode_extra_trigger(&ExtraTrigger::Galloping {
+                start: 5,
+                end: 5,
+                first_foot: 1,
+                second_foot: 2,
+                frequency: 10
+            })
+            .is_err()
+        );
+        assert!(
+            encode_extra_trigger(&ExtraTrigger::Machine {
+                start: 0,
+                end: 4,
+                amplitude_a: 8,
+                amplitude_b: 1,
+                frequency: 10,
+                period: 1
+            })
+            .is_err()
+        );
+        assert!(
+            encode_extra_trigger(&ExtraTrigger::SimpleFeedback {
+                position: 10,
+                strength: 1
+            })
+            .is_err()
+        );
+        let parsed: ExtraTrigger = serde_json::from_str(
+            r#"{"mode":"galloping","start":0,"end":3,"firstFoot":1,"secondFoot":2,"frequency":9}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            parsed,
+            ExtraTrigger::Galloping { first_foot: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn audio_and_led_reports_set_only_requested_fields() {
+        let volume = audio_volume_report(Some(0x40), None, Some(0x20)).unwrap();
+        assert_eq!(volume[1], 0x50);
+        assert_eq!((volume[5], volume[6], volume[7]), (0x40, 0, 0x20));
+        assert!(audio_volume_report(None, Some(101), None).is_err());
+        let leds = led_brightness_report(Some(2), Some(1)).unwrap();
+        assert_eq!(leds[39], 0x03);
+        assert_eq!((leds[42], leds[43]), (1, 2));
+        assert!(led_brightness_report(Some(3), None).is_err());
+        assert!(led_brightness_report(None, Some(3)).is_err());
+        let mic = microphone_led_report(2).unwrap();
+        assert_eq!((mic[2] & 1, mic[9]), (1, 2));
+        assert!(microphone_led_report(3).is_err());
+    }
+
+    #[test]
+    fn crc32_matches_the_standard_check_value() {
+        assert_eq!(crc32(*b"123456789"), 0xcbf4_3926);
+        assert_eq!(crc32_seeded(b'1', b"23456789"), 0xcbf4_3926);
+    }
+
+    #[test]
+    fn bt_short_report_masks_frame_counter_and_accepts_padding() {
+        let mut report = [0x01, 0x80, 0x80, 0x80, 0x80, 0x08, 0, 0xfc, 0, 0];
+        let state = parse_input(&report).expect("short report");
+        assert_eq!(&state.buttons[16..23], &[0.0; 7]);
+        report[7] = 0xfd;
+        assert_eq!(parse_input(&report).unwrap().buttons[16], 1.0);
+        let mut padded = [0u8; 78];
+        padded[..10].copy_from_slice(&report);
+        let state = parse_input(&padded).expect("padded short report");
+        assert!(!state.full_report);
+        assert_eq!(state.buttons[16], 1.0);
+        assert_eq!(&state.buttons[18..23], &[0.0; 5]);
     }
 
     #[test]

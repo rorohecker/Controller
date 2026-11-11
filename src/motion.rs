@@ -110,6 +110,37 @@ fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+/// Where the report timing of a motion sample came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub enum Clock {
+    #[serde(rename = "device")]
+    Device,
+    #[serde(rename = "duplicate")]
+    Duplicate,
+    #[serde(rename = "resync")]
+    Resync,
+    #[serde(rename = "host fallback")]
+    HostFallback,
+    #[serde(rename = "unavailable")]
+    Unavailable,
+}
+impl Clock {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Device => "device",
+            Self::Duplicate => "duplicate",
+            Self::Resync => "resync",
+            Self::HostFallback => "host fallback",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+impl PartialEq<&str> for Clock {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MotionReading {
@@ -123,7 +154,7 @@ pub struct MotionReading {
     pub roll_deg: f32,
     pub yaw_deg: f32,
     pub dt: f32,
-    pub clock: &'static str,
+    pub clock: Clock,
     pub still: bool,
     pub calibration: &'static str,
     pub progress: f32,
@@ -148,6 +179,9 @@ pub struct MotionProcessor {
     yaw: f32,
     capture: Option<StillCapture>,
     calibrated: bool,
+    auto_bias: bool,
+    still_for: f32,
+    last_accel: Option<[f32; 3]>,
 }
 impl Default for MotionProcessor {
     fn default() -> Self {
@@ -161,10 +195,22 @@ impl Default for MotionProcessor {
             yaw: 0.0,
             capture: None,
             calibrated: false,
+            auto_bias: false,
+            still_for: 0.0,
+            last_accel: None,
         }
     }
 }
 impl MotionProcessor {
+    /// Opt in to slow background bias tracking while the controller is perfectly still.
+    pub fn set_auto_bias(&mut self, enabled: bool) {
+        self.auto_bias = enabled;
+        self.still_for = 0.0;
+        self.last_accel = None;
+    }
+    pub fn auto_bias(&self) -> bool {
+        self.auto_bias
+    }
     pub fn with_factory(factory: FactoryCalibration) -> Self {
         Self {
             factory,
@@ -189,6 +235,8 @@ impl MotionProcessor {
         self.initialized = false;
         self.yaw = 0.0;
         self.capture = None;
+        self.still_for = 0.0;
+        self.last_accel = None;
     }
     pub fn update(&mut self, input: &InputState, now: Instant) -> MotionReading {
         let host_dt = self.host.replace(now).map_or(0.0, |last| {
@@ -196,16 +244,16 @@ impl MotionProcessor {
         });
         let (dt, clock) = if !input.full_report {
             self.tick = None;
-            (0.0, "unavailable")
+            (0.0, Clock::Unavailable)
         } else if let Some(tick) = input.sensor_timestamp {
             let delta = self.tick.replace(tick).map(|old| tick.wrapping_sub(old));
             match delta {
-                Some(0) => (0.0, "duplicate"),
-                Some(delta) if delta <= 150_000 => (delta as f32 / 3_000_000.0, "device"),
-                _ => (0.0, "resync"),
+                Some(0) => (0.0, Clock::Duplicate),
+                Some(delta) if delta <= 150_000 => (delta as f32 / 3_000_000.0, Clock::Device),
+                _ => (0.0, Clock::Resync),
             }
         } else {
-            (host_dt.min(0.05), "host fallback")
+            (host_dt.min(0.05), Clock::HostFallback)
         };
         let mut completed = false;
         let (raw_gyro, accel) = self.factory.convert(input);
@@ -213,7 +261,7 @@ impl MotionProcessor {
         let stationary = norm(raw_gyro) < 3.0 && (0.9..=1.1).contains(&length);
         if let Some(capture) = self.capture.as_mut() {
             if !stationary
-                || clock == "resync"
+                || clock == Clock::Resync
                 || capture
                     .accel
                     .is_some_and(|old| norm(std::array::from_fn(|i| old[i] - accel[i])) > 0.03)
@@ -243,9 +291,28 @@ impl MotionProcessor {
                 }
             }
         }
+        if self.auto_bias && self.capture.is_none() && dt > 0.0 {
+            let steady = self
+                .last_accel
+                .is_none_or(|old| norm(std::array::from_fn(|i| old[i] - accel[i])) < 0.01);
+            self.last_accel = Some(accel);
+            let residual = norm(std::array::from_fn(|i| raw_gyro[i] - self.bias[i]));
+            if stationary && steady && residual < 1.0 {
+                self.still_for += dt;
+            } else {
+                self.still_for = 0.0;
+            }
+            if self.still_for >= 1.0 {
+                // Slow (about 10 s) pull toward the observed rest value, bounded like set_bias.
+                let rate = 1.0 - (-dt / 10.0).exp();
+                for (bias, raw) in self.bias.iter_mut().zip(raw_gyro) {
+                    *bias = (*bias + (raw - *bias) * rate).clamp(-3.0, 3.0);
+                }
+            }
+        }
         let gyro = std::array::from_fn(|i| raw_gyro[i] - self.bias[i]);
         if input.full_report {
-            if (!self.initialized || clock == "resync") && (0.8..=1.2).contains(&length) {
+            if (!self.initialized || clock == Clock::Resync) && (0.8..=1.2).contains(&length) {
                 self.gravity = normalize(accel);
                 self.initialized = true;
             }
@@ -297,17 +364,50 @@ impl MotionProcessor {
     }
 }
 
+/// Kept for callers that only know local/world.
+#[allow(dead_code)]
 pub fn aim_axes(reading: &MotionReading, world: bool) -> [f32; 2] {
-    if world {
-        let yaw = dot(reading.gyro_dps, reading.gravity);
-        let local_right = [1.0, 0.0, 0.0];
-        let along = dot(local_right, reading.gravity);
-        let right = normalize(std::array::from_fn(|i| {
-            local_right[i] - along * reading.gravity[i]
-        }));
-        [yaw, dot(reading.gyro_dps, right)]
-    } else {
-        [reading.gyro_dps[2], reading.gyro_dps[0]]
+    aim_axes_in(
+        reading,
+        if world {
+            crate::input_map::controls::MotionSpace::World
+        } else {
+            crate::input_map::controls::MotionSpace::Local
+        },
+    )
+}
+
+/// `[yaw, pitch]` rates in degrees per second for the chosen reference frame.
+pub fn aim_axes_in(
+    reading: &MotionReading,
+    space: crate::input_map::controls::MotionSpace,
+) -> [f32; 2] {
+    use crate::input_map::controls::MotionSpace;
+    match space {
+        MotionSpace::World => {
+            let yaw = dot(reading.gyro_dps, reading.gravity);
+            let local_right = [1.0, 0.0, 0.0];
+            let along = dot(local_right, reading.gravity);
+            let right = normalize(std::array::from_fn(|i| {
+                local_right[i] - along * reading.gravity[i]
+            }));
+            [yaw, dot(reading.gyro_dps, right)]
+        }
+        MotionSpace::Player => {
+            // Turn about the player's vertical axis using only the gyro axes that lie in
+            // the plane gravity tilts through (y, z), fading out when the pad points at the
+            // floor or ceiling where that plane is degenerate.
+            let g = reading.gravity;
+            let planar = g[1].hypot(g[2]);
+            let yaw = if planar > 0.001 {
+                (reading.gyro_dps[1] * g[1] + reading.gyro_dps[2] * g[2]) / planar
+            } else {
+                0.0
+            };
+            let fade = ((planar - 0.125) / 0.125).clamp(0.0, 1.0);
+            [yaw * fade, reading.gyro_dps[0]]
+        }
+        MotionSpace::Local => [reading.gyro_dps[2], reading.gyro_dps[0]],
     }
 }
 
@@ -409,6 +509,44 @@ mod tests {
         }
         processor.calibrate(false);
         assert_eq!(processor.bias, [0.1, 0.2, 0.3]);
+    }
+    #[test]
+    fn player_space_yaw_follows_gravity_plane_and_fades_when_pointed_up() {
+        use crate::input_map::controls::MotionSpace::Player;
+        let mut processor = MotionProcessor::default();
+        let mut sample = input();
+        sample.accel = [0, 0, 8192];
+        let mut reading = processor.update(&sample, Instant::now());
+        reading.gyro_dps = [5.0, 7.0, 20.0];
+        let flat = aim_axes_in(&reading, Player);
+        assert!((flat[0] - 20.0).abs() < 0.01 && (flat[1] - 5.0).abs() < 0.01);
+        reading.gravity = [1.0, 0.0, 0.0];
+        assert_eq!(aim_axes_in(&reading, Player)[0], 0.0);
+    }
+    #[test]
+    fn auto_bias_only_adapts_after_sustained_stillness() {
+        let mut processor = MotionProcessor::default();
+        processor.set_auto_bias(true);
+        let mut sample = input();
+        sample.gyro = [8, 0, 0]; // 0.5 dps at the nominal scale
+        for i in 1..=90 {
+            sample.sensor_timestamp = Some(i * 30_000); // 10 ms steps
+            processor.update(&sample, Instant::now());
+        }
+        assert_eq!(
+            processor.bias, [0.0; 3],
+            "needs a full second of stillness first"
+        );
+        for i in 91..=6000 {
+            sample.sensor_timestamp = Some(i * 30_000);
+            processor.update(&sample, Instant::now());
+        }
+        assert!(processor.bias[0] > 0.3 && processor.bias[0] <= 0.5001);
+        sample.gyro = [400, 0, 0]; // real motion is never absorbed
+        let before = processor.bias;
+        sample.sensor_timestamp = Some(6001 * 30_000);
+        processor.update(&sample, Instant::now());
+        assert_eq!(processor.bias, before);
     }
     #[test]
     fn integrated_rotation_is_independent_of_usb_or_bluetooth_sample_rate() {

@@ -94,8 +94,8 @@ impl ActionRule {
             }
         }
         if let Some(h) = &self.haptic
-            && (!matches!(h.shape.as_str(), "sine" | "square" | "saw" | "noise")
-                || !(20..=300).contains(&h.frequency)
+            && (!crate::audio_haptics::VoiceClip::is_known_shape(&h.shape)
+                || !(40..=300).contains(&h.frequency)
                 || h.strength > 100
                 || !(-100..=100).contains(&h.pan))
         {

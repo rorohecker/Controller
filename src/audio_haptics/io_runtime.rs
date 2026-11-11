@@ -9,13 +9,18 @@ use std::{
 static OUTPUT_WORKERS: AtomicU32 = AtomicU32::new(0);
 static CAPTURE_WORKERS: AtomicU32 = AtomicU32::new(0);
 const START_TIMEOUT: Duration = Duration::from_secs(4);
+/// Re-opens allowed inside a 30 s window before the capture gives up.
+const MAX_REOPENS_PER_WINDOW: usize = 10;
 
-struct Permit(&'static AtomicU32);
+pub(super) struct Permit(&'static AtomicU32);
 impl Permit {
-    fn acquire(counter: &'static AtomicU32) -> Result<Self, String> {
+    pub fn acquire(counter: &'static AtomicU32) -> Result<Self, String> {
+        Self::acquire_max(counter, 2)
+    }
+    pub fn acquire_max(counter: &'static AtomicU32, max: u32) -> Result<Self, String> {
         let mut count = counter.load(Ordering::Acquire);
         loop {
-            if count >= 2 {
+            if count >= max {
                 return Err("Audio is still closing. Try again in a moment.".into());
             }
             match counter.compare_exchange_weak(
@@ -164,35 +169,15 @@ impl CaptureWorker {
             .name("controller-audio-capture".into())
             .spawn(move || {
                 let _permit = permit;
-                match build_loopback(
-                    shared.clone(),
-                    source.as_deref(),
-                    sink_name.as_deref(),
-                    sink_id.as_deref(),
-                ) {
-                    Ok(stream) => {
-                        // The stream is created and destroyed on its owner thread (also on macOS).
-                        let _stream = stream;
-                        if cancel.load(Ordering::Acquire) {
-                            return;
-                        }
-                        worker_state.store(1, Ordering::Release);
-                        while !cancel.load(Ordering::Acquire) {
-                            thread::sleep(Duration::from_millis(10));
-                        }
-                    }
-                    Err(error) => {
-                        worker_state.store(2, Ordering::Release);
-                        if !cancel.load(Ordering::Acquire)
-                            && shared.capture_generation.load(Ordering::Acquire) == generation
-                            && let Ok(mut slot) = shared.capture_error.lock()
-                            && !cancel.load(Ordering::Acquire)
-                            && shared.capture_generation.load(Ordering::Acquire) == generation
-                        {
-                            *slot = Some(error);
-                        }
-                    }
-                }
+                capture_loop(
+                    shared,
+                    source,
+                    sink_name,
+                    sink_id,
+                    generation,
+                    &cancel,
+                    &worker_state,
+                );
             })
             .map_err(|e| format!("Could not start capture worker: {e}"))?;
         Ok(Self {
@@ -205,11 +190,210 @@ impl CaptureWorker {
         match self.state.load(Ordering::Acquire) {
             1 => "running",
             2 => "failed",
+            3 => "reconnecting",
             _ => "starting",
         }
     }
     pub fn timed_out(&self) -> bool {
         self.state() == "starting" && self.started.elapsed() >= START_TIMEOUT
+    }
+}
+/// Sleep up to `ms` in short steps; false when cancelled meanwhile.
+fn nap(cancel: &AtomicBool, ms: u64) -> bool {
+    let mut left = ms;
+    while left > 0 {
+        if cancel.load(Ordering::Acquire) {
+            return false;
+        }
+        let step = left.min(10);
+        thread::sleep(Duration::from_millis(step));
+        left -= step;
+    }
+    !cancel.load(Ordering::Acquire)
+}
+/// Opens the loopback and, when following the system default, re-opens it on a
+/// default-device change or removal (bounded retries, short delay).
+fn capture_loop(
+    shared: Arc<Shared>,
+    source: Option<String>,
+    sink_name: Option<String>,
+    sink_id: Option<String>,
+    generation: u64,
+    cancel: &AtomicBool,
+    state: &AtomicU32,
+) {
+    let follow_default = source.is_none();
+    // A stale worker (older generation) must not touch the shared flags that
+    // belong to its replacement.
+    let current = || shared.capture_generation.load(Ordering::Acquire) == generation;
+    if current() {
+        shared.capture_reopen.store(
+            if follow_default { generation + 1 } else { 0 },
+            Ordering::Release,
+        );
+        shared.capture_lost.store(false, Ordering::Release);
+    }
+    let (mut opened_once, mut retries) = (false, 0u32);
+    // One host per worker: creating a host every poll reconnects PulseAudio.
+    let mut host: Option<cpal::Host> = None;
+    let mut reopen_times: std::collections::VecDeque<Instant> = Default::default();
+    let poll_ticks: u32 = if cfg!(target_os = "linux") { 500 } else { 150 };
+    let fatal = |error: String| {
+        state.store(2, Ordering::Release);
+        if !cancel.load(Ordering::Acquire)
+            && shared.capture_generation.load(Ordering::Acquire) == generation
+            && let Ok(mut slot) = shared.capture_error.lock()
+            && !cancel.load(Ordering::Acquire)
+            && shared.capture_generation.load(Ordering::Acquire) == generation
+        {
+            *slot = Some(error);
+        }
+    };
+    loop {
+        if cancel.load(Ordering::Acquire)
+            || shared.capture_generation.load(Ordering::Acquire) != generation
+        {
+            return;
+        }
+        if host.is_none() {
+            match capture_host() {
+                Ok(created) => host = Some(created),
+                Err(error) => {
+                    if !opened_once || retries >= MAX_CAPTURE_REOPENS {
+                        fatal(error);
+                        return;
+                    }
+                    retries += 1;
+                    state.store(3, Ordering::Release);
+                    shared.set_capture_info(
+                        generation,
+                        None,
+                        Some(format!(
+                            "Reconnecting ({retries}/{MAX_CAPTURE_REOPENS}): {error}"
+                        )),
+                    );
+                    if !nap(cancel, 500 * u64::from(retries)) {
+                        return;
+                    }
+                    continue;
+                }
+            }
+        }
+        let attempt = match host.as_ref() {
+            Some(host) => build_loopback(
+                host,
+                shared.clone(),
+                source.as_deref(),
+                sink_name.as_deref(),
+                sink_id.as_deref(),
+            ),
+            None => Err("Audio host is unavailable".into()),
+        };
+        if attempt.is_err() {
+            // A failed open may mean the audio server restarted; rebuild the host.
+            host = None;
+        }
+        match attempt {
+            Ok(opened) => {
+                if opened_once {
+                    let now = Instant::now();
+                    reopen_times.push_back(now);
+                    while reopen_times
+                        .front()
+                        .is_some_and(|at| now.duration_since(*at) > Duration::from_secs(30))
+                    {
+                        reopen_times.pop_front();
+                    }
+                    if reopen_times.len() > MAX_REOPENS_PER_WINDOW {
+                        drop(opened.stream);
+                        fatal("Audio capture keeps restarting; capture stopped.".into());
+                        return;
+                    }
+                }
+                opened_once = true;
+                retries = 0;
+                if current() {
+                    shared.capture_lost.store(false, Ordering::Release);
+                }
+                // The stream is created and destroyed on its owner thread (also on macOS).
+                let stream = opened.stream;
+                if cancel.load(Ordering::Acquire) {
+                    return;
+                }
+                shared.set_capture_info(
+                    generation,
+                    Some((opened.name.clone(), opened.rate)),
+                    Some(format!("Capturing {} at {} Hz", opened.name, opened.rate)),
+                );
+                state.store(1, Ordering::Release);
+                let mut ticks = 0u32;
+                let reason = loop {
+                    if cancel.load(Ordering::Acquire)
+                        || shared.capture_generation.load(Ordering::Acquire) != generation
+                    {
+                        break None;
+                    }
+                    if follow_default {
+                        if shared.capture_lost.swap(false, Ordering::AcqRel) {
+                            break Some("The output device was removed or stopped");
+                        }
+                        ticks += 1;
+                        if ticks.is_multiple_of(poll_ticks) {
+                            let now = host.as_ref().and_then(default_output_id);
+                            if now.is_none() || (opened.id.is_some() && now != opened.id) {
+                                break Some("The default output device changed");
+                            }
+                        }
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                };
+                drop(stream);
+                let Some(reason) = reason else {
+                    return;
+                };
+                state.store(3, Ordering::Release);
+                shared.set_capture_info(generation, None, Some(format!("{reason}; reconnecting")));
+                while shared.bridge.pop().is_some() {}
+                if !nap(cancel, 300) {
+                    return;
+                }
+            }
+            Err(error) => {
+                if opened_once && follow_default && error.starts_with("Choose PC speakers") {
+                    // The default moved onto the controller endpoint: wait for a
+                    // non-controller default instead of giving up.
+                    state.store(3, Ordering::Release);
+                    shared.set_capture_info(
+                        generation,
+                        None,
+                        Some("Waiting for a non-controller default output".into()),
+                    );
+                    if !nap(cancel, 1500) {
+                        return;
+                    }
+                    continue;
+                }
+                if !opened_once
+                    || retries >= MAX_CAPTURE_REOPENS
+                    || error.starts_with("Choose PC speakers")
+                {
+                    fatal(error);
+                    return;
+                }
+                retries += 1;
+                state.store(3, Ordering::Release);
+                shared.set_capture_info(
+                    generation,
+                    None,
+                    Some(format!(
+                        "Reconnecting ({retries}/{MAX_CAPTURE_REOPENS}): {error}"
+                    )),
+                );
+                if !nap(cancel, 500 * u64::from(retries)) {
+                    return;
+                }
+            }
+        }
     }
 }
 impl Drop for CaptureWorker {

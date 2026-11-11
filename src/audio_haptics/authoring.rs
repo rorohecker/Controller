@@ -129,7 +129,7 @@ impl EffectClip {
                 || !cue.from_strength.is_finite()
                 || !(0.0..=100.0).contains(&cue.from_strength)
                 || !(20..=300).contains(&cue.frequency)
-                || !matches!(cue.shape.as_str(), "sine" | "square" | "saw" | "noise")
+                || !super::VoiceClip::is_known_shape(&cue.shape)
                 || cue.start_zone > 7
                 || cue.end_zone <= cue.start_zone
                 || cue.end_zone > 8
@@ -185,41 +185,124 @@ impl EffectClip {
                 )
         })
     }
+    #[allow(dead_code)] // offline preview helper
+    pub fn sample(&self, seconds: f32, personal: &PersonalSettings) -> [f32; 2] {
+        let ms = seconds * 1000.0;
+        let mut output = [0.0; 2];
+        for cue in self
+            .cues
+            .iter()
+            .enumerate()
+            .filter_map(|(index, cue)| cue.compile(index))
+        {
+            output[cue.side] += cue.sample(ms, personal);
+        }
+        output
+    }
+    /// Flatten string lanes and shapes into an enum form once, at store time.
+    pub fn compile(&self) -> CompiledClip {
+        CompiledClip {
+            cues: self
+                .cues
+                .iter()
+                .enumerate()
+                .filter_map(|(index, cue)| cue.compile(index))
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CueWave {
+    Sine,
+    Square,
+    Saw,
+    Noise,
+    Tex(super::dsp::Texture),
+}
+/// A grip cue with no string fields: safe and cheap to evaluate per audio sample.
+#[derive(Clone, Copy, Debug)]
+pub struct CompiledCue {
+    side: usize,
+    start_ms: f32,
+    end_ms: f32,
+    strength: f32,
+    frequency: f32,
+    wave: CueWave,
+    seed: u32,
+}
+impl CompiledCue {
+    pub fn active_at(&self, ms: f32) -> bool {
+        self.strength > 0.0 && ms >= self.start_ms && ms < self.end_ms
+    }
+    fn sample(&self, ms: f32, personal: &PersonalSettings) -> f32 {
+        let elapsed = (ms - self.start_ms) / 1000.0;
+        let duration = (self.end_ms - self.start_ms) / 1000.0;
+        if elapsed < 0.0 || elapsed >= duration {
+            return 0.0;
+        }
+        let edge = (duration / 4.0).min(0.005);
+        let envelope = (elapsed / edge)
+            .min((duration - elapsed) / edge)
+            .clamp(0.0, 1.0);
+        let phase = elapsed * self.frequency;
+        let wave = match self.wave {
+            CueWave::Square => {
+                if phase.fract() < 0.5 {
+                    1.0
+                } else {
+                    -1.0
+                }
+            }
+            CueWave::Saw => phase.fract() * 2.0 - 1.0,
+            CueWave::Noise => super::dsp::band_noise(elapsed, self.frequency, self.seed),
+            CueWave::Sine => (phase * std::f32::consts::TAU).sin(),
+            CueWave::Tex(texture) => texture.sample(elapsed, duration, self.frequency),
+        };
+        wave * envelope * personal.authored_strength(self.strength / 100.0, self.side)
+    }
+}
+impl Cue {
+    /// `None` for trigger lanes. `index` seeds the noise shape deterministically.
+    pub fn compile(&self, index: usize) -> Option<CompiledCue> {
+        let side = match self.lane.as_str() {
+            "leftGrip" => 0,
+            "rightGrip" => 1,
+            _ => return None,
+        };
+        Some(CompiledCue {
+            side,
+            start_ms: self.start() as f32,
+            end_ms: self.end() as f32,
+            strength: self.strength,
+            frequency: f32::from(self.frequency),
+            wave: match self.shape.as_str() {
+                "square" => CueWave::Square,
+                "saw" => CueWave::Saw,
+                "noise" => CueWave::Noise,
+                other => super::dsp::Texture::parse(other).map_or(CueWave::Sine, CueWave::Tex),
+            },
+            seed: super::dsp::cue_seed(index, self.start_ms),
+        })
+    }
+}
+#[derive(Clone, Debug)]
+pub struct CompiledClip {
+    cues: Vec<CompiledCue>,
+}
+impl CompiledClip {
     pub fn sample(&self, seconds: f32, personal: &PersonalSettings) -> [f32; 2] {
         let ms = seconds * 1000.0;
         let mut output = [0.0; 2];
         for cue in &self.cues {
-            let side = match cue.lane.as_str() {
-                "leftGrip" => 0,
-                "rightGrip" => 1,
-                _ => continue,
-            };
-            let elapsed = (ms - cue.start() as f32) / 1000.0;
-            let duration = (cue.end() - cue.start()) as f32 / 1000.0;
-            if elapsed < 0.0 || elapsed >= duration {
-                continue;
-            }
-            let edge = (duration / 4.0).min(0.005);
-            let envelope = (elapsed / edge)
-                .min((duration - elapsed) / edge)
-                .clamp(0.0, 1.0);
-            let phase = elapsed * f32::from(cue.frequency);
-            let wave = match cue.shape.as_str() {
-                "square" => {
-                    if phase.fract() < 0.5 {
-                        1.0
-                    } else {
-                        -1.0
-                    }
-                }
-                "saw" => phase.fract() * 2.0 - 1.0,
-                "noise" => (phase * 73.37).sin() * (phase * 127.91).cos(),
-                _ => (phase * std::f32::consts::TAU).sin(),
-            };
-            output[side] +=
-                wave * envelope * personal.authored_strength(cue.strength / 100.0, side);
+            output[cue.side] += cue.sample(ms, personal);
         }
         output
+    }
+    /// True while any grip cue with strength is playing (drives background ducking).
+    pub fn active(&self, seconds: f32) -> bool {
+        let ms = seconds * 1000.0;
+        self.cues.iter().any(|cue| cue.active_at(ms))
     }
 }
 

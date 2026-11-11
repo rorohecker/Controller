@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Local controller studio window",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "notification:allow-is-permission-granted", "notification:allow-request-permission", "notification:allow-notify"]
 }

@@ -64,6 +64,84 @@ struct Profile {
     session: SessionSettings,
     #[serde(default)]
     community: CommunityMetadata,
+    /// Optional lightbar / player-LED state applied with the profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    lightbar: Option<LightbarSettings>,
+    /// Optional reference (id) to a saved audio preset; resolved by the UI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audio: Option<String>,
+    /// Optional controller volumes (headphone/speaker/microphone) applied with the profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    audio_preset: Option<AudioPreset>,
+}
+
+/// Lightbar state saved with a profile. The UI writes `color` as `#rrggbb`; an `[r,g,b]` array is
+/// accepted on read and normalised to the hex form. Unknown keys are ignored so newer UIs can add fields.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct LightbarSettings {
+    #[serde(deserialize_with = "deserialize_color")]
+    color: String,
+    /// Player indicator LED bitmask, bits 0..=4.
+    player_leds: u8,
+    /// "static", "off", "breathe", "pulse", "rainbow", "battery" or "lowBatteryBlink".
+    mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    period_ms: Option<u32>,
+}
+fn deserialize_color<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Color {
+        Hex(String),
+        Rgb([u8; 3]),
+    }
+    Ok(match Color::deserialize(d)? {
+        Color::Hex(h) => h,
+        Color::Rgb([r, g, b]) => format!("#{r:02x}{g:02x}{b:02x}"),
+    })
+}
+impl Default for LightbarSettings {
+    fn default() -> Self {
+        Self {
+            color: "#005aff".into(),
+            player_leds: 0,
+            mode: "static".into(),
+            period_ms: None,
+        }
+    }
+}
+impl LightbarSettings {
+    fn validate(&self) -> bool {
+        let hex = self.color.len() == 7
+            && self.color.starts_with('#')
+            && self.color[1..].bytes().all(|b| b.is_ascii_hexdigit());
+        hex && self.player_leds <= 0b11111
+            && matches!(
+                self.mode.as_str(),
+                "static" | "off" | "breathe" | "pulse" | "rainbow" | "battery" | "lowBatteryBlink"
+            )
+            && self.period_ms.is_none_or(|p| (100..=20_000).contains(&p))
+    }
+}
+
+/// Controller audio volumes saved with a profile (same ranges as `SetAudioVolumes`).
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct AudioPreset {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    headphone: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    speaker: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    microphone: Option<u8>,
+}
+impl AudioPreset {
+    fn validate(&self) -> bool {
+        self.headphone.is_none_or(|v| v <= 127)
+            && self.speaker.is_none_or(|v| v <= 100)
+            && self.microphone.is_none_or(|v| v <= 127)
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -200,6 +278,22 @@ struct GyroAimSettings {
     deadzone: u16,
     #[serde(default = "default_gyro_smoothing")]
     smoothing: f32,
+    /// "hold", "disable" or "toggle" (what the aim button does).
+    #[serde(default = "default_gyro_gate")]
+    gate: String,
+    #[serde(default)]
+    stick_off_threshold: f32,
+    #[serde(default)]
+    smooth_threshold: f32,
+    #[serde(default)]
+    acceleration: f32,
+    #[serde(default)]
+    accel_threshold: f32,
+    #[serde(default)]
+    flick_without_gyro: bool,
+}
+fn default_gyro_gate() -> String {
+    "hold".into()
 }
 
 fn default_sens() -> f32 {
@@ -230,6 +324,12 @@ impl Default for GyroAimSettings {
             bias: [0; 3],
             deadzone: default_gyro_deadzone(),
             smoothing: default_gyro_smoothing(),
+            gate: default_gyro_gate(),
+            stick_off_threshold: 0.0,
+            smooth_threshold: 0.0,
+            acceleration: 0.0,
+            accel_threshold: 0.0,
+            flick_without_gyro: false,
         }
     }
 }
@@ -255,6 +355,16 @@ struct RemapBinding {
     sequence: Vec<u16>,
     #[serde(default)]
     chord: Vec<u16>,
+    /// Macro-program button behaviour (PC mode); omitted when the default.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "programMode"
+    )]
+    program_mode: Option<crate::input_map::ProgramMode>,
+    /// Layer modifiers, long-press / double-tap, turbo and consume (camelCase, all optional).
+    #[serde(flatten)]
+    extras: crate::input_map::RemapExtras,
 }
 
 fn default_hold() -> String {
@@ -454,6 +564,14 @@ fn validate(data: Value) -> Result<Archive, String> {
         {
             return Err("Profile name, ID, description, or tag is invalid".into());
         }
+        if p.lightbar.as_ref().is_some_and(|l| !l.validate())
+            || p.audio_preset.as_ref().is_some_and(|a| !a.validate())
+            || p.audio.as_ref().is_some_and(|a| {
+                a.is_empty() || a.chars().count() > 80 || a.contains(char::is_control)
+            })
+        {
+            return Err("Profile lightbar or audio preset reference is invalid".into());
+        }
         let mut actions = crate::game_actions::ActionMapper::default();
         actions.set(p.actions.clone()).map_err(str::to_string)?;
         p.game_link.validate().map_err(str::to_string)?;
@@ -473,7 +591,7 @@ fn validate(data: Value) -> Result<Archive, String> {
         p.triggers.left.validate().map_err(str::to_string)?;
         p.triggers.right.validate().map_err(str::to_string)?;
         let h = &p.haptics;
-        if !matches!(h.shape.as_str(), "sine" | "square" | "saw" | "noise")
+        if !crate::audio_haptics::VoiceClip::is_known_shape(&h.shape)
             || !(40..=300).contains(&h.frequency)
             || !(2..=200).contains(&h.attack)
             || !(25..=650).contains(&h.release)
@@ -494,6 +612,11 @@ fn validate(data: Value) -> Result<Archive, String> {
             || g.deadzone > 512
             || !g.smoothing.is_finite()
             || !(0.0..=0.85).contains(&g.smoothing)
+            || !matches!(g.gate.as_str(), "hold" | "disable" | "toggle")
+            || !(0.0..=1.0).contains(&g.stick_off_threshold)
+            || !(0.0..=1000.0).contains(&g.smooth_threshold)
+            || !(0.0..=2.0).contains(&g.acceleration)
+            || !(0.0..=1000.0).contains(&g.accel_threshold)
         {
             return Err("Gyro aim settings are out of range".into());
         }
@@ -513,7 +636,23 @@ fn validate(data: Value) -> Result<Archive, String> {
                     || b.chord.iter().any(|&vk| vk == 0 || vk > 255)
                     || (b.behavior == "macro" && !b.chord.is_empty())
                     || b.sequence.iter().any(|&vk| vk == 0 || vk > 255)
-                    || !mapped_buttons.insert((b.button, b.modifier))
+                    || b.extras.modifiers.len() > 3
+                    || b.extras.modifiers.iter().any(|&m| m >= 23 || m == b.button)
+                    || b.extras.long_press_ms > 2000
+                    || b.extras.double_tap_ms > 1000
+                    || b.extras.turbo_ms > 500
+                    || (b.extras.long_press_ms > 0 && b.extras.double_tap_ms > 0)
+                    || !mapped_buttons.insert({
+                        let mut mods = b.extras.modifiers.clone();
+                        mods.sort_unstable();
+                        (
+                            b.button,
+                            b.modifier,
+                            mods,
+                            b.extras.long_press_ms,
+                            b.extras.double_tap_ms,
+                        )
+                    })
             })
         {
             return Err("Remap bindings are invalid".into());
@@ -579,7 +718,7 @@ fn save_at(file: &std::path::Path, json: &[u8]) -> Result<(), String> {
     write_archive(file, json)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Backup {
     id: String,
@@ -595,34 +734,66 @@ fn backup_stamp(id: &str) -> Option<u128> {
     digits.parse().ok()
 }
 
+/// Backup files are write-once, so a validation result per path never goes stale.
+type BackupCache = std::sync::Mutex<std::collections::HashMap<PathBuf, Option<usize>>>;
+fn validated_backup_cache() -> &'static BackupCache {
+    static CACHE: std::sync::OnceLock<BackupCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// Backup ids in the folder, newest first, without reading or validating contents.
+fn backup_names(file: &std::path::Path) -> Vec<(String, u128)> {
+    let folder = file.with_file_name("profile-backups");
+    let Ok(entries) = fs::read_dir(folder) else {
+        return Vec::new();
+    };
+    let mut names: Vec<(String, u128)> = entries
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| {
+            let id = e.file_name().to_string_lossy().into_owned();
+            backup_stamp(&id).map(|stamp| (id, stamp))
+        })
+        .collect();
+    names.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.cmp(&a.0)));
+    names
+}
+
 fn history(file: &std::path::Path) -> Result<Vec<Backup>, String> {
     let folder = file.with_file_name("profile-backups");
-    if !folder.exists() {
-        return Ok(Vec::new());
-    }
     let mut backups = Vec::new();
-    for entry in fs::read_dir(folder).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let id = entry.file_name().to_string_lossy().into_owned();
-        let Some(stamp) = backup_stamp(&id) else {
-            continue;
+    for (id, stamp) in backup_names(file) {
+        let path = folder.join(&id);
+        let cached = validated_backup_cache()
+            .lock()
+            .ok()
+            .and_then(|c| c.get(&path).copied());
+        let profiles = match cached {
+            Some(result) => result,
+            None => {
+                let result = fs::read(&path)
+                    .ok()
+                    .filter(|bytes| bytes.len() <= 1_000_000)
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                    .and_then(|data| validate(data).ok())
+                    .map(|archive| archive.profiles.len());
+                if let Ok(mut cache) = validated_backup_cache().lock() {
+                    if cache.len() > 256 {
+                        cache.clear();
+                    }
+                    cache.insert(path, result);
+                }
+                result
+            }
         };
-        if !entry.file_type().is_ok_and(|t| t.is_file()) {
-            continue;
-        }
-        if let Ok(bytes) = fs::read(entry.path())
-            && bytes.len() <= 1_000_000
-            && let Ok(data) = serde_json::from_slice(&bytes)
-            && let Ok(archive) = validate(data)
-        {
+        if let Some(profiles) = profiles {
             backups.push(Backup {
                 id,
                 created_ms: (stamp / 1_000_000).min(u128::from(u64::MAX)) as u64,
-                profiles: archive.profiles.len(),
+                profiles,
             });
         }
     }
-    backups.sort_by(|a, b| b.created_ms.cmp(&a.created_ms).then(b.id.cmp(&a.id)));
     Ok(backups)
 }
 
@@ -638,27 +809,31 @@ fn snapshot(file: &std::path::Path, force: bool) -> Result<(), String> {
             "Existing profile archive is too large. Export or repair it before saving.".into(),
         );
     }
+    const REPAIR: &str = "Saving is paused so the damaged file is not overwritten. Restore a backup (recover_profiles / restore_profile_backup) to continue.";
     validate(
         serde_json::from_slice(&bytes)
-            .map_err(|e| format!("Existing profiles need repair: {e}"))?,
-    )?;
+            .map_err(|e| format!("Existing profiles need repair: {e}. {REPAIR}"))?,
+    )
+    .map_err(|e| format!("Existing profiles need repair: {e}. {REPAIR}"))?;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| e.to_string())?
         .as_nanos();
-    let backups = history(file)?;
+    // Throttle on file names alone; no backup is read for the common automatic case.
+    let names = backup_names(file);
     if !force
-        && backups
+        && names
             .first()
-            .is_some_and(|b| stamp / 1_000_000 < u128::from(b.created_ms) + 60_000)
+            .is_some_and(|(_, s)| stamp / 1_000_000 < s / 1_000_000 + 60_000)
     {
         return Ok(());
     }
     let folder = file.with_file_name("profile-backups");
     fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
     write_archive(&folder.join(format!("profiles-{stamp}.json")), &bytes)?;
-    for old in backups.iter().skip(19) {
-        fs::remove_file(folder.join(&old.id)).map_err(|e| e.to_string())?;
+    // The new snapshot plus the 19 newest older ones are kept.
+    for (old, _) in names.iter().skip(19) {
+        fs::remove_file(folder.join(old)).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -710,6 +885,94 @@ pub fn restore(id: &str) -> Result<Value, String> {
     restore_at(&paths()?.0, id)
 }
 
+/// Describes whether the current archive loads and, if not, what can recover it.
+pub fn recovery_status() -> Result<Value, String> {
+    let (current, legacy) = paths()?;
+    recovery_status_at(&current, &legacy)
+}
+
+fn recovery_status_at(
+    current: &std::path::Path,
+    legacy: &std::path::Path,
+) -> Result<Value, String> {
+    match load_from_paths(current, legacy) {
+        Ok(_) => Ok(serde_json::json!({"ok":true,"recoverable":false,"savesBlocked":false})),
+        Err(error) => {
+            let newest = history(current)?.into_iter().next();
+            Ok(serde_json::json!({
+                "ok": false,
+                "message": error,
+                "recoverable": newest.is_some(),
+                "savesBlocked": true,
+                "backup": newest,
+            }))
+        }
+    }
+}
+
+/// Restores the newest valid backup over a corrupt archive (the corrupt file is kept aside).
+pub fn recover() -> Result<Value, String> {
+    let (file, legacy) = paths()?;
+    if load_from_paths(&file, &legacy).is_ok() {
+        return Err("The current profiles load fine; nothing to recover.".into());
+    }
+    let newest = history(&file)?
+        .into_iter()
+        .next()
+        .ok_or("No valid profile backup exists to recover from")?;
+    restore_at(&file, &newest.id)
+}
+
+/// Validates a profile archive (also used to vet imported single-profile archives).
+pub fn validate_archive(data: Value) -> Result<Value, String> {
+    serde_json::to_value(validate(data)?).map_err(|e| e.to_string())
+}
+
+#[cfg(windows)]
+pub(crate) fn downloads_folder() -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::UI::Shell::{FOLDERID_Downloads, SHGetKnownFolderPath};
+    #[link(name = "ole32")]
+    unsafe extern "system" {
+        fn CoTaskMemFree(pv: *const std::ffi::c_void);
+    }
+    let mut raw: *mut u16 = std::ptr::null_mut();
+    // SAFETY: SHGetKnownFolderPath fills `raw` with a CoTaskMem string that is freed below.
+    unsafe {
+        let hr = SHGetKnownFolderPath(&FOLDERID_Downloads, 0, std::ptr::null_mut(), &mut raw);
+        if hr < 0 || raw.is_null() {
+            if !raw.is_null() {
+                CoTaskMemFree(raw as *const _);
+            }
+            return None;
+        }
+        let mut len = 0;
+        while *raw.add(len) != 0 {
+            len += 1;
+        }
+        let path = std::ffi::OsString::from_wide(std::slice::from_raw_parts(raw, len));
+        CoTaskMemFree(raw as *const _);
+        Some(PathBuf::from(path))
+    }
+}
+#[cfg(not(windows))]
+pub(crate) fn downloads_folder() -> Option<PathBuf> {
+    let home = PathBuf::from(env::var_os("HOME")?);
+    // XDG user dirs may relocate Downloads.
+    if let Ok(text) = fs::read_to_string(home.join(".config/user-dirs.dirs"))
+        && let Some(line) = text
+            .lines()
+            .find(|l| l.trim_start().starts_with("XDG_DOWNLOAD_DIR="))
+    {
+        let value = line.split_once('=')?.1.trim().trim_matches('"');
+        let path = PathBuf::from(value.replace("$HOME", &home.to_string_lossy()));
+        if path.is_absolute() {
+            return Some(path);
+        }
+    }
+    Some(home.join("Downloads"))
+}
+
 pub(crate) fn write_archive(file: &std::path::Path, json: &[u8]) -> Result<(), String> {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -736,9 +999,12 @@ pub(crate) fn write_archive(file: &std::path::Path, json: &[u8]) -> Result<(), S
 pub fn export(data: Value) -> Result<String, String> {
     let archive = validate(data)?;
     let json = serde_json::to_vec_pretty(&archive).map_err(|e| e.to_string())?;
-    let user = env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-        .ok_or("Home folder is unavailable")?;
-    let folder = PathBuf::from(user).join("Downloads");
+    let folder = downloads_folder()
+        .or_else(|| {
+            env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                .map(|user| PathBuf::from(user).join("Downloads"))
+        })
+        .ok_or("Downloads folder is unavailable")?;
     fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -789,6 +1055,98 @@ mod tests {
         assert!(validate(data).is_err());
         let legacy = serde_json::to_value(validate(sample_profile()).unwrap()).unwrap();
         assert!(legacy.get("tactileClips").is_none());
+    }
+    #[test]
+    fn gyro_and_binding_extras_roundtrip_and_old_profiles_default() {
+        let old = validate(sample_profile()).unwrap();
+        let g = &old.profiles[0].gyro_aim;
+        assert_eq!(
+            (g.gate.as_str(), g.acceleration, g.flick_without_gyro),
+            ("hold", 0.0, false)
+        );
+        let mut data = sample_profile();
+        data["profiles"][0]["gyroAim"] = serde_json::json!({"enabled":true,"sensitivity":1,"yawScale":1,"pitchScale":1,"invertY":false,"activation":"l1","gate":"toggle","stickOffThreshold":0.4,"smoothThreshold":80,"acceleration":1.5,"accelThreshold":120,"flickWithoutGyro":true});
+        data["profiles"][0]["remap"] = serde_json::json!({"enabled":true,"bindings":[
+            {"button":1,"vk":65,"behavior":"tap","modifier":4,"modifiers":[5],"layerOnly":true,"toggleLayer":true,"longPressMs":400,"turboMs":0,"consume":true},
+            {"button":1,"vk":66,"behavior":"hold","modifier":4,"modifiers":[5],"doubleTapMs":250,"turboMs":50},
+            {"button":2,"vk":0x44,"behavior":"hold","programMode":"whileHeld"}]});
+        let saved = serde_json::to_value(validate(data).unwrap()).unwrap();
+        let p = &saved["profiles"][0];
+        assert_eq!(p["gyroAim"]["gate"], "toggle");
+        assert_eq!(
+            p["gyroAim"]["stickOffThreshold"].as_f64().unwrap().round() as i32,
+            0
+        );
+        assert_eq!(p["gyroAim"]["accelThreshold"], 120.0);
+        assert_eq!(p["gyroAim"]["flickWithoutGyro"], true);
+        let b = &p["remap"]["bindings"];
+        assert_eq!(b[0]["modifiers"], serde_json::json!([5]));
+        assert_eq!(b[0]["layerOnly"], true);
+        assert_eq!(b[0]["toggleLayer"], true);
+        assert_eq!(b[0]["longPressMs"], 400);
+        assert_eq!(b[0]["consume"], true);
+        assert_eq!(b[1]["doubleTapMs"], 250);
+        assert_eq!(b[1]["turboMs"], 50);
+        assert_eq!(b[2]["programMode"], "whileHeld");
+        assert!(validate(saved.clone()).is_ok());
+        for (path, v) in [
+            ("gate", serde_json::json!("sideways")),
+            ("stickOffThreshold", serde_json::json!(1.5)),
+            ("acceleration", serde_json::json!(3)),
+            ("smoothThreshold", serde_json::json!(5000)),
+        ] {
+            let mut bad = saved.clone();
+            bad["profiles"][0]["gyroAim"][path] = v;
+            assert!(validate(bad).is_err(), "{path}");
+        }
+        for (k, v) in [
+            ("longPressMs", 2001),
+            ("doubleTapMs", 1001),
+            ("turboMs", 501),
+        ] {
+            let mut bad = saved.clone();
+            bad["profiles"][0]["remap"]["bindings"][2][k] = v.into();
+            assert!(validate(bad).is_err(), "{k}");
+        }
+    }
+    #[test]
+    fn ui_lightbar_and_audio_preset_roundtrip_through_save() {
+        let mut data = sample_profile();
+        data["profiles"][0]["lightbar"] = serde_json::json!({"color":"#12ab9f","playerLeds":21,"mode":"lowBatteryBlink","periodMs":2000});
+        data["profiles"][0]["audioPreset"] =
+            serde_json::json!({"headphone":100,"speaker":60,"microphone":127});
+        data["profiles"][0]["audio"] = "bridge-preset-1".into();
+        let saved = serde_json::to_value(validate(data).unwrap()).unwrap();
+        let p = &saved["profiles"][0];
+        assert_eq!(p["lightbar"]["color"], "#12ab9f");
+        assert_eq!(p["lightbar"]["playerLeds"], 21);
+        assert_eq!(p["lightbar"]["mode"], "lowBatteryBlink");
+        assert_eq!(p["lightbar"]["periodMs"], 2000);
+        assert_eq!(p["audioPreset"]["speaker"], 60);
+        assert_eq!(p["audio"], "bridge-preset-1");
+        assert!(validate(saved.clone()).is_ok());
+        // Legacy array colours are normalised; partial presets and unknown lightbar keys are fine.
+        let mut legacy = sample_profile();
+        legacy["profiles"][0]["lightbar"] =
+            serde_json::json!({"color":[255,0,16],"playerLeds":0,"mode":"static","future":1});
+        legacy["profiles"][0]["audioPreset"] = serde_json::json!({"headphone":5});
+        let out = serde_json::to_value(validate(legacy).unwrap()).unwrap();
+        assert_eq!(out["profiles"][0]["lightbar"]["color"], "#ff0010");
+        assert!(out["profiles"][0]["audioPreset"].get("speaker").is_none());
+        for bad in [
+            serde_json::json!({"lightbar":{"color":"red","playerLeds":0,"mode":"static"}}),
+            serde_json::json!({"lightbar":{"color":"#000000","playerLeds":32,"mode":"static"}}),
+            serde_json::json!({"lightbar":{"color":"#000000","playerLeds":0,"mode":"disco"}}),
+            serde_json::json!({"lightbar":{"color":"#000000","playerLeds":0,"mode":"pulse","periodMs":5}}),
+            serde_json::json!({"audioPreset":{"speaker":101}}),
+            serde_json::json!({"audioPreset":{"headphone":128}}),
+        ] {
+            let mut d = sample_profile();
+            for (k, v) in bad.as_object().unwrap() {
+                d["profiles"][0][k] = v.clone();
+            }
+            assert!(validate(d).is_err(), "{bad}");
+        }
     }
     #[test]
     fn session_and_community_records_roundtrip_and_legacy_defaults_are_safe() {
@@ -888,6 +1246,20 @@ mod tests {
                 "remap":{"enabled":false,"bindings":[]}
             }]
         })
+    }
+
+    #[test]
+    fn archive_accepts_every_haptic_shape_and_rejects_unknown_ones() {
+        for shape in [
+            "sine", "square", "saw", "noise", "triangle", "pulse", "double", "swell",
+        ] {
+            let mut value = sample_profile();
+            value["profiles"][0]["haptics"]["shape"] = shape.into();
+            assert!(validate(value).is_ok(), "{shape} should be accepted");
+        }
+        let mut value = sample_profile();
+        value["profiles"][0]["haptics"]["shape"] = "wobble".into();
+        assert!(validate(value).is_err());
     }
 
     #[test]

@@ -80,6 +80,12 @@ impl Program {
     }
 }
 
+/// Modifier virtual keys (Shift, Ctrl, Alt, Win, left/right variants). Modifiers are
+/// pressed before and released after the keys they decorate.
+pub fn is_modifier_key(vk: u16) -> bool {
+    matches!(vk, 16..=18 | 91 | 92 | 160..=165)
+}
+
 pub fn valid_args(args: &[String]) -> bool {
     args.len() <= 16 && args.iter().all(|a| a.len() <= 1024 && !a.contains('\0'))
 }
@@ -142,7 +148,7 @@ impl Player {
         self.index += 1;
         let (output, delay) = match step {
             Step::Chord { mut keys, hold_ms } => {
-                keys.sort_by_key(|vk| !matches!(vk,16..=18|91|92|160..=165));
+                keys.sort_by_key(|vk| !is_modifier_key(*vk));
                 self.release = keys.iter().rev().map(|k| Output::Key(*k, true)).collect();
                 (
                     keys.into_iter().map(|k| Output::Key(k, false)).collect(),

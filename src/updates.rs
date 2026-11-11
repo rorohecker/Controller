@@ -30,7 +30,7 @@ pub async fn check_update(
         .updater_builder()
         .on_before_exit(move || {
             if let Some(bridge) = before_exit.try_state::<Arc<crate::Bridge>>() {
-                bridge.shutdown();
+                bridge.shutdown_for_update();
             }
         })
         .build()

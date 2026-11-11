@@ -2,11 +2,40 @@
 use aftertouch_protocol::InputState;
 use serde::{Deserialize, Serialize};
 
+/// Reference frame for gyro aiming. Serialized as the lowercase strings the UI already uses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MotionSpace {
+    /// Controller-local axes.
+    #[default]
+    Local,
+    /// Yaw about gravity, pitch about the horizontal right axis.
+    World,
+    /// Yaw about the player's vertical axis, so turning feels the same however the pad is tilted.
+    Player,
+}
+/// Stick response shape.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CurveMode {
+    #[default]
+    Axial,
+    Radial,
+}
+/// Where the radial menu may open.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RadialMode {
+    #[default]
+    Pc,
+    Game,
+    Both,
+}
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct MotionSettings {
     pub counts_per_turn: f32,
-    pub space: String,
+    pub space: MotionSpace,
     pub aim_multiplier: f32,
     pub aim_button: u8,
     pub flick_enabled: bool,
@@ -17,7 +46,7 @@ impl Default for MotionSettings {
     fn default() -> Self {
         Self {
             counts_per_turn: 101.25,
-            space: "local".into(),
+            space: MotionSpace::Local,
             aim_multiplier: 1.0,
             aim_button: 6,
             flick_enabled: false,
@@ -30,7 +59,6 @@ impl MotionSettings {
     pub fn validate(&self) -> Result<(), &'static str> {
         if !self.counts_per_turn.is_finite()
             || !(50.0..=100_000.0).contains(&self.counts_per_turn)
-            || !matches!(self.space.as_str(), "local" | "world")
             || !self.aim_multiplier.is_finite()
             || !(0.05..=4.0).contains(&self.aim_multiplier)
             || self.aim_button >= 23
@@ -46,7 +74,7 @@ impl MotionSettings {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct StickCurve {
-    pub mode: String,
+    pub mode: CurveMode,
     pub inner: f32,
     pub outer: f32,
     pub exponent: f32,
@@ -55,7 +83,7 @@ pub struct StickCurve {
 impl Default for StickCurve {
     fn default() -> Self {
         Self {
-            mode: "axial".into(),
+            mode: CurveMode::Axial,
             inner: 0.08,
             outer: 1.0,
             exponent: 1.0,
@@ -65,8 +93,7 @@ impl Default for StickCurve {
 }
 impl StickCurve {
     pub fn validate(&self) -> Result<(), &'static str> {
-        if !matches!(self.mode.as_str(), "axial" | "radial")
-            || !self.inner.is_finite()
+        if !self.inner.is_finite()
             || !(0.0..=0.4).contains(&self.inner)
             || !self.outer.is_finite()
             || !(0.6..=1.0).contains(&self.outer)
@@ -96,7 +123,7 @@ impl StickCurve {
                 0.0
             }
         });
-        if self.mode == "axial" {
+        if self.mode == CurveMode::Axial {
             pair.map(|v| v.signum() * self.amount(v.abs()))
         } else {
             let radius = pair[0].hypot(pair[1]);
@@ -133,7 +160,7 @@ pub struct RadialSector {
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct RadialSettings {
     pub enabled: bool,
-    pub mode: String,
+    pub mode: RadialMode,
     pub activation_button: u8,
     pub deadzone: f32,
     pub feedback: bool,
@@ -143,7 +170,7 @@ impl Default for RadialSettings {
     fn default() -> Self {
         Self {
             enabled: false,
-            mode: "pc".into(),
+            mode: RadialMode::Pc,
             activation_button: 17,
             deadzone: 0.2,
             feedback: true,
@@ -158,8 +185,7 @@ impl Default for RadialSettings {
 }
 impl RadialSettings {
     pub fn validate(&self) -> Result<(), &'static str> {
-        if !matches!(self.mode.as_str(), "pc" | "game" | "both")
-            || self.activation_button >= 23
+        if self.activation_button >= 23
             || matches!(self.activation_button, 1 | 6 | 7 | 16 | 18)
             || !self.deadzone.is_finite()
             || !(0.1..=0.5).contains(&self.deadzone)
@@ -213,10 +239,13 @@ impl FlickState {
         };
     }
     pub fn update(&mut self, stick: [f32; 2], dt: f32, settings: &MotionSettings) -> f32 {
-        if dt <= 0.0 || dt > 0.05 {
-            self.reset();
+        // A duplicate or resynchronised sensor report (dt == 0) carries no time, so it
+        // must not discard the turn in progress. Long gaps are clamped rather than
+        // treated as a release; only a genuine stick release or an explicit reset() ends a flick.
+        if !dt.is_finite() || dt <= 0.0 {
             return 0.0;
         }
+        let dt = dt.min(0.05);
         let radius = stick[0].hypot(stick[1]);
         if self.neutral {
             if radius < 0.3 {
@@ -284,6 +313,22 @@ impl RadialState {
         let was_open = self.open;
         let mut committed = None;
         let mut cancelled = false;
+        // A disabled (or out-of-scope) menu never consumes input and never waits for a lift.
+        if !settings.enabled || !allowed {
+            // Out of scope (but enabled): keep `wait_lift`, so a hold that was being waited
+            // out cannot re-arm the menu the moment the scope returns. A disabled menu forgets
+            // everything. Opening always needs `armed`, which needs the button released.
+            let keep_wait = settings.enabled && self.wait_lift;
+            *self = Self::default();
+            self.wait_lift = keep_wait;
+            return RadialOutput {
+                consume: false,
+                selected: None,
+                changed: was_open,
+                committed: None,
+                cancelled: was_open,
+            };
+        }
         if self.wait_lift {
             if !held && point_count == 0 {
                 self.wait_lift = false;
@@ -439,11 +484,11 @@ impl RadialMapper {
             self.pc_mode = pc_mode;
         }
         let allowed = focused
-            || self.settings.mode == "both"
+            || self.settings.mode == RadialMode::Both
             || if pc_mode {
-                self.settings.mode == "pc"
+                self.settings.mode == RadialMode::Pc
             } else {
-                self.settings.mode == "game"
+                self.settings.mode == RadialMode::Game
             };
         let mut output = self.state.update(input, &self.settings, allowed);
         output.changed |= self.capture != output.consume;
@@ -453,7 +498,7 @@ impl RadialMapper {
             && !self.settings.sectors[index].chord.is_empty()
         {
             let mut keys = self.settings.sectors[index].chord.clone();
-            keys.sort_by_key(|k| !matches!(*k,16..=18|91|92|160..=165));
+            keys.sort_by_key(|k| !crate::macros::is_modifier_key(*k));
             let program = crate::macros::Program {
                 repeat: 1,
                 steps: vec![crate::macros::Step::Chord { keys, hold_ms: 40 }],
@@ -506,7 +551,7 @@ mod tests {
             assert!((curve.apply([x, 0.0])[0] - expected).abs() < 0.00001);
         }
         let radial = StickCurve {
-            mode: "radial".into(),
+            mode: CurveMode::Radial,
             inner: 0.1,
             outer: 0.9,
             exponent: 2.0,
@@ -546,6 +591,71 @@ mod tests {
             flick.update([a.sin(), -a.cos()], 0.01, &settings);
         }
         assert!((flick.update([b.sin(), -b.cos()], 0.01, &settings) - 2.0).abs() < 0.0001);
+    }
+    #[test]
+    fn flick_survives_report_gaps_and_resyncs() {
+        let settings = MotionSettings::default();
+        let mut flick = FlickState::default();
+        flick.reset();
+        flick.update([0.0; 2], 0.01, &settings);
+        let mut angle = flick.update([1.0, 0.0], 0.01, &settings);
+        // A resync (dt == 0) and a long gap must not drop the rest of the turn.
+        assert_eq!(flick.update([0.0; 2], 0.0, &settings), 0.0);
+        angle += flick.update([0.0; 2], 0.4, &settings);
+        for _ in 0..12 {
+            angle += flick.update([0.0; 2], 0.01, &settings);
+        }
+        assert!((angle - 90.0).abs() < 0.0001);
+        // Holding the stick through a resync does not make a new flick either.
+        assert_eq!(flick.update([1.0, 0.0], 0.0, &settings), 0.0);
+    }
+    #[test]
+    fn disabled_radial_never_consumes_or_waits_for_lift() {
+        let mut state = RadialState::default();
+        state.reset();
+        let mut input = input();
+        input.buttons[17] = 1.0;
+        input.touch[0] = Some(point(1, 0.5, 0.5));
+        let settings = RadialSettings::default();
+        assert!(!settings.enabled);
+        assert!(!state.update(&input, &settings, true).consume);
+        assert!(!state.wait_lift);
+    }
+    #[test]
+    fn out_of_scope_radial_keeps_waiting_for_lift() {
+        let settings = RadialSettings {
+            enabled: true,
+            ..Default::default()
+        };
+        let mut state = RadialState::default();
+        state.reset();
+        let mut input = input();
+        input.buttons[17] = 1.0;
+        input.touch[0] = Some(point(1, 0.5, 0.5));
+        assert!(!state.update(&input, &settings, false).consume);
+        assert!(
+            state.wait_lift,
+            "scope loss must not clear the wait for lift"
+        );
+        assert!(!state.open);
+        // Back in scope with the hold still down: still waiting, still consuming.
+        assert!(state.update(&input, &settings, true).consume);
+        assert!(!state.open);
+    }
+    #[test]
+    fn radial_modes_keep_their_lowercase_wire_names() {
+        assert_eq!(
+            serde_json::to_string(&RadialMode::Both).unwrap(),
+            "\"both\""
+        );
+        assert_eq!(
+            serde_json::from_str::<MotionSpace>("\"player\"").unwrap(),
+            MotionSpace::Player
+        );
+        assert_eq!(
+            serde_json::from_str::<CurveMode>("\"radial\"").unwrap(),
+            CurveMode::Radial
+        );
     }
     #[test]
     fn radial_commits_on_button_release_and_waits_for_touch_lift() {

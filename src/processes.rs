@@ -20,7 +20,7 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowTextW, GetWindowThreadProcessId},
 };
 
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct ProcessState {
     pub conflicts: Vec<&'static str>,
     pub foreground_exe: Option<String>,

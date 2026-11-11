@@ -42,6 +42,9 @@ pub fn inspect() -> Value {
     checks.push(json!({"name":"Desktop permissions","detail":"Allow CONTROLLER in System Settings → Privacy & Security → Accessibility for PC controls and gyro aim. Errors appear here when an input is blocked.","ok":true}));
     #[cfg(windows)]
     checks.push(json!({"name":"Desktop input","detail":"PC controls target normal desktop windows. Windows blocks input sent to apps with higher privileges.","ok":true}));
+    if let Some(on) = crate::input_map::pointer_precision_enabled() {
+        checks.push(json!({"name":"Pointer precision","detail":if on {"Windows \"Enhance pointer precision\" is on and distorts touchpad and gyro pointer motion. Turn it off in Mouse settings for consistent aim."} else {"Windows \"Enhance pointer precision\" is off."},"ok":!on,"pointerPrecision":on}));
+    }
     checks.push(json!({"name":"Game receiver","detail":"JSON and DSX adapters listen on this PC only. Weapon detection requires a game or mod that sends supported events.","ok":true}));
     json!({"checks":checks})
 }

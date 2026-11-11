@@ -6,7 +6,7 @@ pub fn inspect() -> ProcessState {
 pub fn diagnostics() -> serde_json::Value {
     cache::diagnostics()
 }
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct ProcessState {
     pub conflicts: Vec<&'static str>,
     pub foreground_exe: Option<String>,

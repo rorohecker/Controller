@@ -271,17 +271,37 @@ fn redact(text: &str) -> String {
     let mut out = String::new();
     let mut start = 0;
     let mut i = 0;
-    while i + 17 <= bytes.len() {
-        if (0..17).all(|j| {
-            if j % 3 == 2 {
-                matches!(bytes[i + j], b':' | b'-')
-            } else {
-                bytes[i + j].is_ascii_hexdigit()
-            }
-        }) {
+    // Separated form: AA:BB:CC:DD:EE:FF or AA-BB-... (17 bytes).
+    let separated = |at: usize| {
+        at + 17 <= bytes.len()
+            && (0..17).all(|j| {
+                if j % 3 == 2 {
+                    matches!(bytes[at + j], b':' | b'-')
+                } else {
+                    bytes[at + j].is_ascii_hexdigit()
+                }
+            })
+    };
+    // Bare form: twelve hex digits that are not part of a longer hex run, which
+    // normalize_address() also accepts.
+    let bare = |at: usize| {
+        at + 12 <= bytes.len()
+            && bytes[at..at + 12].iter().all(u8::is_ascii_hexdigit)
+            && (at == 0 || !bytes[at - 1].is_ascii_hexdigit())
+            && bytes.get(at + 12).is_none_or(|b| !b.is_ascii_hexdigit())
+    };
+    while i < bytes.len() {
+        let length = if separated(i) {
+            17
+        } else if bare(i) {
+            12
+        } else {
+            0
+        };
+        if length > 0 {
             out.push_str(&text[start..i]);
             out.push_str("[controller]");
-            i += 17;
+            i += length;
             start = i;
         } else {
             i += 1;
@@ -503,6 +523,14 @@ impl Manager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn redaction_hides_separated_and_bare_addresses_only() {
+        assert_eq!(redact("bad aa:bb:cc:dd:ee:ff end"), "bad [controller] end");
+        assert_eq!(redact("AA-BB-CC-DD-EE-FF"), "[controller]");
+        assert_eq!(redact("addr=aabbccddeeff."), "addr=[controller].");
+        assert_eq!(redact("x aabbccddeeff00 y"), "x aabbccddeeff00 y");
+        assert_eq!(redact("héllo 001122334455 ok"), "héllo [controller] ok");
+    }
     #[test]
     fn addresses_arguments_and_reply_limits_are_strict() {
         assert_eq!(
