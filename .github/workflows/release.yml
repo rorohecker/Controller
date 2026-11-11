@@ -51,7 +51,7 @@ jobs:
           $signature = Get-AuthenticodeSignature -LiteralPath $asset
           if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notlike '*Nefarius Software Solutions*') { throw 'Bundled ViGEmBus signature is invalid' }
       - name: Cache Tauri CLI
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         id: tauri-cli
         with:
           path: ~/.cargo/bin/cargo-tauri*

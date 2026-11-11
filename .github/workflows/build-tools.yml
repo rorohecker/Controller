@@ -14,7 +14,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@v6
         id: tauri-cli
         with:
           path: ~/.cargo/bin/cargo-tauri*
@@ -29,7 +29,7 @@ jobs:
           $cli = Join-Path $env:USERPROFILE '.cargo/bin/cargo-tauri.exe'
           & $cli --version
           if ($LASTEXITCODE -ne 0) { throw 'Tauri CLI failed to run' }
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@v6
         if: steps.tauri-cli.outputs.cache-hit != 'true'
         with:
           path: ~/.cargo/bin/cargo-tauri*
