@@ -757,7 +757,7 @@ dependencies = [
  "crossbeam-queue",
  "enigo",
  "evdev",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "hidapi",
  "libc",
  "log",
