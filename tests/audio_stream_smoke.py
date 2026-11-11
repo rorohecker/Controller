@@ -2,11 +2,12 @@
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from ui_smoke import ROOT, mock_core
+from browser_paths import chrome_path, target_dir
 
 
 def main():
     with sync_playwright() as p:
-        chrome=Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe')
+        chrome=chrome_path()
         browser=p.chromium.launch(headless=True,executable_path=str(chrome) if chrome.exists() else None)
         page=browser.new_page(viewport={'width':1280,'height':900})
         mock_core(page)
@@ -67,14 +68,15 @@ def main():
         page.locator('#speaker-file-stop').click()
         assert page.locator('#speaker-start').input_value()=='0'
         page.evaluate("window.audioStatus('playing',10)")
-        assert page.locator('#speaker-file-play').text_content()=='Play'
+        assert page.locator('#speaker-file-play').text_content()=='Play track'
         page.locator('#audio-mixer-reset').click()
+        page.locator('.ui-confirm-actions button:last-child').click()
         assert page.locator('#grip-audition').input_value()=='stereo'
         for width in (640,900,1280):
             page.set_viewport_size({'width':width,'height':900})
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'),width
         assert not errors,errors
-        page.screenshot(path=str(ROOT/'target/audio-stream-ui.png'),full_page=True)
+        page.screenshot(path=str(target_dir() / 'audio-stream-ui.png'),full_page=True)
         browser.close()
     print('Audio stream smoke passed: native picker/commands, pause/seek, stale status, stereo meters, mixer/solo, responsive layout')
 

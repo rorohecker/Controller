@@ -4,12 +4,79 @@ import io
 import math
 import struct
 import wave
+import atexit
+import json
+import os
+import sys
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import command_schema
+from browser_paths import chrome_path, scratch_dir
+
+_SCHEMA = None
+SCHEMA_VIOLATIONS = []
 
 
-def mock_core(page):
+def _schema():
+    global _SCHEMA
+    if _SCHEMA is None:
+        _SCHEMA = command_schema.load()
+    return _SCHEMA
+
+
+def _fail_on_schema_violations():
+    """A payload the Rust core would reject (or silently drop fields from) fails the whole script."""
+    if SCHEMA_VIOLATIONS:
+        print('COMMAND SCHEMA VIOLATIONS (the real core would reject or ignore these):', file=sys.stderr)
+        for problem in sorted(set(SCHEMA_VIOLATIONS)):
+            print('  ' + problem, file=sys.stderr)
+        sys.stderr.flush()
+        sys.stdout.flush()
+        os._exit(1)
+
+
+atexit.register(_fail_on_schema_violations)
+
+
+# Same rules as command_schema.validate, run synchronously in the page so mocked commands never wait on Python.
+_VALIDATOR_JS = """
+window.__validateCommand = command => {
+  const schema = window.__commandSchema || {};
+  if (!command || typeof command !== 'object') return ['command must be an object'];
+  const spec = schema[command.action];
+  if (!command.action) return ['missing field `action`'];
+  if (!spec) return ['unknown action `' + command.action + '`'];
+  const out = [], known = new Set(['action', 'persistent']);
+  for (const [wire, info] of Object.entries(spec.fields)) {
+    known.add(wire); info.aliases.forEach(a => known.add(a));
+    if (info.required && !(wire in command) && !info.aliases.some(a => a in command)) out.push(command.action + ': missing field `' + wire + '`');
+  }
+  if (!spec.open) for (const key of Object.keys(command)) if (!known.has(key)) out.push(command.action + ': unknown field `' + key + '`');
+  return out;
+};
+"""
+
+
+def mock_core(page, show_all=True, validate=True, seed=True):
+    """Offline stand-in for the Tauri core.
+
+    show_all seeds the UI kit's persisted preference so collapsed sections stay clickable without per-test changes.
+    seed=False leaves localStorage alone (for tests that reload and check what the UI itself persisted).
+    validate makes send_command behave like serde: unknown actions, missing fields and unknown field names are rejected
+    and recorded in SCHEMA_VIOLATIONS."""
+    if validate:
+        page.expose_function('__reportViolation', lambda problems: SCHEMA_VIOLATIONS.extend(problems))
+        page.add_init_script("window.__commandSchema=%s;" % json.dumps(_schema()))
+        page.add_init_script(_VALIDATOR_JS)
+    seed_value = json.dumps('{"v":1,"showAll":true}' if show_all else '{"v":1}')
+    # Some tests start with localStorage.clear(); keep the UI kit preference through that so they stay deterministic.
+    page.add_init_script(
+        "(()=>{const seed=%s,key='controller.ui.v1';try{localStorage.setItem(key,seed);}catch(e){}"
+        "const clear=Storage.prototype.clear;Storage.prototype.clear=function(){clear.call(this);"
+        "if(this===window.localStorage){try{this.setItem(key,seed);}catch(e){}}};})();" % seed_value
+    ) if seed else None
     page.add_init_script("""
       window.sent = [];
       window.mockAppSettings={closeToTray:true,startOnLogin:false};
@@ -30,13 +97,17 @@ def mock_core(page):
           if (name === 'set_close_to_tray') { window.mockAppSettings.closeToTray=args.enabled; return null; }
           if (name === 'set_start_on_login') { window.mockAppSettings.startOnLogin=args.enabled; return null; }
           if (name === 'platform_capabilities') return {os:'windows',desktopInput:true,xinput:true,screenColor:true,systemAudioBridge:true};
-          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.22.0'}; }
+          if (name === 'check_update') { window.updateChecks=(window.updateChecks||0)+1; return {version:window.mockUpdateVersion||null,currentVersion:'0.23.0-rc.1'}; }
           if (name === 'install_update') { window.installedUpdate=true; return null; }
           if (name === 'send_demo_telemetry') { window.demoPort=args.port; return null; }
           if (name === 'open_driver_setup') { window.driverOpened=args.kind; return 'Driver setup opened'; }
           if (name === 'save_profiles') window.saved = args.data;
           if (name === 'export_profiles') { window.exported = args.data; return 'CONTROLLER-profiles.json'; }
-          if (name === 'send_command') window.sent.push(args.command);
+          if (name === 'send_command') {
+            const problems = window.__validateCommand ? window.__validateCommand(args.command) : [];
+            if (problems.length) { (window.schemaViolations ||= []).push(...problems); window.__reportViolation?.(problems); throw Error(problems.join('; ')); }
+            window.sent.push(args.command);
+          }
           return null;
         }},
         event: {listen: async (name, callback) => {
@@ -56,7 +127,7 @@ def pad_event(page, *pressed):
 
 def main():
     with sync_playwright() as playwright:
-        chrome = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        chrome = chrome_path()
         browser = playwright.chromium.launch(
             headless=True, executable_path=str(chrome) if chrome.exists() else None
         )
@@ -74,7 +145,7 @@ def main():
         assert page.locator(".masthead").bounding_box()["y"] >= 0
         scan_width = page.locator("#scan-button").bounding_box()["width"]
         page.locator("#scan-button").click()
-        assert page.locator("#scan-button").inner_text() == "Scan"
+        assert page.locator("#scan-button").inner_text() == "Find controller"
         assert page.locator("#scan-button").get_attribute("aria-busy") == "true"
         assert abs(page.locator("#scan-button").bounding_box()["width"] - scan_width) <= 1
         assert page.locator(".masthead").bounding_box()["y"] >= 0
@@ -106,7 +177,7 @@ def main():
         assert not page.evaluate("window.sent.some(c=>c.action==='playHaptic')")
         page.locator('[data-view="diagnostics"]').click()
         page.locator("#check-update").click()
-        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.22.0 is current')")
+        page.wait_for_function("document.querySelector('#update-status').textContent.includes('Version 0.23.0-rc.1 is current')")
         assert page.locator("#install-update").is_hidden()
         page.locator('[data-view="settings"]').click()
         assert page.locator('#close-to-tray').is_checked()
@@ -212,7 +283,7 @@ def main():
         assert page.locator("#light-controller-map .controller-map").count() == 1
         assert page.locator("#light-controller-map .map-art").get_attribute("href") == "./assets/dualsense-front.png"
         assert page.locator("#lights .light-left-column .telemetry-panel").count() == 1
-        assert page.locator("#lights > .script-panel").count() == 1
+        assert page.locator("#lights .script-panel").count() == 1
         assert page.locator("#light-presets [data-color]").count() == 24
         for led in (0, 2, 4):
             page.locator(f'#player-leds [data-player-led="{led}"]').click()
@@ -224,9 +295,9 @@ def main():
         page.locator("#save-light-color").click()
         assert page.locator("#light-favorites [data-color]").count() == 1
         assert page.locator("#light-hex").inner_text() == "#42A5F5"
-        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-lightbar-preview.png"), full_page=True)
+        page.screenshot(path=str(scratch_dir() / "controller-lightbar-preview.png"), full_page=True)
         page.locator('[data-view="live"]').click()
-        assert page.locator("#input-mode-toggle").inner_text().endswith("Game mode")
+        assert page.locator("#input-mode-toggle").inner_text().endswith("Games")
         page.add_style_tag(content=".controller-map .map-shoulder-motion{transition:none!important}")
         pad_event(page, 4)
         assert page.locator('.photo-stage .map-shoulder[data-button="4"] .map-shoulder-motion').evaluate("e => new DOMMatrixReadOnly(getComputedStyle(e).transform).m42") >= 3
@@ -255,7 +326,7 @@ def main():
         assert page.locator("#map-touch-0").get_attribute("cx") == "516"
         assert page.locator("#map-touch-0").get_attribute("cy") == "425"
         page.wait_for_timeout(450)
-        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-input-map.png"), full_page=True)
+        page.screenshot(path=str(scratch_dir() / "controller-input-map.png"), full_page=True)
         page.locator("#input-mode-toggle").click()
         assert page.evaluate("window.sent.at(-1).action") == "setPcMode"
         assert page.evaluate("window.sent.at(-1).enabled") is True
@@ -280,7 +351,7 @@ def main():
         pad_event(page)
         pad_event(page, 0)
         assert page.locator("#curve-side-label").inner_text() == "R2"
-        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-trigger-zones.png"), full_page=True)
+        page.screenshot(path=str(scratch_dir() / "controller-trigger-zones.png"), full_page=True)
         for _ in range(40):
             pad_event(page)
             pad_event(page, 13)
@@ -339,7 +410,7 @@ def main():
         assert "PC audio detected" in page.locator("#bridge-status").inner_text()
         page.evaluate("window.coreHandler({type:'audioStatus',route:'voiceCoil',bridge:true,bridgeFrames:100,glitches:0})")
         assert "play audio" in page.locator("#bridge-status").inner_text()
-        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-haptics-new.png"), full_page=True)
+        page.screenshot(path=str(scratch_dir() / "controller-haptics-new.png"), full_page=True)
         page.locator('[data-view="lights"]').click()
         page.locator("#temperature-light").click()
         assert page.evaluate("window.sent.at(-1).action") == "setTemperatureLightbar"
@@ -384,7 +455,7 @@ def main():
         page.evaluate("window.coreHandler({type:'scriptStatus',enabled:true,message:'Script armed'})")
         page.evaluate("window.coreHandler({type:'core',status:'restarting'})")
         assert page.locator("#script-source").get_attribute("readonly") is None
-        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-telemetry-new.png"), full_page=True)
+        page.screenshot(path=str(scratch_dir() / "controller-telemetry-new.png"), full_page=True)
         page.locator('[data-view="triggers"]').click()
         page.locator('.side-tab[data-side="left"]').click()
         page.locator('#trigger-modes [data-mode="bow"]').click()
@@ -477,7 +548,7 @@ def main():
         page.locator("#trigger-strength-input").press("Tab")
         page.locator("#apply-triggers").click()
         page.wait_for_function("window.sent.some(c=>c.action==='applyTriggers' && c.right.frequencyHz===17 && c.right.strength===75 && c.right.forceCap===5)")
-        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-trigger-new.png"), full_page=True)
+        page.screenshot(path=str(scratch_dir() / "controller-trigger-new.png"), full_page=True)
         page.locator('[data-view="touch"]').click()
         assert "circle" in page.locator("#touch-gesture-toggle").locator("xpath=..//p").inner_text().lower()
         page.locator("#gyro-calibrate").click()
@@ -529,7 +600,7 @@ def main():
         page.evaluate("window.coreHandler({type:'foreground',exe:'game.exe',title:'Another game',path:'C:\\\\Games\\\\game.exe'})")
         assert page.locator("#profile-match-title").input_value() == ""
         page.wait_for_timeout(450)
-        page.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-profiles-check.png"), full_page=True)
+        page.screenshot(path=str(scratch_dir() / "controller-profiles-check.png"), full_page=True)
         for hero, expected_mode in (("hanzo", "bow"), ("genji", "resistance"), ("soldier", "vibration")):
             page.locator(f'[data-hero-template="{hero}"]').click()
             assert page.locator("#profile-auto-apply").is_checked() is False
@@ -556,7 +627,7 @@ def main():
         assert mobile.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
         mobile.locator('[data-view="touch"]').click()
         mobile.wait_for_timeout(450)
-        mobile.screenshot(path=str(Path.home() / "AppData" / "Local" / "Temp" / "controller-touch-mobile.png"), full_page=True)
+        mobile.screenshot(path=str(scratch_dir() / "controller-touch-mobile.png"), full_page=True)
         assert mobile.evaluate("document.documentElement.scrollWidth <= innerWidth + 1")
         assert not mobile_errors, mobile_errors
         for width, height in ((640, 560), (900, 690), (1060, 690), (1920, 1080)):

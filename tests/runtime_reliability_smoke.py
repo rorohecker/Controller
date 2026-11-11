@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from ui_smoke import ROOT, mock_core, pad_event
+from browser_paths import chrome_path
 
 
 def draw_sample(page, count=1, x=.5):
@@ -20,7 +21,7 @@ def meters(page, mode=None):
 
 def main():
     with sync_playwright() as playwright:
-        chrome=Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe')
+        chrome=chrome_path()
         browser=playwright.chromium.launch(headless=True,executable_path=str(chrome) if chrome.exists() else None)
         page=browser.new_page(viewport={'width':1280,'height':900});mock_core(page)
         page.add_init_script("""const runtimeBase=window.__TAURI__.core.invoke;

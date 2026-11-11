@@ -3,11 +3,12 @@ import base64
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from ui_smoke import ROOT, mock_core, pad_event
+from browser_paths import chrome_path, target_dir
 
 
 def main():
     with sync_playwright() as p:
-        chrome=Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe')
+        chrome=chrome_path()
         browser=p.chromium.launch(headless=True,executable_path=str(chrome) if chrome.exists() else None)
         page=browser.new_page(viewport={'width':1280,'height':900});mock_core(page)
         page.add_init_script("""const integrationBase=window.__TAURI__.core.invoke;
@@ -120,7 +121,7 @@ def main():
         assert '185 packets' in page.locator('#link-comparison').inner_text()
         assert page.locator('#link-test-start').is_enabled()
         # Packet inspection is read-only and never forwards a report.
-        page.locator('.native-packet-preview summary').click()
+        page.locator('.native-packet-preview').evaluate('d => { d.open = true; }')
         report=bytearray(63);report[0]=2
         page.locator('#native-packet').fill(base64.b64encode(report).decode())
         sent=page.evaluate('window.sent.length');page.locator('#native-packet-inspect').click()
@@ -133,7 +134,7 @@ def main():
                 assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'),(width,view)
         page.set_viewport_size({'width':1280,'height':1000})
         page.locator('[data-view="haptics"]').click();page.locator('#capture-source-panel').scroll_into_view_if_needed()
-        page.screenshot(path=str(ROOT/'target/integrations-check.png'))
+        page.screenshot(path=str(target_dir() / 'integrations-check.png'))
         assert not errors,errors
         browser.close()
         print('Integrations smoke passed: scoped capture, no implicit fallback, per-game PID resolution, native handoff, permissions, opt-in experiments and read-only reports')

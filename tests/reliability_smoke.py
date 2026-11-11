@@ -5,6 +5,7 @@ import wave
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from ui_smoke import ROOT, mock_core
+from browser_paths import chrome_path
 
 
 def connect(page, identity):
@@ -13,7 +14,7 @@ def connect(page, identity):
 
 def main():
     with sync_playwright() as p:
-        chrome = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        chrome = chrome_path()
         browser = p.chromium.launch(headless=True, executable_path=str(chrome) if chrome.exists() else None)
         page = browser.new_page(viewport={"width": 1280, "height": 900})
         mock_core(page)
@@ -65,13 +66,13 @@ def main():
         page.locator('#speaker-file-play').click()
         page.wait_for_function('window.appendWaiting')
         page.locator('#speaker-file-stop').click()
-        assert page.locator('#speaker-file-play').text_content() == 'Play'
+        assert page.locator('#speaker-file-play').text_content() == 'Play track'
         assert page.locator('#speaker-start').input_value() == '0'
         page.evaluate('window.holdAppend=false;window.releaseAppend()')
         page.wait_for_function("window.sent.at(-1).action==='stopSpeakerSound'")
         old = page.evaluate("window.sent.findLast(c=>c.action==='playSpeakerSound').trackId")
         page.evaluate("id=>window.coreHandler({type:'speakerStatus',source:'transport',paused:false,position:5,trackId:id})", old)
-        assert page.locator('#speaker-file-play').text_content() == 'Play'
+        assert page.locator('#speaker-file-play').text_content() == 'Play track'
         page.locator('#speaker-file-play').click()
         page.wait_for_function("document.querySelector('#speaker-start').value>0")
         page.locator('#speaker-file-play').click()

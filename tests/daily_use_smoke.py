@@ -2,6 +2,7 @@
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from ui_smoke import ROOT, mock_core, pad_event
+from browser_paths import chrome_path, target_dir
 
 VIEWS = ['live', 'triggers', 'haptics', 'touch', 'pc-controls', 'lights', 'profiles', 'calibration', 'settings', 'diagnostics']
 
@@ -29,7 +30,7 @@ def setup(page):
 
 def main():
     with sync_playwright() as p:
-        chrome = Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe')
+        chrome = chrome_path()
         browser = p.chromium.launch(headless=True, executable_path=str(chrome) if chrome.exists() else None)
         page = browser.new_page(viewport={'width': 1280, 'height': 900})
         setup(page)
@@ -190,7 +191,7 @@ def main():
         assert mac.evaluate('document.documentElement.scrollWidth<=innerWidth+1')
         mac.close()
         page.locator('[data-view="haptics"]').click()
-        page.screenshot(path=str(ROOT / 'target/daily-use-check.png'))
+        page.screenshot(path=str(target_dir() / 'daily-use-check.png'))
         assert not errors, errors
         browser.close()
         print('Daily use smoke passed: save failures, native apply confirmation, source ownership, Stop all, numeric controls, preferences and 100-200% scaling')

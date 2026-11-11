@@ -3,11 +3,12 @@ from pathlib import Path
 import json
 from playwright.sync_api import sync_playwright
 from ui_smoke import ROOT, mock_core
+from browser_paths import chrome_path, target_dir
 
 
 def main():
     with sync_playwright() as p:
-        chrome=Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        chrome=chrome_path()
         browser=p.chromium.launch(headless=True,executable_path=str(chrome) if chrome.exists() else None)
         page=browser.new_page(viewport={"width":1280,"height":900})
         mock_core(page)
@@ -108,7 +109,20 @@ def main():
         for width in (390,640,900,1600):
             page.set_viewport_size({"width":width,"height":900})
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'),width
-        page.set_viewport_size({"width":1280,"height":900});page.locator('#tactile-workshop').scroll_into_view_if_needed();page.screenshot(path=str(ROOT/'target/haptic-authoring-check.png'))
+        page.set_viewport_size({"width":1280,"height":900});page.locator('#tactile-workshop').scroll_into_view_if_needed();page.screenshot(path=str(target_dir() / 'haptic-authoring-check.png'))
+        # Undo/redo walks every distinct edit (A->B->C undoes to B, then A) and coalesces rapid typing.
+        steps=page.evaluate("""async()=>{
+          const h=window.hapticAuthoring,wait=ms=>new Promise(r=>setTimeout(r,ms)),at=()=>h.draft.cues[0].startMs,seen=[];
+          h.resetHistory();const a=at();
+          for(const v of [a+10,a+20,a+30]){h.draft.cues[0].startMs=v;h.changed();await wait(700);}
+          seen.push(at());h.undoClip();seen.push(at());h.undoClip();seen.push(at());h.undoClip();seen.push(at());
+          h.redoClip();seen.push(at());h.redoClip();seen.push(at());
+          h.draft.cues[0].startMs=a;h.resetHistory();h.draft.cues[0].startMs=a+40;h.changed();h.draft.cues[0].startMs=a+50;h.changed();h.draft.cues[0].startMs=a+60;h.changed();
+          h.undoClip();seen.push(at()-a);
+          return {a,seen};}""")
+        a0=steps['a']
+        assert steps['seen'][:7]==[a0+30,a0+20,a0+10,a0,a0+10,a0+20,0],steps
+        assert steps['seen'][-1]==0,steps
         assert not errors,errors
         browser.close()
         print('Haptic authoring smoke passed: timelines, encoding, clip export/reload, action snapshots, per-pad limits, stereo tests and matched A/B')

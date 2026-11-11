@@ -8,12 +8,13 @@ import sys
 import threading
 import time
 from pathlib import Path
+from browser_paths import core_exe
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 def main():
-    exe = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else ROOT / "target" / "debug" / "controller.exe"
+    exe = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else core_exe(ROOT)
     core = subprocess.Popen([str(exe), "--core"], cwd=ROOT, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
     events = queue.Queue()

@@ -3,11 +3,12 @@ from pathlib import Path
 import json
 from playwright.sync_api import sync_playwright
 from ui_smoke import ROOT, mock_core
+from browser_paths import chrome_path
 
 
 def main():
     with sync_playwright() as p:
-        chrome = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        chrome = chrome_path()
         browser = p.chromium.launch(headless=True, executable_path=str(chrome) if chrome.exists() else None)
         page = browser.new_page(viewport={"width": 1280, "height": 900})
         mock_core(page)

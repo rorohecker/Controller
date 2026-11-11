@@ -2,11 +2,12 @@
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from ui_smoke import ROOT, mock_core, pad_event
+from browser_paths import chrome_path
 
 
 def main():
     with sync_playwright() as p:
-        chrome=Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe')
+        chrome=chrome_path()
         browser=p.chromium.launch(headless=True,executable_path=str(chrome) if chrome.exists() else None)
         page=browser.new_page(viewport={'width':1180,'height':850})
         mock_core(page)
@@ -39,6 +40,7 @@ def main():
         page.wait_for_function('window.outputCalibration.record.revision===2')
         assert page.evaluate('window.mockCalibrationRecords["pad-a"].settings.enabled') is False
         page.locator('#output-cal-restore').click()
+        page.locator('.ui-confirm-actions button:last-child').click()
         page.wait_for_function('window.outputCalibration.record.revision===3')
         assert page.locator('#output-cal-enabled').is_checked()
         # Changing controllers must discard stale samples and never use A's calibration for B.

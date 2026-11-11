@@ -3,6 +3,7 @@ import base64
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from ui_smoke import ROOT, mock_core, pad_event
+from browser_paths import chrome_path
 
 VIEWS = ['live', 'triggers', 'haptics', 'touch', 'pc-controls', 'lights',
          'profiles', 'calibration', 'settings', 'diagnostics']
@@ -30,7 +31,7 @@ TEXT_COLLISIONS = '''root => {
 
 def main():
     with sync_playwright() as p:
-        chrome = Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe')
+        chrome = chrome_path()
         browser = p.chromium.launch(headless=True, executable_path=str(chrome) if chrome.exists() else None)
         page = browser.new_page(viewport={'width': 1440, 'height': 1000})
         errors = []

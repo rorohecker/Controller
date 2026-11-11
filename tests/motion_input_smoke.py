@@ -3,11 +3,12 @@ import json
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from ui_smoke import ROOT, mock_core, pad_event
+from browser_paths import chrome_path, target_dir
 
 
 def main():
     with sync_playwright() as p:
-        chrome = Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe')
+        chrome = chrome_path()
         browser = p.chromium.launch(headless=True, executable_path=str(chrome) if chrome.exists() else None)
         page = browser.new_page(viewport={'width': 1280, 'height': 900})
         mock_core(page)
@@ -106,7 +107,7 @@ def main():
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'), width
         page.set_viewport_size({'width': 1280, 'height': 1000})
         page.locator('#radial-workbench').scroll_into_view_if_needed()
-        page.screenshot(path=str(ROOT / 'target/motion-input-check.png'))
+        page.screenshot(path=str(target_dir() / 'motion-input-check.png'))
         for os in ('macos', 'linux'):
             restored = browser.new_page(viewport={'width': 900, 'height': 800})
             mock_core(restored)

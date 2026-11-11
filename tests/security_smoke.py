@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from ui_smoke import ROOT, mock_core, pad_event
+from browser_paths import chrome_path
 
 
 def main():
@@ -20,7 +21,7 @@ def main():
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
     try:
         with sync_playwright() as p:
-            chrome=Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe')
+            chrome=chrome_path()
             browser=p.chromium.launch(headless=True,executable_path=str(chrome) if chrome.exists() else None)
             page=browser.new_page();mock_core(page)
             errors=[];page.on('pageerror',lambda e:errors.append(str(e)))

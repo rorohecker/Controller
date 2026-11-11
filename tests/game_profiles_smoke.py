@@ -2,11 +2,12 @@
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 from ui_smoke import ROOT, mock_core
+from browser_paths import chrome_path, target_dir
 
 
 def main():
     with sync_playwright() as p:
-        chrome = Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe")
+        chrome = chrome_path()
         browser = p.chromium.launch(headless=True, executable_path=str(chrome) if chrome.exists() else None)
         page = browser.new_page(viewport={"width": 1280, "height": 900})
         mock_core(page)
@@ -70,7 +71,7 @@ def main():
             assert page.evaluate("document.documentElement.scrollWidth<=innerWidth+1"), width
             for selector in ('#touch-mouse-toggle', '#touch-gesture-toggle', '#gyro-aim-toggle', '#xinput-toggle'):
                 assert page.locator(selector).evaluate("e=>{const b=e.getBoundingClientRect(),p=e.parentElement.querySelector('p').getBoundingClientRect();return b.left>=p.right-1||b.top>=p.bottom-1||b.bottom<=p.top+1}"), (width, selector)
-        page.screenshot(path=str(ROOT / 'target/touch-profile-check.png'), full_page=True)
+        page.screenshot(path=str(target_dir() / 'touch-profile-check.png'), full_page=True)
         assert not errors, errors
         browser.close()
         print('Game profiles smoke passed: presets, action rules, weapon events, archive reload, launch, key chords, Touch layout')

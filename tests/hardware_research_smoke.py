@@ -6,6 +6,7 @@ import struct
 import zlib
 from playwright.sync_api import sync_playwright
 from ui_smoke import ROOT,mock_core
+from browser_paths import chrome_path, target_dir
 
 
 def snapshot():
@@ -23,7 +24,7 @@ def snapshot():
 
 def main():
     with sync_playwright() as p:
-        chrome=Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe')
+        chrome=chrome_path()
         browser=p.chromium.launch(headless=True,executable_path=str(chrome) if chrome.exists() else None)
         page=browser.new_page(viewport={'width':1280,'height':900});mock_core(page)
         page.add_init_script("""const hardwareBase=window.__TAURI__.core.invoke;
@@ -125,7 +126,7 @@ def main():
                 page.locator(f'[data-view="{view}"]').click();page.wait_for_timeout(60)
                 assert page.evaluate('document.documentElement.scrollWidth<=innerWidth+1'),(width,view)
                 assert page.locator('.hardware-card:visible input:visible,.hardware-card:visible select:visible').evaluate_all('(els)=>els.every(e=>{const r=e.getBoundingClientRect(),p=e.closest(".hardware-card").getBoundingClientRect();return r.left>=p.left-1&&r.right<=p.right+1})'),(width,view)
-        page.screenshot(path=str(ROOT/'target/hardware-research-check.png'),full_page=True)
+        page.screenshot(path=str(target_dir() / 'hardware-research-check.png'),full_page=True)
         assert not errors,errors
         browser.close()
         print('Hardware research smoke passed: saved assignments, read-only Edge backups, scoped failures, recognition, weapon races and responsive layouts')
