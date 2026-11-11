@@ -2,21 +2,25 @@
 (() => {
   'use strict';
   const $=id=>document.getElementById(id),copy=value=>JSON.parse(JSON.stringify(value));
-  function plan(seed){
+  function plan(seed,trials=4){
     let random=seed>>>0;const next=()=>{random^=random<<13;random^=random>>>17;random^=random<<5;return (random>>>0)/4294967296;};
-    const order=[0,0,1,1];for(let i=order.length-1;i>0;i--){const j=Math.floor(next()*(i+1));[order[i],order[j]]=[order[j],order[i]];}
+    const order=Array.from({length:trials},(_,i)=>i<Math.ceil(trials/2)?0:1);for(let i=order.length-1;i>0;i--){const j=Math.floor(next()*(i+1));[order[i],order[j]]=[order[j],order[i]];}
     return order.map(swap=>swap?['b','a']:['a','b']);
   }
   class ControllerHapticEvaluation {
     constructor(api){
       this.a=api;this.generation=0;
       const n=api.gameNode,box=n('section',{id:'haptic-evaluation',class:'work-panel framed tactile-panel evaluation-lab'}),body=n('div',{class:'game-content'});
-      box.append(n('div',{class:'panel-cap',text:'Haptic comparison'}),body);$('haptics').append(box);
+      box.append(n('div',{class:'panel-cap',text:'Haptic comparison'}),body);window.controllerPlatform?.section?.(box,'haptics.evaluation','tool','Wireless haptics comparison','Blind comparison of test trials',{keywords:'blind comparison trials evaluation a/b conversion haptic listening study export results'});$('haptics').append(box);
       body.append(n('p',{text:'Compare two audio conversions in four blinded trials. Each plays the same five seconds at your current levels. Keep the source file with the report.'}));
       const setup=n('div',{class:'evaluation-setup'}),modes=[['music','Full range'],['bass','Bass'],['impact','Impacts'],['texture','Texture']];
-      this.modeA=api.gameSelect(modes,'music');this.modeB=api.gameSelect(modes,'texture');
-      this.seed=n('input',{id:'evaluation-seed',type:'number',min:1,max:4294967295,step:1,value:137});
-      setup.append(api.gameField('A conversion',this.modeA),api.gameField('B conversion',this.modeB),api.gameField('Shuffle seed',this.seed));
+      let saved={};try{saved=JSON.parse(localStorage.getItem('controller.evaluationSetup'))||{};}catch{}
+      this.modeA=api.gameSelect(modes,modes.some(m=>m[0]===saved.a)?saved.a:'music');this.modeB=api.gameSelect(modes,modes.some(m=>m[0]===saved.b)?saved.b:'texture');
+      this.seed=n('input',{id:'evaluation-seed',type:'number',min:1,max:4294967295,step:1,value:Number.isInteger(saved.seed)&&saved.seed>=1?saved.seed:137});
+      this.trialCount=api.gameSelect([[2,'2 trials'],[4,'4 trials'],[6,'6 trials'],[8,'8 trials']],[2,4,6,8].includes(saved.trials)?saved.trials:4);this.trialCount.id='evaluation-trials';
+      const persist=()=>{try{localStorage.setItem('controller.evaluationSetup',JSON.stringify({a:this.modeA.value,b:this.modeB.value,seed:Number(this.seed.value),trials:Number(this.trialCount.value)}));}catch{}};
+      for(const el of [this.modeA,this.modeB,this.seed,this.trialCount])el.addEventListener('change',persist);
+      setup.append(api.gameField('A conversion',this.modeA),api.gameField('B conversion',this.modeB),api.gameField('Shuffle seed',this.seed),api.gameField('Trials',this.trialCount));
       this.begin=this.button('Prepare trials','evaluation-start',()=>this.start());
       this.cancelButton=this.button('Cancel','evaluation-cancel',()=>this.cancel('Comparison cancelled.'));this.cancelButton.disabled=true;
       this.playX=this.button('Play X','evaluation-x',()=>this.play('x'));this.playY=this.button('Play Y','evaluation-y',()=>this.play('y'));
@@ -24,6 +28,7 @@
       const actions=n('div',{class:'game-buttons'});actions.append(this.begin,this.playX,this.playY,this.cancelButton);
       this.status=n('p',{id:'evaluation-status',role:'status',text:'Choose a USB audio file, set the song position, then prepare trials. Nothing plays automatically.'});
       const scores=n('div',{class:'evaluation-scores'});this.scores={};
+      const gs=document.createElement('style');gs.textContent='.evaluation-scores{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:6px 10px;align-items:end}.evaluation-scores select{width:100%}.evaluation-summary{font:.85rem var(--mono,monospace);white-space:pre-line}';document.head.append(gs);
       for(const slot of ['x','y'])for(const metric of ['strength','clarity']){
         const select=n('select',{id:`evaluation-${slot}-${metric}`});select.append(n('option',{value:'',text:'Choose…'}));for(let i=0;i<=5;i++)select.append(n('option',{value:String(i),text:String(i)}));
         select.setAttribute('aria-label',`${slot.toUpperCase()} ${metric}`);this.scores[`${slot}-${metric}`]=select;scores.append(api.gameField(`${slot.toUpperCase()} ${metric} · 0–5`,select));
@@ -58,14 +63,15 @@
       if(['playing','buffering','starting'].includes(player.mode))return this.a.toast('Pause playback before preparing trials.');
       if(audio&&(audio.bridge||audio.gameActive||audio.timelineActive||audio.cueActive))return this.a.toast('Stop other haptic sources before comparing.');
       if(player.duration-player.current()<5)return this.a.toast('Choose a position with at least five seconds left.');
-      this.generation++;this.session={schemaVersion:1,appVersion:document.querySelector('.side-code')?.textContent,createdAt:new Date().toISOString(),planVersion:1,seed,order:plan(seed),modes:{a:this.modeA.value,b:this.modeB.value},position:player.current(),duration:5,context:this.context(),trials:[],playbacks:[],index:0,heard:{},cancelled:false,finished:false};
-      this.begin.disabled=true;this.cancelButton.disabled=false;this.playX.disabled=this.playY.disabled=false;this.reveal.disabled=true;this.exportButton.disabled=false;this.result.textContent='';
-      for(const control of [this.seed,this.modeA,this.modeB])control.disabled=true;
+      const trialCount=Number(this.trialCount.value)||4;
+      this.generation++;this.session={schemaVersion:1,appVersion:document.querySelector('.side-code')?.textContent,createdAt:new Date().toISOString(),planVersion:1,seed,order:plan(seed,trialCount),trialCount,modes:{a:this.modeA.value,b:this.modeB.value},position:player.current(),duration:5,context:this.context(),trials:[],playbacks:[],index:0,heard:{},cancelled:false,finished:false};
+      this.begin.disabled=true;this.cancelButton.disabled=false;this.playX.disabled=this.playY.disabled=false;this.reveal.disabled=true;this.exportButton.disabled=false;this.result.textContent='';document.getElementById('evaluation-summary')?.remove();
+      for(const control of [this.seed,this.modeA,this.modeB,this.trialCount])control.disabled=true;
       this.showTrial();
     }
     showTrial(){
       this.session.heard={};this.save.disabled=true;for(const select of Object.values(this.scores))select.value='';this.preference.value='';
-      this.status.textContent=`Trial ${this.session.index+1}/4. Play X and Y, then score strength and clarity. 0 means none; 5 means very strong or very clear.`;
+      this.status.textContent=`Trial ${this.session.index+1}/${this.session.trialCount}. Play X and Y, then score strength and clarity. 0 means none; 5 means very strong or very clear.`;
     }
     async play(slot){
       if(!this.session||this.session.finished||this.session.cancelled||this.active)return;
@@ -73,7 +79,7 @@
       const player=this.a.getPlayer(),epoch=this.generation,session=this.session;
       const record={trial:session.index+1,slot,requestedAt:new Date().toISOString(),completed:false};session.playbacks.push(record);
       const active={slot,epoch,played:false,record};this.active=active;this.playX.disabled=this.playY.disabled=true;this.save.disabled=true;
-      this.status.textContent=`Trial ${session.index+1}/4 · ${slot.toUpperCase()} opening…`;
+      this.status.textContent=`Trial ${session.index+1}/${session.trialCount} · ${slot.toUpperCase()} opening…`;
       const key=session.order[session.index][slot==='x'?0:1];
       const pending=player.audition(session.modes[key],session.position,5,id=>{if(this.generation===epoch){active.trackId=id;record.trackId=id;}});
       active.stopId=player.trackId;
@@ -93,7 +99,7 @@
         active.record.completed=true;active.record.completedAt=new Date().toISOString();
         this.session.heard[active.slot]={trackId:active.trackId,outputCallbacks:e.callbacks||null};this.active=null;
         this.playX.disabled=this.playY.disabled=false;this.save.disabled=!(this.session.heard.x&&this.session.heard.y);
-        this.status.textContent=`Trial ${this.session.index+1}/4 · ${active.slot.toUpperCase()} finished. ${this.save.disabled?'Play the other sample.':'Score both samples, then record.'}`;
+        this.status.textContent=`Trial ${this.session.index+1}/${this.session.trialCount} · ${active.slot.toUpperCase()} finished. ${this.save.disabled?'Play the other sample.':'Score both samples, then record.'}`;
       }
     }
     record(){
@@ -102,11 +108,11 @@
       const scores={};for(const [key,select] of Object.entries(this.scores)){const value=Number(select.value);if(select.value===''||!Number.isInteger(value)||value<0||value>5)return this.a.toast('Score strength and clarity for X and Y.');scores[key]=value;}
       if(!['x','y','tie'].includes(this.preference.value))return this.a.toast('Choose X, Y or No preference.');
       s.trials.push({trial:s.index+1,scores,preference:this.preference.value,heard:copy(s.heard),recordedAt:new Date().toISOString()});s.index++;
-      if(s.index<4)this.showTrial();else{s.finished=true;this.finishControls();this.reveal.disabled=false;this.status.textContent='Four trials recorded. Reveal the order or export your results.';}
+      if(s.index<s.trialCount)this.showTrial();else{s.finished=true;this.finishControls();this.reveal.disabled=false;this.status.textContent=`${s.trialCount===4?'Four':s.trialCount} trials recorded. Reveal the order or export your results.`;}
     }
     finishControls(){
       this.begin.disabled=false;this.cancelButton.disabled=true;this.playX.disabled=this.playY.disabled=this.save.disabled=true;
-      for(const control of [this.seed,this.modeA,this.modeB])control.disabled=false;
+      for(const control of [this.seed,this.modeA,this.modeB,this.trialCount])control.disabled=false;
     }
     cancel(message='Comparison cancelled.',stop=true){
       if(!this.session||this.session.finished||this.session.cancelled)return;
@@ -118,6 +124,21 @@
     revealOrder(){
       if(!this.session?.finished)return;
       this.result.textContent=this.session.order.map((order,i)=>`Trial ${i+1}: X = ${this.session.modes[order[0]]}, Y = ${this.session.modes[order[1]]}`).join(' · ');
+      this.summarize();
+    }
+    summarize(){
+      const s=this.session,tally={};
+      for(const key of ['a','b'])tally[key]={mode:s.modes[key],wins:0,strength:[],clarity:[]};
+      let ties=0;
+      s.trials.forEach((t,i)=>{
+        const order=s.order[i];
+        order.forEach((key,slotIndex)=>{const slot=slotIndex?'y':'x';tally[key].strength.push(t.scores[slot+'-strength']);tally[key].clarity.push(t.scores[slot+'-clarity']);});
+        if(t.preference==='tie')ties++;else tally[order[t.preference==='x'?0:1]].wins++;
+      });
+      const avg=a=>a.length?(a.reduce((x,y)=>x+y,0)/a.length).toFixed(1):'-';
+      let box=document.getElementById('evaluation-summary');
+      if(!box){box=document.createElement('p');box.id='evaluation-summary';box.className='pc-note evaluation-summary';this.result.after(box);}
+      box.textContent=['a','b'].map(k=>`${k.toUpperCase()} (${tally[k].mode}): preferred ${tally[k].wins}x, strength ${avg(tally[k].strength)}, clarity ${avg(tally[k].clarity)}`).join('\n')+`\nNo preference: ${ties}. Subjective ratings from ${s.trials.length} trial${s.trials.length===1?'':'s'}; not a quality ranking.`;
     }
     export(){
       if(!this.session)return;const result=copy(this.session);delete result.context.source.path;

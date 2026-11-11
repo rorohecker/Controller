@@ -26,7 +26,6 @@
 .screen:not(#live) .page-heading h1 { font-size: clamp(28px, 3vw, 40px); }
 .page-heading p { font-size: 13px; line-height: 1.5; }
 .framed { box-shadow: 3px 4px 0 #20323828, 0 10px 24px #1e30362b, 0 0 16px color-mix(in srgb, var(--panel-accent) 24%, transparent); }
-.framed::before { opacity: .45; }
 .work-panel {
   color-scheme: light;
   color: var(--card-ink);
@@ -38,7 +37,7 @@
   min-height: 44px;
   gap: 12px;
   color: #fff1da;
-  background-image: linear-gradient(90deg, #292c32ed, #353139d6 48%, #282c3866), url('./assets/observatory-pixel.png');
+  background-image: linear-gradient(90deg, #292c32ed, #353139d6 48%, #282c38d9), url('./assets/observatory-pixel.png');
   background-size: cover, 760px auto;
   background-position: center, var(--scene-position, 60% 42%);
   border-bottom: 1px solid color-mix(in srgb, var(--panel-accent) 60%, #39454b);
@@ -308,9 +307,6 @@ input[type='range']:disabled { cursor: not-allowed; opacity: .65; }
   .framed > .panel-cap { flex-wrap: wrap; padding-block: 10px; }
   .framed > .panel-cap > span:last-child { font-size: 9px; }
 }
-@media (prefers-reduced-motion: reduce) {
-  .framed::before { animation: none; }
-}
 
 /* File transport stays together at every window width. */
 .speaker-transport { display:flex; gap:10px; margin-top:12px; }
@@ -358,7 +354,7 @@ input[type='range']:disabled { cursor: not-allowed; opacity: .65; }
 /* Tactile clips keep the workbench's warm glass and pixel backdrop. */
 .tactile-panel { margin-block: 20px; min-width: 0; }
 .tactile-panel .panel-cap { background: linear-gradient(110deg,#4c3e4c,#353a40); color: #fae8c9; }
-.tactile-grid { display: grid; grid-template-columns: minmax(0,1.6fr) minmax(260px,1fr); gap: 22px; margin-block: 18px; }
+.tactile-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,310px),1fr)); gap: 22px; margin-block: 18px; }
 .tactile-lane { display: grid; grid-template-columns: 75px minmax(0,1fr); align-items: center; gap: 10px; margin-block: 14px; }
 .tactile-track { height: 46px; position: relative; background: repeating-linear-gradient(90deg,#22293888 0 calc(10% - 1px),#e4cfa94d calc(10% - 1px) 10%); border: 1px solid #c6af8e66; border-radius: 5px; }
 .tactile-cue { position: absolute; min-width: 0; height: 100%; padding: 4px; border: 1px solid #e0b77f; background: #6f503f; color: #fff0d4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border-radius: 4px; font-size: 12px; }
@@ -446,7 +442,7 @@ input[type='range']:disabled { cursor: not-allowed; opacity: .65; }
 :where(button,input,select,textarea,summary,[tabindex]):focus-visible { outline:3px solid #a45d37; outline-offset:3px; }
 .controls-panel :where(button,input,select,textarea):focus-visible,.daily-bar :focus-visible { outline-color:#f2ca89; }
 /* Small sections of the approved pixel art sit behind the panel headers. */
-.screen:not(#live) .framed>.panel-cap { background-size:cover,520px auto; background-blend-mode:normal,luminosity; }
+.screen:not(#live) .framed>.panel-cap { background-size:cover,520px auto; background-blend-mode:normal; }
 #triggers .framed>.panel-cap { background-position:center,22% 70%; }
 #haptics .framed>.panel-cap { background-position:center,70% 28%; }
 #profiles .framed>.panel-cap { background-position:center,10% 55%; }
@@ -502,7 +498,6 @@ body[data-density=compact] .work-panel,body[data-density=compact] .studio-card {
 .runtime-trace input[type=file]::file-selector-button{font:600 12px var(--body);color:#3e454e;background:#e9e6dc;border:1px solid #929a9d;border-radius:4px;padding:10px 12px;margin-right:12px;cursor:pointer;}
 
 /* Composite the reflection separately; keep the inner frame and pixel corners still. */
-.framed::before{background:none;animation:none;}
 .framed > .card-reflection{position:absolute;inset:4px;z-index:0;pointer-events:none;overflow:hidden;border-radius:4px;opacity:.45;}
 .card-reflection::before{content:'';position:absolute;inset:0 auto 0 0;width:60%;background:linear-gradient(110deg,transparent 15%,#ffffff29 36%,#c9f9f366 50%,#ffddda38 64%,transparent 85%);transform:translateX(-120%);animation:card-reflection-travel 13s ease-in-out infinite;will-change:transform;}
 @keyframes card-reflection-travel{0%,15%{transform:translateX(-120%)}55%,100%{transform:translateX(270%)}}
@@ -626,3 +621,329 @@ body[data-density=compact] .work-panel,body[data-density=compact] .studio-card {
 }
 .hardware-write-review p {margin:0 0 12px;line-height:1.55}
 .hardware-write-review .game-buttons {margin:0;flex-wrap:wrap}
+
+/* ---- Chart tokens (read by canvas drawing code through getComputedStyle) ---- */
+:root{--chart-line:#7ec9bc;--chart-accent:#d4a84b;--chart-fill:rgba(212,168,75,.2);--chart-warn:#e7b46b}
+
+/* ---- Shared small components ---- */
+.preset-library{align-items:flex-start}
+.preset-library .preset-intro{flex:1 1 220px}
+.preset-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 10px;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:8px;flex:1 1 280px}
+.preset-group select{flex:1 1 150px}.preset-group input{flex:1 1 150px;width:auto}
+.live-preview-row{flex:1 1 100%;margin:0}
+.live-preview-row input{flex:0 0 auto;width:14px!important;height:14px;padding:0}
+.profile-list-tools{display:flex;gap:6px;flex-wrap:wrap;padding:8px;background:var(--stage-mid)}
+.profile-list-tools .profile-new{flex:1 1 90px;width:auto;border-radius:6px;padding:10px}
+.profile-list-tools .quiet-action{flex:1 1 90px}
+.profile-empty{padding:18px 16px;color:var(--ink-soft);font:13px/1.45 var(--body)}
+.profile-row[draggable="true"]{cursor:grab}
+.profile-row.is-drop{outline:2px dashed var(--teal-deep);outline-offset:-4px}
+.field-error{display:block;margin-top:4px;color:var(--danger);font:600 12px var(--body)}
+.profile-editor input[aria-invalid="true"]{border-color:var(--danger);box-shadow:0 0 0 2px color-mix(in srgb,var(--danger) 35%,transparent)}
+.load-failed{margin:0 0 14px;padding:12px 14px;border:1px solid var(--danger);border-left-width:5px;border-radius:8px;background:color-mix(in srgb,var(--danger) 14%,transparent);color:inherit}
+.load-failed p{margin:6px 0 10px;font-size:13px;line-height:1.45}
+.load-failed-actions{display:flex;gap:8px;flex-wrap:wrap}
+.session-note{display:block;margin-top:2px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 10px var(--body);font-style:normal;color:var(--teal-glow)}
+.side-battery{display:flex;align-items:center;gap:8px;margin-top:10px;font:600 11px var(--body);color:var(--teal-glow)}
+.side-battery-bar{position:relative;flex:0 0 34px;height:10px;border:1px solid currentColor;border-radius:3px;overflow:hidden}
+.side-battery-bar i{position:absolute;inset:0 auto 0 0;width:0;background:currentColor;transition:width .3s}
+.side-battery.is-low{color:#ff9d7a}.side-battery.is-charging{color:var(--gold-soft)}
+.subtabs{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 16px}
+.subtabs button{padding:8px 14px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--ink);font:700 12px var(--body)}
+.subtabs button[aria-selected="true"]{background:var(--stage-mid);color:var(--cream);border-color:var(--gold)}
+.log-tools{display:flex;gap:8px;margin:0 0 8px}
+.log-tools input{flex:1 1 auto;min-width:0;padding:7px 9px;border-radius:5px;border:1px solid rgba(212,168,75,.35);background:rgba(0,0,0,.28);color:var(--cream)}
+.event-log{max-height:260px}
+.game-integration-heading{margin:22px 0 10px;padding:8px 12px;border-left:4px solid var(--teal);font:700 13px var(--body);letter-spacing:.06em;text-transform:uppercase;color:var(--ink)}
+.light-presets button[data-color]{position:relative}
+.light-presets button.is-selected{outline:3px solid var(--cream);outline-offset:2px;box-shadow:0 0 0 5px var(--stage)}
+.light-presets button.is-selected::after{content:'\2713';position:absolute;inset:0;display:grid;place-items:center;font:700 14px var(--body);color:#fff;text-shadow:0 0 3px #000,0 0 3px #000}
+.light-apply-row{margin:4px 0 8px}
+.guided-test{margin:18px 0 0;padding:14px;border:1px solid var(--line);border-radius:8px}
+.guided-head p{margin:4px 0 10px;font-size:12px;line-height:1.5}
+.guided-checklist{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px}
+.guided-checklist span{padding:4px 8px;border-radius:5px;border:1px solid var(--line);font:600 11px var(--mono);opacity:.75}
+.guided-checklist span.is-done{background:color-mix(in srgb,var(--teal) 30%,transparent);border-color:var(--teal);opacity:1}
+.guided-checklist span.is-done::before{content:'\2713 '}
+.guided-actions{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 8px}
+.tour{max-width:min(460px,calc(100vw - 32px));padding:22px;border:2px solid var(--gold);border-radius:12px;background:var(--stage-mid);color:var(--cream);font:14px/1.5 var(--body)}
+.tour::backdrop{background:rgba(5,10,16,.72)}
+.tour h2{margin:0 0 6px;font:700 20px var(--display)}
+.tour small{display:block;margin-bottom:10px;color:var(--teal-glow);font:600 11px var(--mono)}
+.tour-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px;flex-wrap:wrap}
+.tour button{padding:8px 14px;border-radius:6px;border:1px solid var(--gold);background:transparent;color:var(--cream);font:700 12px var(--body)}
+.tour button.primary{background:var(--gold);color:var(--stage)}
+.mode-help{display:block;margin:6px 0 0;font:12px/1.4 var(--body);color:var(--ink-soft)}
+.curve-points circle:focus-visible{outline:3px solid var(--gold);outline-offset:2px}
+
+/* ---- Themes. "light" is the original look; "dark" and "contrast" override tokens and the main surfaces. ---- */
+:root[data-theme="dark"]{
+  --ink:#dbe7e9;--ink-soft:#a3b8be;--line:#34484f;--parchment:#0d1820;--parchment-2:#16232b;--parchment-dim:#1b2a33;
+  --card-ink:#dbe7e9;--chart-line:#7ec9bc;--chart-accent:#e7b46b;--chart-fill:rgba(231,180,107,.22);color-scheme:dark
+}
+:root[data-theme="dark"] .workspace,
+:root[data-theme="dark"] .workspace:has(#live.is-current){background-color:#0b141b;background-image:linear-gradient(180deg,rgba(6,12,18,.86),rgba(6,12,18,.94)),url('./assets/observatory-pixel.png');background-size:cover;background-position:center top}
+:root[data-theme="dark"] .screen{--card-ink:#dbe7e9}
+:root[data-theme="dark"] .screen:not(#live)>.page-heading{background:none}
+:root[data-theme="dark"] .work-panel{background:linear-gradient(135deg,rgba(255,255,255,.04),transparent 48%),#17242c;color-scheme:dark}
+:root[data-theme="dark"] .work-panel .control-label,:root[data-theme="dark"] .work-panel .check-row{color:#c7d6da}
+:root[data-theme="dark"] .work-panel .control-label b{color:#e7b46b}
+:root[data-theme="dark"] .work-panel .quiet-action,:root[data-theme="dark"] .preset-library .quiet-action{color:#dbe7e9;background:#263842;border-color:#587480}
+:root[data-theme="dark"] .work-panel .quiet-action:hover:not(:disabled),:root[data-theme="dark"] .preset-library .quiet-action:hover:not(:disabled){background:#32495a;border-color:#e7b46b}
+:root[data-theme="dark"] .work-panel button:disabled,:root[data-theme="dark"] .preset-library button:disabled{color:#788b92;background:#1c2a31;border-color:#33474f}
+:root[data-theme="dark"] .preset-library{background:#17242c}
+:root[data-theme="dark"] .preset-library p{color:#a3b8be}
+:root[data-theme="dark"] .panel-cap.sub{background:#1b2a33;color:#b4c6cb}
+:root[data-theme="dark"] .work-panel :is(input,select,textarea):not([type=range],[type=checkbox],[type=radio],[type=color],[type=file]),
+:root[data-theme="dark"] .preset-library :is(input,select){background:#0f1a20;color:#dbe7e9;border-color:#587480}
+:root[data-theme="dark"] .profile-row{color:#dbe7e9}
+:root[data-theme="dark"] .side-tab{background:#1b2a33;color:#a3b8be}
+:root[data-theme="dark"] .curve-paper{background:#101b21}
+:root[data-theme="dark"] .subtabs button{color:#dbe7e9}
+
+:root[data-theme="contrast"]{
+  --ink:#fff;--ink-soft:#fff;--line:#fff;--parchment:#000;--parchment-2:#000;--parchment-dim:#111;
+  --gold:#ffd400;--gold-deep:#ffd400;--gold-soft:#ffe97a;--teal:#00e5ff;--teal-deep:#00e5ff;--teal-glow:#7ff3ff;--danger:#ff7a7a;
+  --stage:#000;--stage-mid:#000;--stage-lift:#000;--cream:#fff;--card-ink:#fff;
+  --chart-line:#00e5ff;--chart-accent:#ffd400;--chart-fill:rgba(255,212,0,.3);color-scheme:dark
+}
+:root[data-theme="contrast"] body,:root[data-theme="contrast"] .workspace,:root[data-theme="contrast"] .workspace:has(#live.is-current){background:#000!important;color:#fff}
+:root[data-theme="contrast"] .framed{border:2px solid #fff;box-shadow:none;animation:none}
+:root[data-theme="contrast"] .framed::before,:root[data-theme="contrast"] .framed::after,:root[data-theme="contrast"] .card-reflection{display:none}
+:root[data-theme="contrast"] .work-panel,:root[data-theme="contrast"] .controls-panel,:root[data-theme="contrast"] .preset-library,:root[data-theme="contrast"] .screen:not(#live)>.page-heading{background:#000!important;color:#fff}
+:root[data-theme="contrast"] .framed>.panel-cap,:root[data-theme="contrast"] .framed>.module-topline{background:#000;color:#ffd400;border-bottom:2px solid #fff;text-shadow:none}
+:root[data-theme="contrast"] .framed>.panel-cap>span:last-child,:root[data-theme="contrast"] .framed>.module-topline>span:last-child{color:#fff}
+:root[data-theme="contrast"] button,:root[data-theme="contrast"] .work-panel .quiet-action,:root[data-theme="contrast"] .preset-library .quiet-action{background:#000;color:#fff;border:2px solid #fff}
+:root[data-theme="contrast"] .main-action,:root[data-theme="contrast"] .nav-link.is-current,:root[data-theme="contrast"] .side-tab.is-active,:root[data-theme="contrast"] .subtabs button[aria-selected="true"]{background:#ffd400!important;color:#000!important;border-color:#fff}
+:root[data-theme="contrast"] button:disabled,:root[data-theme="contrast"] .work-panel button:disabled{opacity:1!important;color:#bbb;border-style:dashed;background:#000}
+:root[data-theme="contrast"] :is(input,select,textarea):not([type=range],[type=checkbox],[type=radio],[type=color],[type=file]){background:#000;color:#fff;border:2px solid #fff}
+:root[data-theme="contrast"] :focus-visible{outline:3px solid #ffd400!important;outline-offset:3px}
+:root[data-theme="contrast"] .sidebar,:root[data-theme="contrast"] .masthead,:root[data-theme="contrast"] .session-rail,:root[data-theme="contrast"] .footer{background:#000;border-color:#fff;text-shadow:none}
+:root[data-theme="contrast"] .sidebar::after{display:none}
+:root[data-theme="contrast"] .toast-item{background:#000;color:#fff;border:2px solid #fff}
+:root[data-theme="contrast"] .page-heading h1,:root[data-theme="contrast"] .page-heading p,:root[data-theme="contrast"] #live>.page-heading p{color:#fff;background:none;text-shadow:none}
+:root[data-theme="contrast"] #live>.page-heading{background:#000}
+
+.haptic-tab-hidden{display:none!important}
+
+/* ---- Shell extras: banners, chips, background service, extra controls ---- */
+.shell-banner{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:0 0 10px;padding:10px 14px;border:1px solid var(--danger);border-left-width:5px;border-radius:8px;background:color-mix(in srgb,var(--danger) 16%,var(--stage-mid));color:var(--cream);font-size:13px}
+.shell-banner[hidden]{display:none}
+.shell-warning{margin:0 0 12px;padding:9px 12px;border:1px solid color-mix(in srgb,var(--gold) 70%,transparent);border-left-width:5px;border-radius:8px;background:color-mix(in srgb,var(--gold) 14%,transparent);color:inherit;font-size:13px;line-height:1.45}
+.shell-warning[hidden],.suspend-badge[hidden],.battery-faults[hidden],.load-failed-recovery[hidden]{display:none}
+.suspend-badge{display:inline-block;margin:6px 0;padding:4px 10px;border-radius:999px;border:1px solid color-mix(in srgb,var(--gold) 70%,transparent);background:color-mix(in srgb,var(--gold) 16%,transparent);font-size:12px}
+.battery-faults{color:var(--danger);font-weight:600}
+.load-failed-recovery{margin:0 0 10px;font-size:12px}
+.status-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.status-chips:empty{display:none}
+.status-chip{display:inline-block;max-width:100%;padding:3px 9px;border-radius:999px;border:1px solid color-mix(in srgb,currentColor 30%,transparent);font:600 11px/1.4 var(--body);overflow-wrap:anywhere}
+.status-chip.is-warn{border-color:var(--gold);background:color-mix(in srgb,var(--gold) 18%,transparent)}
+.status-chip.is-error{border-color:var(--danger);background:color-mix(in srgb,var(--danger) 20%,transparent)}
+.service-chip{display:inline-block;padding:1px 8px;border-radius:999px;border:1px solid currentColor;font-size:11px}
+.service-chip[data-state="running"]{color:var(--teal-deep);border-color:var(--teal-deep)}
+.service-chip[data-state="failed"]{color:var(--danger);border-color:var(--danger)}
+.settings-hint{margin:8px 0 0;font-size:12px;color:var(--ink-soft)}
+.settings-hint[hidden]{display:none}
+.settings-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.threshold-row{display:grid;gap:6px;margin-bottom:10px}
+.threshold-row input[type=range]{width:100%}
+.extras-panel .extra-body{display:grid;gap:12px}
+.extra-field{display:grid;gap:4px;min-width:0}
+.extra-field label.control-label{display:flex;justify-content:space-between;gap:8px}
+.extra-field select,.extra-field input[type=number]{width:100%;min-width:0;height:34px;padding:0 7px;border:1px solid var(--line);border-radius:5px;background:var(--parchment-2);color:var(--ink);font:12px var(--body)}
+.extra-field small,.extra-group small{font-size:11px;color:var(--ink-soft)}
+.extra-group{display:grid;gap:8px;padding-top:10px;border-top:1px solid color-mix(in srgb,currentColor 14%,transparent)}
+.extra-row{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
+.extra-row>*{flex:1 1 130px;min-width:0}
+.experimental-tag{color:var(--gold-deep);font-weight:600}
+.binding-extras{grid-column:1/-1;margin:6px 0;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:6px;padding:4px 8px}
+.binding-extras>summary{cursor:pointer;font-size:12px;padding:4px 0}
+.binding-extras-body{display:grid;gap:10px;padding:8px 0 4px}
+.binding-extras .check-row{margin:0}
+.persistent-row{flex-wrap:wrap;margin:8px 0}
+.persistent-hint{flex-basis:100%;font-size:11px;color:var(--ink-soft)}
+.telemetry-source{margin:10px 0}
+.telemetry-source[hidden]{display:none}
+.telemetry-source input{min-width:0}
+#lights-extras,#pc-extras{min-width:0}
+.binding-extras,.binding-extras-body{min-width:0;max-width:100%}
+.binding-extras input[type=checkbox],.persistent-row input[type=checkbox],.extras-panel input[type=checkbox]{width:14px!important;height:14px;flex:0 0 auto;padding:0;margin:2px 0 0}
+.binding-extras .pc-modifiers{display:flex;flex-wrap:wrap;gap:6px}
+.binding-extras .extra-field input,.binding-extras .extra-field select{box-sizing:border-box;max-width:100%}
+
+/* Per-theme colours for the shell extras (tokens flip with the theme). */
+.service-chip{color:#fff1da}
+.service-chip[data-state="running"]{color:#8fe6d6;border-color:#8fe6d6}
+.service-chip[data-state="failed"]{color:#ffb0b0;border-color:#ffb0b0}
+.extra-value{color:var(--gold-deep)}
+:root[data-theme="dark"] .extra-value{color:#e7b46b}
+:root[data-theme="contrast"] .extra-value{color:#ffd400}
+.extras-panel .extra-field small,.extras-panel .extra-group small{color:var(--ink-soft)}
+.extras-panel strong{color:var(--ink)}
+.extras-panel .experimental-tag{color:var(--gold-deep)}
+:root[data-theme="dark"] .extras-panel .experimental-tag{color:#e7b46b}
+:root[data-theme="contrast"] .extras-panel .experimental-tag{color:#ffd400}
+.extras-panel .extra-field select,.extras-panel .extra-field input[type=number]{background:var(--parchment-2);color:var(--ink);border-color:var(--line)}
+:root[data-theme="contrast"] .extras-panel .extra-field select,:root[data-theme="contrast"] .extras-panel .extra-field input[type=number]{background:#000;color:#fff;border:2px solid #fff}
+.telemetry-source label,.telemetry-source small{color:var(--ink)}
+.telemetry-source input{background:var(--parchment-2);color:var(--ink);border:1px solid var(--line)}
+#telemetry-source-save{color:var(--ink);background:var(--parchment-dim);border:1px solid var(--line)}
+:root[data-theme="contrast"] .telemetry-source input,:root[data-theme="contrast"] #telemetry-source-save{background:#000;color:#fff;border:2px solid #fff}
+.log-tools input{border:1px solid rgba(212,168,75,.5);background:rgba(0,0,0,.32);color:#f6efe2}
+.log-tools input::placeholder{color:#cdbfa3}
+:root[data-theme="contrast"] .log-tools input{background:#000;color:#fff;border:2px solid #fff}
+:root[data-theme="contrast"] .work-panel .control-label,:root[data-theme="contrast"] .work-panel .check-row,:root[data-theme="contrast"] .work-panel .control-label b{color:#fff}
+:root[data-theme="contrast"] .work-panel .control-label b{color:#ffd400}
+
+/* =====================================================================================
+   Contrast layer: text/surface token pairs.
+   Root cause of the old mix-ups: base rules assumed a DARK surface (pale text) and every light
+   parchment panel had to override each label by hand. Now each surface declares the text tokens
+   that are legal ON IT and element rules just read var(--text*). Every pair is >= 4.5:1.
+   Surfaces: dark (default), light parchment (.work-panel & friends), per theme.
+   Enforced by tests/contrast_smoke.py.
+   ===================================================================================== */
+:root{
+  --text:#f3ede0;--text-muted:#d3cec3;--text-label:#e4ddd0;--text-accent:#ffe0ad;--text-link:#9be9e4;--text-ph:#bdb7ab;--text-disabled:#a7b0b2;
+  --ph-on-light:#586469;--ph-on-dark:#b9c4c8;
+}
+/* Light parchment surfaces (light theme). */
+:is(.workspace,.work-panel,.preset-library,.studio-dialog,.game-templates,.studio-guide,.photo-stage,.touch-plane,.calibration-guide,.daily-detail-content,.break-control,.break-preview,.zone-calibration,.cal-adc-card,.cal-stick-card,.calibration-visual>div,.calibration-live>div,.calibration-touch-field,.pc-binding,.pc-mouse-summary>div,.game-action-card,.macro-step,.curve-paper){
+  --text:#1c2e37;--text-muted:#3d4f58;--text-label:#33464f;--text-accent:#74411f;--text-link:#10596a;--text-ph:#586469;--text-disabled:#5f6a6f;
+}
+/* Dark islands inside light panels. */
+:is(#live>.page-heading,.photo-underbar,.trigger-meter,.light-display,.light-controller-preview,.race-readout,.script-body,.player-mode-badge-dark,.controls-panel,.studio-card,.telemetry,.panel-cap,.module-topline,.touch-motion-readings,.texture-list,.waveform-panel,.sidebar,.masthead,.session-rail){
+  --text:#f3ede0;--text-muted:#d3cec3;--text-label:#e4ddd0;--text-accent:#ffe0ad;--text-link:#9be9e4;--text-ph:#bdb7ab;--text-disabled:#a7b0b2;
+}
+/* Dark theme: every panel is dark. */
+:root[data-theme="dark"] :is(.workspace,.work-panel,.preset-library,.studio-dialog,.game-templates,.studio-guide,.photo-stage,.touch-plane,.calibration-guide,.daily-detail-content,.controls-panel,.studio-card,.break-control,.break-preview,.zone-calibration,.cal-adc-card,.cal-stick-card,.calibration-visual>div,.calibration-live>div,.calibration-touch-field,.pc-binding,.pc-mouse-summary>div,.game-action-card,.macro-step,.curve-paper,.photo-underbar,.trigger-meter,.light-display,.light-controller-preview,.race-readout,.script-body,.player-mode-badge-dark){
+  --text:#dbe7e9;--text-muted:#b4c6cb;--text-label:#c7d6da;--text-accent:#f0c07a;--text-link:#8fe0d8;--text-ph:#9fb0b5;--text-disabled:#8a9ca2;
+}
+/* High-contrast theme: black/white/yellow only. */
+:root[data-theme="contrast"],:root[data-theme="contrast"] :is(.workspace,.work-panel,.preset-library,.studio-dialog,.game-templates,.studio-guide,.photo-stage,.touch-plane,.calibration-guide,.daily-detail-content,.controls-panel,.studio-card,.telemetry,.panel-cap,.sidebar,.masthead,.session-rail,.break-control,.break-preview,.zone-calibration,.cal-adc-card,.cal-stick-card,.calibration-visual>div,.calibration-live>div,.calibration-touch-field,.pc-binding,.pc-mouse-summary>div,.game-action-card,.macro-step,.curve-paper,.photo-underbar,.trigger-meter,.light-display,.light-controller-preview,.race-readout,.script-body,.player-mode-badge-dark){
+  --text:#fff;--text-muted:#fff;--text-label:#fff;--text-accent:#ffd400;--text-link:#7ff3ff;--text-ph:#d6d6d6;--text-disabled:#c8c8c8;
+}
+
+/* Sidebar chrome */
+.nav-index{opacity:1}
+.side-caption,.side-bottom p,.race-meta span{color:var(--text-muted)}
+#app-version{color:var(--text-accent)}
+.side-code{color:var(--text-accent)}
+
+/* Placeholders follow the field they sit in (not the panel). */
+:is(input,textarea)::placeholder{color:var(--ph-on-light);opacity:1}
+:root[data-theme="dark"] .work-panel :is(input,textarea):not(.studio-card *)::placeholder,
+:root[data-theme="dark"] .preset-library :is(input,textarea)::placeholder{color:var(--ph-on-dark)}
+:root[data-theme="dark"] .studio-card :is(input,textarea)::placeholder,:root[data-theme="dark"] .studio-dialog :is(input,textarea)::placeholder{color:var(--ph-on-light)}
+:root[data-theme="contrast"] :is(input,textarea)::placeholder{color:#d6d6d6;opacity:1}
+
+/* Summaries, links, kbd hints use the surface's link/accent token. */
+summary{color:var(--text-link)}
+a{color:var(--text-link)}
+.work-panel a,.studio-dialog a{text-decoration:underline}
+:root[data-theme="contrast"] a{color:#7ff3ff}
+kbd{color:var(--text)}
+.game-link-help summary,.trigger-help summary,.telemetry-schema summary,.calibration-help summary,.studio-guide summary{color:var(--text-link)}
+
+/* Eyebrow, rulers, data labels on parchment */
+.eyebrow{color:var(--text-muted)}
+.photo-ruler{opacity:1;color:var(--text-muted)}
+.light-surface-label,.check-row,.game-field,.control-label{color:var(--text-label)}
+
+/* Light-painted inner cards must follow the theme, otherwise dark-theme text lands on parchment. */
+:root[data-theme="dark"] :is(.game-content,.game-templates,.game-action-card,.calibration-guide,.break-control,.break-preview,.cal-adc-card,.cal-stick-card,.calibration-touch-field,.zone-calibration,.pc-binding,.pc-mouse-summary>div,.daily-detail-content,.studio-guide,.photo-stage,.touch-plane,.calibration-visual>div,.calibration-live>div,.macro-step,.curve-paper,.weapon-library,.trigger-stage-guide>*){background:#1b2a33;border-color:#3d5560;color:var(--text)}
+:root[data-theme="dark"] .game-content{background:none}
+:root[data-theme="dark"] :is(.trigger-tools button,.daily-actions button,.range-tools button,.game-templates button:not(:hover)){background:#263842;color:#dbe7e9;border-color:#587480}
+:root[data-theme="dark"] .range-tools .range-number,:root[data-theme="dark"] .work-panel :is(input,select,textarea):not([type=range],[type=checkbox],[type=radio],[type=color],[type=file]),:root[data-theme="dark"] .controls-panel :is(input,select,textarea):not([type=range],[type=checkbox],[type=radio],[type=color],[type=file]){background:#0f1a20;color:#dbe7e9;border-color:#587480}
+:root[data-theme="contrast"] :is(.game-content,.game-templates,.game-action-card,.calibration-guide,.break-control,.break-preview,.cal-adc-card,.cal-stick-card,.calibration-touch-field,.zone-calibration,.pc-binding,.pc-mouse-summary>div,.daily-detail-content,.studio-guide,.photo-stage,.touch-plane,.calibration-visual>div,.calibration-live>div,.macro-step,.curve-paper,.weapon-library,.trigger-stage-guide>*,.studio-dialog,.studio-card,.telemetry,.touch-motion-readings){background:#000;border-color:#fff;color:#fff}
+:root[data-theme="contrast"] :is(.trigger-tools button,.daily-actions button,.range-tools button,.game-templates button,.quiet-action,.header-button,.scan-button,#command-palette-button){background:#000;color:#fff;border:2px solid #fff}
+:root[data-theme="contrast"] :is(.range-tools .range-number,.studio-card :is(input,select,textarea),.studio-dialog :is(input,select,textarea),.controls-panel :is(input,select,textarea),.work-panel :is(input,select,textarea)):not([type=range],[type=checkbox],[type=radio],[type=color],[type=file]){background:#000;color:#fff;border:2px solid #fff}
+
+/* ---- Semantic text roles: always read the surface's token ---- */
+/* Inputs: disabled keeps full opacity so the text stays legible (>=3:1) instead of being faded with the fill. */
+:is(input,select,textarea):disabled{opacity:1;color:var(--text-disabled)}
+/* Placeholders: fields that are LIGHT while their surface is dark use the light-field placeholder. */
+:is(input,textarea)::placeholder{color:var(--text-ph);opacity:1}
+.studio-card :is(input,textarea)::placeholder,.studio-dialog :is(input,textarea)::placeholder,.range-tools .range-number::placeholder{color:var(--ph-on-light)}
+.controls-panel :is(input,textarea)::placeholder{color:var(--ph-on-dark)}
+:root[data-theme="dark"] .controls-panel :is(input,textarea)::placeholder,:root[data-theme="dark"] .work-panel :is(input,textarea)::placeholder{color:var(--ph-on-dark)}
+:root[data-theme="dark"] .studio-card :is(input,textarea)::placeholder,:root[data-theme="dark"] .studio-dialog :is(input,textarea)::placeholder{color:var(--ph-on-light)}
+:root[data-theme="contrast"] :is(input,textarea)::placeholder{color:#d6d6d6}
+
+/* Muted captions, status lines and chart labels */
+.break-force-range label,.break-preview-labels span,.break-preview-key span,#break-pull-label,.break-stepper .zone-number,.break-control label,
+.calibration-guide p,.calibration-guide small,.calibration-help p,.calibration-steps small,.calibration-visual span,.calibration-live span,.cal-adc-card span,.cal-stick-card span,
+.preset-intro p,.daily-detail-content small,.pc-note,.game-session-status,#game-session-status,#game-feedback-status,#community-updated,.settings-status,
+.studio-status-grid dt,.monitor-group small,.audio-format,.zone-label,.touch-crosshair,#audio-peak-readout,.tactile-tick,#player-queue-note,
+.photo-underbar,.photo-underbar span,.light-display-bottom span,.race-meta span,.script-intro p,.script-monitor span,.persistent-hint,.script-body small,
+.light-controller-preview small,.profile-row small,#calibration-instruction,#calibration-status,.zone-number,.trigger-mode-help,#trigger-mode-help,
+.haptic-pc-audio,.pc-binding>span,.extra-field small,#zone-cal-status{color:var(--text-muted)}
+.cal-range-feedback,#cal-range-feedback,.cal-corner{color:var(--text-link)}
+.calibration-steps li>span,#break-start-value,#break-end-value,.control-label b,b[id$="-value"],#pc-pointer-value,#diag-transport,#diag-firmware,#diag-packet,#telemetry-status,.photo-underbar b{color:var(--text-accent)}
+.break-force-range label{color:var(--text-label)}
+.tactile-track .tactile-tick{color:var(--text-muted)}
+.photo-ruler,.photo-ruler span{color:var(--text)}
+.touch-plane .zone-label{color:var(--text)}
+.studio-status-grid dt{color:var(--text-label)}
+.calibration-steps li>span{color:var(--text-accent)}
+.curve-paper text,.map-stick text{fill:var(--text-muted)}
+#radial-wheel{--gold-deep:#e2ac66;--teal-deep:#6fc6cd;--parchment-dim:#d5e3df}
+#radial-wheel text{fill:#0b1a24}
+.motion-stick-card svg text{fill:#ece6da}
+.mode-button small{color:inherit}
+
+/* Light buttons that sit inside dark control panels keep dark text. */
+.controls-panel .range-tools button,.controls-panel .range-tools .range-number{color:#2e3f47}
+.controls-panel .range-tools button:disabled{color:#4f5e65;opacity:1}
+.core-chip,#core-service-chip,.panel-cap .chip,.panel-cap #core-service-chip,#device-count,#diag-packet{color:inherit}
+.panel-cap>span:last-child,.module-topline>span:last-child{color:#f4dfba}
+.quiet-action:not(.work-panel *):not(.controls-panel *){color:var(--text)}
+
+/* Page headings and the workspace pick up the workspace surface. */
+.page-heading p{color:var(--text-muted)}
+#live>.page-heading p{color:#f1fbfa}
+.page-heading h1{color:var(--text)}
+
+/* ---- Per-theme corrections for surfaces painted with fixed light colours ---- */
+.studio-card .monitor-group>small{color:var(--text-muted)}
+.studio-card textarea::placeholder{color:var(--ph-on-dark)}
+:root[data-theme="dark"] .studio-card textarea::placeholder{color:var(--ph-on-dark)}
+/* The version label sits on the sidebar pixel art: give it its own plate. */
+#app-version{display:inline-block;padding:2px 6px;border-radius:3px;background:rgba(10,18,29,.86);color:var(--text-accent)}
+:root[data-theme="dark"] #touch .touch-plane{background:#1b2a33}
+:root[data-theme="contrast"] #touch .touch-plane{background:#000}
+:root[data-theme="dark"] .studio-dialog{background:#17242c;color:#dbe7e9;border-color:#587480}
+:root[data-theme="dark"] .studio-dialog button:not(.main-action){background:#263842;color:#dbe7e9;border-color:#587480}
+:root[data-theme="dark"] .studio-dialog :is(.studio-list-row,.studio-table td,.studio-table th){border-color:#34484f}
+:root[data-theme="contrast"] .studio-dialog button:not(.main-action){background:#000;color:#fff;border:2px solid #fff}
+:root[data-theme="contrast"] :is(button,.quiet-action):hover:not(:disabled):not(.main-action){background:#ffd400;color:#000}
+:root[data-theme="contrast"] .player-mode-badge{background:#000;color:#7ff3ff;border:1px solid #fff}
+:root[data-theme="contrast"] .framed>.panel-cap :is(.chip,span){background:transparent}
+#break-pull-label{color:var(--text-link)!important}
+.game-setup-grid>div{background:#292e3f}
+.game-setup-grid dt{color:#eadfd1}
+.calibration-touch-field .cal-corner,#cal-range-feedback{color:var(--text-link)!important}
+:root[data-theme="contrast"] .panel-cap.sub{background:#000;color:#fff;border-bottom:2px solid #fff}
+:root[data-theme="contrast"] .game-setup-grid>div{background:#000;border:1px solid #fff}
+.tactile-track .tactile-tick{padding-left:5px}
+
+/* Vibration > Try it: overall intensity (master limit), examples, then adjust (flow: example -> sliders). */
+.haptic-grid > #haptic-presets-panel { flex: 1 1 100%; margin-top: 0; }
+#haptic-level-slot { padding: 14px 16px 16px; }
+.haptic-level-explain { margin: 0 0 12px; font: 600 13px/1.4 var(--body); color: var(--text); }
+#haptic-level.wave-shapes { margin-bottom: 12px; gap: 8px; }
+#haptic-level.wave-shapes button { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 76px; padding: 9px 12px 7px; font-size: 12px; }
+#haptic-level .haptic-level-hint { font: 600 10px var(--body); text-transform: none; opacity: 1; }
+#haptic-level button:not(.is-active) .haptic-level-hint { color: var(--text-muted); }
+#haptic-level-slot .screen-light-status { display: block; margin-top: 8px; line-height: 1.45; color: var(--text-muted); }
+.texture-list button { display: flex; flex-direction: column; align-items: flex-start; flex: 1 1 210px; min-height: 0; padding: 10px 12px; gap: 2px; }
+.texture-list button.is-based { outline: 2px solid var(--text-accent); outline-offset: -2px; }
+.texture-list .texture-desc { display: block; font: 500 12px/1.35 var(--body); color: var(--text-muted); margin: 0 0 4px; }
+.texture-list button i { margin-top: auto; font-size: 10px; }
+.haptic-based { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; font: 700 13px var(--body); color: var(--text); }
+.haptic-edited { border: 1px solid currentColor; border-radius: 999px; padding: 1px 9px; font: 700 10px var(--body); text-transform: uppercase; letter-spacing: .06em; color: var(--text-accent); }
+.haptic-based .quiet-action { margin-left: auto; }
+#haptic-adjust-panel #haptic-sliders { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0 28px; }
+.haptic-slider { margin: 8px 0; }
+.haptic-hint { display: block; margin-top: 6px; font: 500 12px/1.35 var(--body); color: var(--text-muted); }
+#haptic-adjust-panel .texture-save-row { margin-top: 14px; }

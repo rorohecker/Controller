@@ -5,6 +5,7 @@
   const sessionDefaults=()=>({enabled:false,inputRoute:'keep',audio:'keep',audioGain:50,hideHint:false});
   const communityDefaults=()=>({author:'',version:'',gameVersion:'',sourceUrl:'',license:'',updatedAt:'',reports:[]});
   const tracked=new Set(['setControlProfile','setXinput','setAudioBridge','setGyroAim','setRemap','applyTriggers','setInputEffects','setGameActions','setGameLink','setAudioMixer']);
+  const SESSION_PRESETS=['explosions','footsteps','music','gentle','quiet','custom'];
   const text=(value,max)=>typeof value==='string'&&value.length<=max&&!/[\u0000-\u001f]/.test(value);
   function valid(p){
     const s={...sessionDefaults(),...p.session},m={...communityDefaults(),...p.community};
@@ -16,29 +17,32 @@
     static valid=valid;
     static normalize(p){p.session={...sessionDefaults(),...p.session};p.community={...communityDefaults(),...p.community};return p;}
     constructor(api){
-      this.a=api;this.current=new Map();this.active=null;this.queue=Promise.resolve();this.epoch=0;this.last='No feedback received';this.notice='No session running';
-      this.build();this.renderProfile();this.render();
+      this.a=api;this.pending=0;this.failed=false;this.current=new Map();this.active=null;this.queue=Promise.resolve();this.epoch=0;this.last='No feedback received';this.notice='No session running';
+      this.build();this.renderProfile();this.renderHistory();this.render();
     }
-    panel(title,id){
-      const box=this.a.gameNode('section',{class:'work-panel framed game-session-panel',id});
+    panel(title,id,meta){
+      const box=this.a.gameNode('section',{class:'work-panel framed game-session-panel',id});if(meta)window.controllerPlatform?.section?.(box,meta.id,meta.level,meta.title||title,meta.hint,meta);
       const cap=this.a.gameNode('div',{class:'panel-cap'});cap.append(this.a.gameNode('span',{text:title}));
       const body=this.a.gameNode('div',{class:'game-content'});box.append(cap,body);return {box,body};
     }
     build(){
-      const {gameNode:n}=this.a,setup=this.panel('Game setup','game-setup');
+      const {gameNode:n}=this.a,setup=this.panel('This session','game-setup',{id:'profiles.session',level:'basic',title:'This session',hint:'Start or end a game session',open:true,keywords:'session game setup start end route xbox xinput rumble focused game'});
       const grid=n('dl',{class:'game-setup-grid'});
       for(const [id,label] of [['pad','Controller'],['game','Focused game'],['route','Input route'],['source','Feedback source'],['profile','Profile']]){
         const cell=n('div');cell.append(n('dt',{text:label}),n('dd',{id:'setup-'+id}));grid.append(cell);
       }
+      this.badge=n('span',{id:'game-session-badge',class:'session-badge',role:'status'});
+      const bs=document.createElement('style');bs.textContent='.session-badge{display:inline-block;padding:2px 10px;border-radius:10px;font-size:.78rem;background:var(--stage-lift,#254158);color:var(--cream,#f0f8f7)}.session-badge[data-state=active]{background:var(--teal-deep,#176f7b)}.session-badge[data-state=error]{background:var(--danger,#c45c3e)}.session-badge[data-state=queued]{background:var(--gold-deep,#a8663f)}.session-history{font:.8rem var(--mono,monospace);max-height:140px;overflow:auto;margin:6px 0 0;padding-left:18px}';document.head.append(bs);
+      this.history=n('details',{id:'game-session-history'});window.controllerPlatform?.section?.(this.history,'profiles.session-history','advanced','Session history','Past sessions',{keywords:'session history log past'});this.historyList=n('ul',{class:'session-history'});this.history.append(n('summary',{text:'Session history'}),this.historyList);
       this.status=n('p',{id:'game-session-status',role:'status'});this.eventStatus=n('p',{id:'game-feedback-status',role:'status'});
-      setup.body.append(grid,this.status,this.eventStatus,n('p',{class:'pc-note',text:'For games without native effects, choose Xbox routing or custom actions. Enable vibration in the game. Native DualSense games should usually keep their own feedback. Xbox rumble carries two motor levels; it does not identify weapons.'}));
+      setup.body.append(this.badge,grid,this.status,this.eventStatus,this.history,n('p',{class:'pc-note',text:'For games without native effects, choose Xbox routing or custom actions. Enable vibration in the game. Native DualSense games should usually keep their own feedback. Xbox rumble carries two motor levels; it does not identify weapons.'}));
       const buttons=n('div',{class:'game-buttons'});
-      for(const [label,action] of [['Start this session',()=>this.enqueue(()=>this.start(this.a.profile(),true))],['End session',()=>this.enqueue(()=>this.restore())]]){
+      for(const [label,action] of [['Start this session',()=>this.enqueue(()=>this.start(this.a.profile(),true))],['End this session',()=>this.enqueue(()=>this.restore())]]){
         const b=n('button',{type:'button',class:'quiet-action',text:label});b.addEventListener('click',action);buttons.append(b);
       }
       setup.body.append(buttons);$('profiles').querySelector('.page-heading').after(setup.box);
-      const session=this.panel('Session settings','game-session-settings');this.sessionBody=session.body;
-      const meta=this.panel('Profile source & compatibility','game-community');this.metaBody=meta.body;
+      const session=this.panel('Session settings','game-session-settings',{id:'profiles.session-settings',level:'advanced',title:'Session settings',hint:'Per-profile routing and audio on session start',keywords:'session settings routing audio xbox xinput rumble hidhide mixer snapshot manage focused'});this.sessionBody=session.body;
+      const meta=this.panel('Profile source and compatibility','game-community',{id:'profiles.compat',level:'tool',title:'Profile source and compatibility',hint:'Share and record test results',keywords:'compatibility report source author license share test results profile'});this.metaBody=meta.body;
       $('profiles').append(session.box,meta.box);
     }
     command(command,owned=false){
@@ -53,7 +57,20 @@
       }
       this.render();
     }
-    enqueue(task){const epoch=this.epoch;this.queue=this.queue.then(()=>epoch===this.epoch?task():undefined).catch(error=>{this.notice=String(error);this.a.toast(String(error));this.render();});return this.queue;}
+    log(text){
+      let list=[];try{list=JSON.parse(localStorage.getItem('controller.sessionHistory'));}catch{}if(!Array.isArray(list))list=[];list=list.filter(item=>item&&typeof item.text==='string');
+      list.unshift({t:new Date().toISOString(),text});list.length=Math.min(list.length,40);
+      try{localStorage.setItem('controller.sessionHistory',JSON.stringify(list));}catch{}
+      this.renderHistory();
+    }
+    renderHistory(){
+      let list=[];try{list=JSON.parse(localStorage.getItem('controller.sessionHistory'));}catch{}if(!Array.isArray(list))list=[];list=list.filter(item=>item&&typeof item.text==='string');
+      this.historyList.replaceChildren(...(list.length?list:[{t:'',text:'No sessions recorded yet.'}]).map(item=>{const li=document.createElement('li');li.textContent=item.t?`${new Date(item.t).toLocaleString()} - ${item.text}`:item.text;return li;}));
+    }
+    presetFor(id,profile){let local='';try{local=JSON.parse(localStorage.getItem('controller.sessionAudioPreset')||'{}')[id]||'';}catch{}return (SESSION_PRESETS.includes(local)?local:'')||(SESSION_PRESETS.includes(profile?.audio)?profile.audio:'')||'gentle';}
+    snapshotFor(id){try{return JSON.parse(localStorage.getItem('controller.sessionMixerSnapshot')||'{}')[id]||'';}catch{return '';}}
+    remember(key,id,value){try{const all=JSON.parse(localStorage.getItem(key)||'{}');all[id]=value;localStorage.setItem(key,JSON.stringify(all));}catch{}}
+    enqueue(task){const epoch=this.epoch;this.pending++;this.render();this.queue=this.queue.then(()=>{if(epoch!==this.epoch)return undefined;this.failed=false;return task();}).catch(error=>{this.failed=true;this.notice=String(error);this.log('Error: '+this.notice);this.a.toast(String(error));this.render();}).finally(()=>{this.pending=Math.max(0,this.pending-1);this.render();});return this.queue;}
     baseline(){
       const {state,profile}=this.a,p=profile(),baseline=new Map(this.current);
       const defaults=[{action:'setControlProfile',settings:window.ControllerMotionStudio.defaults()},{action:'setXinput',enabled:state.xinput},{action:'setAudioBridge',enabled:state.audioBridge,gain:+$('bridge-gain').value/100,preset:$('bridge-preset').value,source:copy(window.integrationStudio?.activeSource||{kind:'system'})},
@@ -91,22 +108,25 @@
             const info=await this.a.invoke('integration_info');
             if(epoch!==this.epoch)return;
             const candidates=(info?.processes||[]).filter(value=>value.name.toLowerCase()===p.matchExe.toLowerCase());
-            if(!info?.processCapture||!p.matchExe||candidates.length!==1)throw Error('Game audio needs one matching running executable and Windows process capture. Choose the process manually on Haptics if there are several.');
+            if(!info?.processCapture||!p.matchExe||candidates.length!==1)throw Error('Game audio needs one matching running executable and Windows process capture. Choose the process manually under Vibration if there are several.');
             source={kind:'process',pid:candidates[0].pid};
           }catch(error){await this.restore();this.notice=String(error);this.a.toast(this.notice);this.render();return;}
         }
-        if(!await this.write({action:'setAudioBridge',enabled:s.audio!=='off',gain:s.audioGain/100,preset:'gentle',source},epoch))return this.restore();
+        if(!await this.write({action:'setAudioBridge',enabled:s.audio!=='off',gain:s.audioGain/100,preset:this.presetFor(p.id,p),source},epoch))return this.restore();
       }
+      const snapName=this.snapshotFor(p.id),snap=snapName&&window.ControllerAudioMixer?.snapshots()[snapName];
+      if(snap&&window.controllerMixer){this.active.mixerBefore={...window.controllerMixer.settings};window.controllerMixer.applySnapshot(snap);}
       if(epoch!==this.epoch)return;
       if(state.profileId!==p.id)await this.a.selectProfile(p.id,false);
       if(epoch!==this.epoch)return;
       if(!await this.a.applyProfileHardware(manual,true,epoch)){await this.restore();return;}
-      this.notice=`Session: ${p.name}. Previous settings restore on exit.${s.hideHint?' HidHide needs manual setup.':''}`;
+      this.failed=false;this.notice=`Session: ${p.name}. Previous settings restore on exit.${s.hideHint?' HidHide needs manual setup.':''}`;this.log(`Started: ${p.name}`);
       this.render();
     }
     async restore(){
       const active=this.active;if(!active)return;
       this.active=null;
+      if(active.mixerBefore&&window.controllerMixer)window.controllerMixer.applySnapshot(active.mixerBefore);
       const epoch=this.epoch;let failed=false;
       for(const [action,owned] of active.owned){
         if(JSON.stringify(this.current.get(action))!==JSON.stringify(owned))continue;
@@ -115,7 +135,7 @@
         if(epoch!==this.epoch)return;
       }
       if(this.a.state.profileId===active.id&&this.a.state.profiles.some(p=>p.id===active.previousId))await this.a.selectProfile(active.previousId,false);
-      this.notice=failed?'Some previous settings could not be restored. Reconnect and apply your profile.':'Session ended. Previous settings restored.';this.render();
+      this.failed=failed;this.notice=failed?'Some previous settings could not be restored. Reconnect and apply your profile.':'Session ended. Previous settings restored.';this.log(failed?'Ended with restore errors':'Ended');this.render();
     }
     foreground(match,previous){
       if(!this.a.state.foregroundExe)return; // Own app/minimized desktop has no external executable.
@@ -153,6 +173,7 @@
       $('setup-game').textContent=s.foregroundExe||'No external game focused';
       $('setup-route').textContent=window.controllerPlatform.xinput?(s.xinput?'Virtual Xbox 360':s.xinputStatus==='unavailable'?'Xbox driver unavailable':'Physical DualSense'):'Physical DualSense';
       $('setup-source').textContent=[s.xinput?'Xbox rumble receiver':null,this.rulesActive?'Input actions':null,this.linkActive?'Game link':null,s.audioBridge?(window.integrationStudio?.activeSource?.kind==='process'?'Game audio':window.integrationStudio?.activeSource?.kind==='nativeEndpoint'?'Native audio relay':'System audio'):null].filter(Boolean).join(' + ')||'Native game / no app effects';
+      const state=this.failed?'error':this.pending?'queued':this.active?'active':'idle';this.badge.dataset.state=state;this.badge.textContent={error:'Error',queued:'Queued',active:'Session active',idle:'Idle'}[state];
       $('setup-profile').textContent=p.name;this.status.textContent=this.notice;this.eventStatus.textContent=this.last;
     }
     renderProfile(){
@@ -164,10 +185,13 @@
       if(window.controllerPlatform.xinput)grid.append(field('Input route',select([['keep','Keep current'],['native','Physical DualSense'],['xinput','Virtual Xbox gamepad']],s.inputRoute,v=>{s.inputRoute=v;save();})));
       if(window.controllerPlatform.os==='windows')grid.append(check('Remind me to configure HidHide','hideHint'));
       if(window.controllerPlatform.systemAudioBridge){
+        grid.append(field('Audio character',select([...document.querySelectorAll('#bridge-preset option')].map(o=>[o.value,o.textContent]),this.presetFor(p.id,p),v=>{this.remember('controller.sessionAudioPreset',p.id,v);if(SESSION_PRESETS.includes(v)){p.audio=v;save();}})));
         grid.append(field('Audio haptics source',select([['keep','Keep current'],['off','Off'],['system','System audio'],['game','Matched game process']],s.audio,v=>{s.audio=v;save();})));
         const gain=n('input',{type:'number',min:0,max:100,value:s.audioGain});gain.addEventListener('change',()=>{s.audioGain=Math.round(Math.max(0,Math.min(100,Number(gain.value)||0)));gain.value=s.audioGain;save();});grid.append(field('Audio strength · %',gain));
       }
-      this.sessionBody.replaceChildren(grid,n('p',{class:'pc-note',text:'Gyro, key remaps, triggers and action rules use this profile. Session changes restore when another app takes focus. Manual changes are kept. Xbox routing requires ViGEmBus on Windows. Hiding the physical pad remains a separate HidHide setup step.'}));
+      const snaps=Object.keys(window.ControllerAudioMixer?.snapshots?.()||{});
+      if(snaps.length)grid.append(field('Mixer snapshot while active',select([['','Keep current mixer'],...snaps.map(k=>[k,k])],this.snapshotFor(p.id),v=>this.remember('controller.sessionMixerSnapshot',p.id,v))));
+      this.sessionBody.replaceChildren(grid,n('p',{class:'pc-note',text:'Gyro, key remaps, triggers and action rules use this profile. Session changes restore when another app takes focus. Manual changes are kept. Xbox routing requires ViGEmBus on Windows. Hiding the physical controller remains a separate HidHide setup step.'}));
       const details=n('div',{class:'game-form-grid'});
       for(const [key,label,max] of [['author','Author',80],['version','Profile version',80],['gameVersion','Game version',80],['sourceUrl','Source URL · HTTPS',1024],['license','License / reuse terms',80]]){
         const input=n('input',{value:m[key],maxLength:max});input.setAttribute('aria-label',label);

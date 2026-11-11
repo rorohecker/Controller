@@ -18,7 +18,7 @@
     constructor(api) {
       this.a = api; this.savedProfiles = new Map(); this.request = 0; this.saveRequest = 0;
       this.writes = new Set(); this.pending = null; this.applied = null; this.uncertain = false;
-      this.owner = ''; this.sources = {}; this.armed = new Set(); this.saveError = ''; this.applyMessage = 'Not applied';
+      this.owner = ''; this.stableCache = new WeakMap(); this.sources = {}; this.armed = new Set(); this.saveError = ''; this.applyMessage = 'Not applied';
       this.systemMotion = matchMedia('(prefers-reduced-motion: reduce)');
       this.preferences = { density: 'comfortable', numbers: true };
       try {
@@ -30,9 +30,12 @@
         this.bar.classList.toggle('is-away', !entries[0].isIntersecting);
       });
       this.visibility.observe(this.bar);
-      document.addEventListener('input', () => this.changed());
-      document.addEventListener('change', () => this.changed());
-      document.addEventListener('click', () => this.changed());
+      // Only controls that can edit a profile need a re-render, and at most once per frame.
+      const profileTarget = e => {
+        const t = e.target;
+        return !!t?.closest && !!t.closest('main') && !t.closest('#diagnostics,#pc-controls,#calibration,#live,.range-tools');
+      };
+      for (const type of ['input', 'change', 'click']) document.addEventListener(type, e => { if (profileTarget(e)) this.changed(true); });
       document.addEventListener('keydown', e => {
         if(e.key==='Escape'&&this.details.open&&this.details.contains(document.activeElement)){
           this.details.open=false;this.summary.focus();return;
@@ -69,6 +72,7 @@
       const state = n('div', { class: 'daily-state' }, [this.saveLabel, this.applyLabel]);
       this.summary = n('summary', { text: 'Changes and feedback', id: 'daily-summary' });
       this.details = n('details', { class: 'daily-details' }, [this.summary]);
+      Object.assign(this.details.dataset, { uiSection: 'global.changes-feedback', level: 'advanced', title: 'Changes and feedback', hint: 'What was last applied and by whom', keywords: 'changes feedback undo revert restore applied save apply history', uiAllOpen: 'false' });
       this.changeList = n('p', { id: 'profile-change-summary', text: 'No profile changes' });
       this.liveSources = n('p', { id: 'feedback-sources', text: 'No active feedback' });
       this.ruleSources = n('p', { id: 'feedback-armed', text: 'No input effects armed' });
@@ -88,17 +92,21 @@
       this.notice = n('p', { id: 'daily-announcement', class: 'sr-only', role: 'status' });
       this.bar.after(this.notice);
       const box = n('section', { class: 'studio-card framed', id: 'layout-preferences' });
+      Object.assign(box.dataset, { uiSection: 'settings.display', level: 'basic', title: 'Display', hint: 'Theme, spacing and slider numbers', keywords: 'theme tour replay welcome dark light contrast density experimental expand display colour color spacing', defaultOpen: 'true' });
       const body = n('div', { class: 'studio-body' });
+      const theme = this.a.gameSelect([['auto', 'Match system'], ['light', 'Light'], ['dark', 'Dark'], ['contrast', 'High contrast']],
+        window.controllerTheme?.choice || 'auto', value => window.controllerTheme?.set(value));
+      theme.id = 'display-theme';
       const density = this.a.gameSelect([['comfortable', 'Comfortable'], ['compact', 'Compact']], this.preferences.density,
         value => { this.preferences.density = value; this.storePreferences(); });
       density.id = 'display-density';
       const numbers = n('input', { type: 'checkbox', checked: this.preferences.numbers, id: 'display-numbers' });
       numbers.addEventListener('change', () => { this.preferences.numbers = numbers.checked; this.storePreferences(); });
       this.motionNote = n('p', { id: 'display-motion-status' });
-      body.append(this.a.gameField('Control spacing', density), n('label', { class: 'check-row', text: 'Show slider values and reset buttons' }, [numbers]),
+      body.append(this.a.gameField('Colour theme', theme), this.a.gameField('Control spacing', density), n('label', { class: 'check-row', text: 'Show slider values and reset buttons' }, [numbers]),
         this.motionNote, n('p', { text: 'Tab moves between controls. Arrow keys adjust sliders. Stop all is available on every page.' }),
         this.button('Reset layout preferences', 'display-reset', () => { this.preferences = { density: 'comfortable', numbers: true }; this.storePreferences(); }));
-      box.append(n('div', { class: 'panel-cap', text: 'Layout and controls' }), body);
+      box.append(n('div', { class: 'panel-cap', text: 'Display' }), body);
       document.querySelector('.settings-grid').append(box);
       this.renderMotion();
     }
@@ -124,7 +132,8 @@
         if (!label) continue;
         range.dataset.numericTools = 'true';
         const name = label.querySelector('span')?.textContent || [...label.childNodes].filter(n=>n.nodeType===3).map(n=>n.textContent).join(' ').trim() || range.id;
-        const initial = range.defaultValue || range.value;
+        // Dynamically rendered sliders carry their true default in data-default; markup sliders use the attribute.
+        const initial = range.dataset.default ?? (range.defaultValue || range.value);
         const input = this.node('input', { type: 'number', class: 'range-number', id: `${range.id}-number-control`, value: range.value });
         input.setAttribute('aria-label', `${name} value`);
         const reset = this.button('Reset', `${range.id}-reset-control`, () => {
@@ -163,21 +172,32 @@
       if ($('profile-auto-apply')) p.autoApply = $('profile-auto-apply').checked;
       return p;
     }
-    changed() {
-      if (this.scheduled) return;
-      this.scheduled = true;
-      queueMicrotask(() => { this.scheduled = false; this.render(); this.renderMotion();
-        for (const input of document.querySelectorAll('.screen.is-current input[type=range]')) input._syncNumber?.(); });
+    changed(defer = false) {
+      const run = () => {
+        if (!this.micro && !this.frame) return;
+        this.micro = false; this.frame = false;
+        this.render(); this.renderMotion();
+        for (const input of document.querySelectorAll('.screen.is-current input[type=range]')) input._syncNumber?.();
+      };
+      if (defer) { if (this.frame || this.micro) return; this.frame = true; document.hidden ? queueMicrotask(run) : requestAnimationFrame(run); }
+      else { if (this.micro) return; this.micro = true; queueMicrotask(run); }
+    }
+    stableSaved(saved) {
+      let text = this.stableCache.get(saved);
+      if (text === undefined) { text = stable(saved); this.stableCache.set(saved, text); }
+      return text;
     }
     loaded(hasArchive, error = '') {
       this.loadedOnce = true;
       this.loadError = error;
-      this.savedProfiles = new Map(hasArchive ? this.a.state.profiles.map(p => [p.id, copy(p)]) : []);
+      // No archive and no error is a first run: the built-in profiles are the baseline, not unsaved edits.
+      this.firstRun = !hasArchive && !error;
+      this.savedProfiles = new Map(hasArchive || this.firstRun ? this.a.state.profiles.map(p => [p.id, copy(p)]) : []);
       this.render();
     }
     saving() { const id = ++this.saveRequest; this.writes.add(id); this.render(); return id; }
     saved(archive, id) {
-      this.writes.delete(id); this.savedProfiles = new Map(archive.profiles.map(p => [p.id, copy(p)]));
+      this.writes.delete(id); this.firstRun = false; this.savedProfiles = new Map(archive.profiles.map(p => [p.id, copy(p)]));
       if (id >= (this.errorRequest || 0)) this.saveError = '';
       this.loadError = '';
       this.render();
@@ -232,15 +252,17 @@
     }
     render() {
       if (!this.bar) return;
-      const p = this.draft(), saved = this.savedProfiles.get(p.id), edited = !saved || stable(saved) !== stable(p);
-      const changed = saved ? groups.filter(([, keys]) => keys.some(key => stable(saved[key]) !== stable(p[key]))).map(([name]) => name) : ['New profile'];
-      this.saveLabel.textContent = this.saveError ? 'Save failed' : this.writes.size ? 'Saving…' : !this.loadedOnce ? 'Loading profiles' : this.loadError ? 'Load failed' : edited ? 'Unsaved changes' : 'Saved';
-      $('footer-profile-state').textContent = this.saveError || this.loadError ? 'Profiles not saved' : this.writes.size ? 'Saving profiles' : !this.loadedOnce ? 'Loading profiles' : edited ? 'Profile edits not saved' : 'Profiles saved locally';
-      this.bar.dataset.state = this.saveError || this.loadError ? 'error' : edited ? 'edited' : 'saved';
+      const p = this.draft(), saved = this.savedProfiles.get(p.id), edited = !saved || this.stableSaved(saved) !== stable(p);
+      const changed = !saved ? ['New profile'] : edited ? groups.filter(([, keys]) => keys.some(key => stable(saved[key]) !== stable(p[key]))).map(([name]) => name) : [];
+      const failed = !!this.loadError || !!this.a.state.loadFailed;
+      this.saveLabel.textContent = this.saveError ? 'Save failed' : this.writes.size ? 'Saving…' : !this.loadedOnce ? 'Loading profiles' : failed ? 'Load failed' : edited ? 'Unsaved changes' : this.firstRun ? 'Defaults' : 'Saved';
+      $('footer-profile-state').textContent = this.saveError || failed ? 'Profiles not saved' : this.writes.size ? 'Saving profiles' : !this.loadedOnce ? 'Loading profiles' : edited ? 'Profile edits not saved' : this.firstRun ? 'Using default profiles' : 'Profiles saved locally';
+      if ($('daily-save')) $('daily-save').disabled = failed;
+      this.bar.dataset.state = this.saveError || failed ? 'error' : edited ? 'edited' : 'saved';
       const matching = this.applied?.id === p.id && stable(this.applied.settings) === stable(hardware(p));
       const appliedText = this.pending ? 'Applying…' : !this.a.state.connected ? this.handoff?'Released for native game':'No controller' : this.applied && !this.uncertain ? matching ? 'Applied' : this.applied.id===p.id?'Changes not applied':'Another profile is applied' : this.applyMessage;
       this.applyLabel.textContent = appliedText;
-      this.changeList.textContent = this.saveError ? `Save failed: ${this.saveError}` : this.loadError ? `Profile load failed: ${this.loadError}. The editor contains defaults.` : changed.length ? `Unsaved: ${changed.join(', ')}.` : 'Saved profile matches the editor.';
+      this.changeList.textContent = this.saveError ? `Save failed: ${this.saveError}` : failed ? `Profile load failed: ${this.loadError || this.a.state.loadFailed?.error}. Saving is paused: restore a backup or start fresh on the Profiles page.` : changed.length ? `Unsaved: ${changed.join(', ')}.` : 'Saved profile matches the editor.';
       $('daily-revert').disabled = !saved || !edited || !!this.writes.size;
       $('daily-restore-applied').disabled = !this.applied || this.applied.id !== p.id || matching;
       $('daily-apply').disabled = !this.a.state.connected || !!this.pending;

@@ -1,0 +1,155 @@
+/* =====================================================================================
+   Progressive disclosure (ui/ui-kit.js): sections, badges, "why disabled" notes, nav group,
+   session status, quick start, desktop-mode rows. Colours read the surface text tokens only
+   (--text*, defined per surface and theme in workbench.css). Loaded after workbench.css.
+   ===================================================================================== */
+.ui-section{margin:14px 0;min-width:0}
+.ui-section>summary{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;min-height:44px;padding:8px 14px;cursor:pointer;list-style:none;
+  color:var(--text);font:600 14px/1.3 var(--body);border:1px solid color-mix(in srgb,var(--text) 28%,transparent);border-radius:8px;
+  background:color-mix(in srgb,var(--text) 6%,transparent)}
+.ui-section>summary::-webkit-details-marker{display:none}
+.ui-section>summary::before{content:'';flex:none;width:7px;height:7px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg);transition:transform .15s;margin-right:2px}
+.ui-section[open]>summary::before{transform:rotate(45deg)}
+.ui-section>summary:hover{background:color-mix(in srgb,var(--text) 11%,transparent)}
+.ui-sum-main{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ui-sum-hint{flex:1 1 220px;min-width:0;color:var(--text-muted);font:400 12px/1.4 var(--body)}
+.ui-section>.ui-section-body{margin-top:10px}
+.ui-section>.ui-section-body>:first-child{margin-top:0}
+.ui-section.ui-native{margin:12px 0}
+.ui-badge{display:inline-block;padding:1px 7px;border:1px solid currentColor;border-radius:10px;color:var(--text-muted);font:600 10px/1.5 var(--body);letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+.ui-badge[data-level="experimental"]{color:var(--text-accent)}
+.ui-badge[data-level="tool"]{color:var(--text-label)}
+.ui-badge-on{color:var(--text-link)}
+.ui-badge[hidden]{display:none}
+.ui-section.ui-highlight,.ui-basic.ui-highlight{animation:ui-flash 1.6s ease-out}
+@keyframes ui-flash{0%,60%{box-shadow:0 0 0 3px var(--text-link)}100%{box-shadow:0 0 0 3px transparent}}
+@media(prefers-reduced-motion:reduce){.ui-section.ui-highlight,.ui-basic.ui-highlight{animation:none;outline:3px solid var(--text-link)}}
+/* Experimental content is hidden (never removed) until switched on; active features stay visible. */
+body[data-show-experimental="false"] [data-level="experimental"]:not(.ui-visible){display:none!important}
+.ui-section.ui-native>summary .ui-badge{margin-left:10px}
+.daily-details>summary .ui-badge,.session-status>summary .ui-badge{display:none}
+.ui-why{display:block;flex:1 1 100%;margin:6px 0 0;color:var(--text-muted);font:12px/1.4 var(--body)}
+.ui-why-fallback{display:none}
+
+/* Sidebar: no index numbers, collapsible Tools group */
+.nav-link{grid-template-columns:minmax(0,1fr)}
+.nav-group{margin-top:6px;border-top:1px solid color-mix(in srgb,var(--text) 18%,transparent);padding-top:6px}
+.nav-group>summary{display:flex;align-items:center;gap:8px;min-height:36px;padding:0 12px;cursor:pointer;list-style:none;color:var(--text-muted);font:600 12px var(--body);letter-spacing:.04em;text-transform:uppercase;border-radius:8px}
+.nav-group>summary::-webkit-details-marker{display:none}
+.nav-group>summary::after{content:'';margin-left:auto;width:6px;height:6px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg);transition:transform .15s}
+.nav-group[open]>summary::after{transform:rotate(45deg)}
+.nav-group>summary:hover{color:var(--text)}
+.nav-group>summary:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.nav-group>.nav-link{margin-top:4px;height:42px;padding-left:22px}
+
+/* Session rail: Profile, Using and Stop all stay; the rest lives in "Session status" */
+.session-rail>.session-status{flex:0 1 auto;min-width:0;padding:0;display:block}
+.session-status>summary{display:flex;align-items:center;gap:10px;min-height:58px;padding:0 18px;cursor:pointer;list-style:none;color:var(--text-muted);font:600 11px var(--mono);letter-spacing:.08em;text-transform:uppercase;border-left:1px solid rgba(155,233,228,.2)}
+.session-status>summary::-webkit-details-marker{display:none}
+.session-status>summary::after{content:'';width:6px;height:6px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg);transition:transform .15s}
+.session-status[open]>summary::after{transform:rotate(45deg)}
+.session-status>summary:hover{color:var(--text)}
+.session-status>summary:focus-visible{outline:2px solid var(--gold);outline-offset:-3px}
+.session-rail>.session-status[open]{flex:1 1 100%;order:9}
+.session-status[open]>summary{min-height:34px}
+.session-status-body{display:flex;flex-wrap:wrap;border-top:1px solid rgba(155,233,228,.2)}
+.session-status-body>:is(div,button){position:relative;flex:1 1 100px;min-width:0;padding:6px 12px;border:0;border-left:1px solid rgba(155,233,228,.2);background:transparent;color:var(--cream);text-align:left}
+.session-status-body>#quick-reset{flex:0 0 96px;font:700 11px var(--body);letter-spacing:.04em;text-transform:uppercase;white-space:nowrap}
+.session-status-body small{display:block;color:var(--text-muted);font:600 9px var(--mono);letter-spacing:.1em;text-transform:uppercase;margin-bottom:2px}
+.session-status-body strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:700 16px/.95 var(--body);color:var(--cream)}
+.session-status-body .session-signal i{position:absolute;right:14px;top:22px;width:8px;height:8px;border-radius:50%;background:var(--gold)}
+.session-status-body .session-signal i.is-live{background:var(--teal-glow)}
+.session-status-body .session-signal strong{padding-right:22px}
+.session-status-body .lease-track{height:3px;background:rgba(255,255,255,.18);position:absolute;left:14px;right:14px;bottom:8px;border-radius:2px}
+.session-status-body .session-auto{cursor:pointer}
+.session-status-body .session-auto.is-active strong,.session-status-body .session-lease.is-active strong{color:var(--teal-glow)}
+.session-status-body #quick-reset:hover:not(:disabled){background:var(--gold);color:var(--stage)}
+.session-rail>.session-profile,.session-rail>.session-mode{flex:0 1 190px}
+
+/* Controller page */
+.live-mode-help{margin:0;padding:0 18px 12px;color:var(--text-muted);font:12px/1.45 var(--body)}
+.signal-details{display:flex;flex-direction:column;min-width:0}
+.telemetry>.signal-details.ui-section{margin:10px 14px}
+.telemetry>.signal-details>.ui-section-body{display:flex;flex-direction:column}
+
+/* First-run card */
+.get-started{margin:0 0 18px;overflow:hidden}
+.get-started>.panel-cap{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.get-started-steps{list-style:none;margin:0;padding:6px 18px 10px;display:grid;gap:2px}
+.get-started-steps>li{display:flex;align-items:center;flex-wrap:wrap;gap:10px 14px;padding:10px 0;border-bottom:1px solid color-mix(in srgb,var(--text) 16%,transparent)}
+.get-started-steps>li:last-child{border-bottom:0}
+.gs-num{flex:none;display:grid;place-items:center;width:26px;height:26px;border-radius:50%;border:2px solid currentColor;font:700 13px var(--body);color:var(--text-muted)}
+.get-started-steps>li.is-done .gs-num{background:var(--text-link);border-color:var(--text-link);color:#0b1a24}
+.gs-text{flex:1 1 220px;min-width:0}
+.gs-text strong{display:block;font:700 14px var(--body)}
+.gs-text small{display:block;color:var(--text-muted);font:12px/1.4 var(--body)}
+.gs-actions{display:flex;flex-wrap:wrap;gap:8px}
+.get-started .text-action{background:none;border:0;padding:4px 6px;color:var(--text-link);font:600 12px var(--body);text-decoration:underline;cursor:pointer;min-height:28px}
+
+/* More menus (profiles, diagnostics) */
+.more-menu{margin:10px 0;border-top:1px solid color-mix(in srgb,var(--text) 20%,transparent);padding-top:8px}
+.more-menu>summary{display:flex;align-items:center;gap:8px;min-height:36px;cursor:pointer;list-style:none;color:var(--text-label);font:600 13px var(--body)}
+.more-menu>summary::-webkit-details-marker{display:none}
+.more-menu>summary::before{content:'';width:6px;height:6px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg);transition:transform .15s}
+.more-menu[open]>summary::before{transform:rotate(45deg)}
+.more-menu.ui-section{border:0;padding-top:0;margin:10px 0}
+.more-menu.ui-section>summary{border:1px solid color-mix(in srgb,var(--text) 28%,transparent);padding:6px 12px}
+.more-menu.ui-section>summary::before{margin-right:2px}
+.profile-more-buttons{margin:8px 0}
+.diag-more-body{display:flex;flex-direction:column;gap:8px;padding:8px 0}
+
+/* Desktop mode: one line per button */
+.pc-binding{align-items:center}
+.pc-binding>.pc-customize{grid-column:1/-1;min-width:0}
+.pc-customize>summary{display:flex;align-items:center;gap:10px;min-height:32px;cursor:pointer;list-style:none;color:var(--text-label);font:600 12px var(--body)}
+.pc-customize>summary::-webkit-details-marker{display:none}
+.pc-customize>summary::before{content:'';width:6px;height:6px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg);transition:transform .15s}
+.pc-customize[open]>summary::before{transform:rotate(45deg)}
+.pc-customize-hint{color:var(--text-muted);font:12px var(--body)}
+.pc-customize-body{display:grid;gap:10px;padding:8px 0 4px;min-width:0}
+.pc-bindings>.pc-other{grid-column:1/-1}
+.pc-other>summary{display:flex;align-items:center;gap:10px;min-height:40px;padding:6px 12px;cursor:pointer;list-style:none;color:var(--text);font:600 14px var(--body);border:1px solid color-mix(in srgb,var(--text) 28%,transparent);border-radius:8px;background:color-mix(in srgb,var(--text) 6%,transparent)}
+.pc-other>summary::-webkit-details-marker{display:none}
+.pc-other>summary::before{content:'';width:7px;height:7px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(-45deg);transition:transform .15s}
+.pc-other[open]>summary::before{transform:rotate(45deg)}
+.pc-other-rows{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,440px),1fr));gap:8px;margin-top:10px;align-items:start}
+.pc-other.ui-section{margin:6px 0}
+.extras-section{min-width:0}
+#pc-extras>.ui-section{margin:10px 14px}
+#pc-extras .ui-section>.ui-section-body{margin-top:0}
+#pc-extras .extras-section .extra-body{padding:12px 4px}
+.pc-click-point.ui-section{margin:12px 0 0}
+
+/* Touch: the pointer-speed field must never leave the viewport (B10) */
+#touch .touch-pointer-settings :is(.extra-field,label,.number-control){max-width:100%;min-width:0}
+#touch-sensitivity-number-control,#touch-acceleration-number-control{max-width:100%;min-width:0;flex-wrap:wrap}
+#touch-sensitivity-number-control input,#touch-acceleration-number-control input{max-width:100%;min-width:0}
+
+/* Focus rings on every tab stop (B11) and comfortable minimum targets (B12) */
+:is(a,button,input,select,textarea,summary,[tabindex]:not([tabindex="-1"])):focus-visible{outline:2px solid var(--text-link);outline-offset:2px}
+.controls-panel :is(a,button,input,select,textarea,summary,[tabindex]:not([tabindex="-1"])):focus-visible{outline-color:var(--gold)}
+button:not(.map-hit),select,input:not([type=checkbox],[type=radio],[type=range],[type=color],[type=hidden],[type=file]),summary{min-height:24px}
+.import-row button,.text-action,.next-surface{min-height:28px}
+.import-row button{padding:4px 2px}
+
+/* Toasts: capped at three and auto-dismissed in app.js; keep the stack short so it never grows over content (B13) */
+.toast{max-height:calc(100vh - 40px);overflow:hidden}
+
+/* Header action: room for the full "Find controller" label */
+.header-button{flex:0 0 auto;width:auto;min-width:88px;padding:0 24px 0 12px}
+
+@media(max-width:740px){#touch-pointer-extras{grid-template-columns:minmax(0,1fr)!important}#touch-pointer-extras>small{grid-column:1!important;padding-right:0}}
+#touch-pointer-extras>*{min-width:0}
+
+/* The daily bar sits on a dark strip: keep its own look inside the kit styling */
+.daily-details.ui-section{margin:0}
+.daily-details.ui-section>summary{color:var(--cream);background:rgba(8,15,25,.28);border-color:rgba(155,233,228,.4);min-height:40px}
+.daily-details.ui-section>summary:hover{background:rgba(84,198,197,.2)}
+
+/* Command palette: muted trailing page label and the one-line hint. */
+.palette-hint{display:block;margin:-8px 0 12px;font-size:12px;line-height:1.4;opacity:.8}
+.studio-dialog .studio-list button .palette-page{float:right;margin-left:12px;font-size:11px;font-weight:500;opacity:.65}
+.gate-note{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:center}
+.get-started-extra{margin:10px 0 0;font-size:12px}
+.settings-footer{margin-top:12px}
+.settings-footer .settings-status{margin:2px 0}

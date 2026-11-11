@@ -10,9 +10,9 @@
     constructor(api){
       this.a=api;this.pending=new Map();this.nextProbe=1;this.rtts=[];this.replayId=0;this.tracePending='';this.active=false;
       const n=api.gameNode,host=$('diagnostics');
-      this.box=n('section',{id:'runtime-lab',class:'work-panel framed runtime-lab'});
+      this.box=n('section',{id:'runtime-lab',class:'work-panel framed runtime-lab'});window.controllerPlatform?.section?.(this.box,'diag.runtime','tool','Timing and traces','Round-trip timing and raw input traces',{keywords:'timing latency round trip ping trace hid record input replay cpu memory jitter sample'});
       const body=n('div',{class:'game-content'});
-      this.box.append(n('div',{class:'panel-cap',text:'Timing & input traces'}),body);host.append(this.box);
+      this.box.append(n('div',{class:'panel-cap',text:'Timing and input traces'}),body);host.append(this.box);
       body.append(n('p',{class:'pc-note',text:'Software timings show where the app waits. They do not measure physical controller latency.'}));
       this.status=n('p',{id:'runtime-status',role:'status',text:'Open the desktop app to inspect the core.'});
       this.table=n('div',{id:'runtime-times',class:'runtime-times'});
@@ -42,26 +42,49 @@
       });
       this.replay=n('p',{id:'hid-replay-result',role:'status',text:'Analyze a trace to check decoding, reconnects and report timing. No inputs or effects are played.'});
       trace.append(n('h3',{text:'Raw input trace'}),buttons,this.traceStatus,this.file,this.replay);body.append(trace);
-      for(const button of [this.record,this.ping,this.sample])button.disabled=!api.native;
-      this.file.disabled=!api.native;
+      this.file.disabled=!api.native;this.gate();
       document.addEventListener('controller-view',()=>this.watch());
       document.addEventListener('visibilitychange',()=>this.watch());
       window.addEventListener('pagehide',()=>{clearInterval(this.lease);this.a.send({action:'setRuntimeDiagnostics',enabled:false});});
     }
+    pushHistory(e){
+      const hist=this.hist||(this.hist={});
+      for(const [label,value] of [['HID read wait',e.metrics?.readWait],['Decode',e.metrics?.decode],['Input processing',e.metrics?.dispatch],['Loop period',e.metrics?.loopPeriod],['HID write call',e.write]]){
+        if(!value?.count)continue;const h=hist[label]||(hist[label]={p50:[],p95:[]});h.p50.push(value.p50Us/1000);h.p95.push(value.p95Us/1000);if(h.p50.length>60){h.p50.shift();h.p95.shift();}
+      }
+    }
+    spark(values,w=90,h=20,color='var(--teal)'){
+      const NS='http://www.w3.org/2000/svg',svg=document.createElementNS(NS,'svg');svg.setAttribute('viewBox',`0 0 ${w} ${h}`);svg.setAttribute('width',w);svg.setAttribute('height',h);svg.setAttribute('role','img');svg.setAttribute('aria-label','Trend of recent samples');svg.classList.add('runtime-spark');
+      if(values.length<2)return svg;const max=Math.max(...values,1e-6),min=Math.min(...values);const span=max-min||1;
+      const path=document.createElementNS(NS,'polyline');path.setAttribute('fill','none');path.style.stroke=color;path.setAttribute('stroke-width','1.5');
+      path.setAttribute('points',values.map((v,i)=>`${(i/(values.length-1)*(w-2)+1).toFixed(1)},${(h-2-(v-min)/span*(h-4)).toFixed(1)}`).join(' '));svg.append(path);return svg;
+    }
+    renderChart(){
+      if(!this.chart){this.chart=this.a.gameNode('div',{id:'runtime-chart',class:'runtime-chart'});this.table.after(this.chart);const st=document.createElement('style');st.textContent='.runtime-time{display:grid;grid-template-columns:150px 1fr auto;gap:8px;align-items:center}.runtime-spark{background:var(--stage-mid,#192e42);border-radius:3px}.runtime-chart small{display:block;color:var(--parchment-dim,#d5e3df)}';document.head.append(st);}
+      const loop=this.hist?.['Loop period'],jitter=loop?loop.p95.map((v,i)=>Math.max(0,v-loop.p50[i])):[];
+      this.chart.replaceChildren();
+      const row=(title,values,unit)=>{const wrap=this.a.gameNode('div');wrap.append(this.a.gameNode('small',{text:`${title}${values.length?` - latest ${values[values.length-1].toFixed(2)} ${unit}, peak ${Math.max(...values).toFixed(2)} ${unit}`:' - no samples yet'}`}),this.spark(values,320,40));this.chart.append(wrap);};
+      row('Loop jitter over time (p95 minus median)',jitter,'ms');
+      row('UI/core round trip, last probe',this.rtts||[],'ms');
+    }
+    gate(){
+      const P=window.controllerPlatform,nat=!!this.a.native,conn=!!this.a.state.connected,reason=!nat?window.controllerPlatform.desktopOnlyMessage('This tool'):!conn?'Needs a connected controller: connect one to measure or record.':null;
+      for(const [button,busy] of [[this.ping,!!this.probing],[this.sample,!!this.sampling],[this.record,!!this.recording]])P.gate(button,!reason?busy:true,reason);
+    }
     button(text,id,run){const button=this.a.gameNode('button',{type:'button',id,class:'quiet-action',text});button.addEventListener('click',run);return button;}
     visible(){return !document.hidden&&this.a.state.currentView==='diagnostics';}
     watch(){
-      const enabled=this.a.native&&(this.visible()||this.sampling);
+      const enabled=!!(this.a.native&&(this.visible()||this.sampling));
       if(enabled!==this.active){this.active=enabled;this.a.send({action:'setRuntimeDiagnostics',enabled});}
       clearInterval(this.lease);this.lease=0;
       if(enabled)this.lease=setInterval(()=>this.a.send({action:'setRuntimeDiagnostics',enabled:true}),15000);
       if(this.visible())this.render();
     }
     event(e){
-      if(e.type==='device'&&(!e.connected||e.controllerId!==this.audio?.controllerId))this.audio=null;
+      if(e.type==='device'){queueMicrotask(()=>this.gate());if(!e.connected||e.controllerId!==this.audio?.controllerId)this.audio=null;}
       if(e.type==='audioMeters'){this.audio=e;return;}
       if(e.type==='runtimeStats'){
-        const previous=this.latest?.core;this.latest=e;
+        const previous=this.latest?.core;this.latest=e;this.pushHistory(e);
         const dt=e.core?.sampledAtUs-previous?.sampledAtUs,dc=e.core?.cpuTimeUs-previous?.cpuTimeUs;
         this.cpu=dt>0&&dc>=0&&e.core.pid===previous.pid?dc/dt*100:null;
         if(this.sampling&&this.samples.length<30)this.samples.push({core:e.core,cpuPercent:this.cpu,view:this.a.state.currentView,hidden:document.hidden});
@@ -73,7 +96,7 @@
         if(this.finishedSending&&!this.pending.size)this.finishProbe();return;
       }
       if(e.type==='hidRecording'){
-        this.recording=!!e.active;this.record.disabled=this.recording;this.stop.disabled=!this.recording;
+        this.recording=!!e.active;this.gate();this.stop.disabled=!this.recording;
         this.exportTrace.disabled=this.copyTrace.disabled=!!this.tracePending||(!this.recording&&!e.events);
         this.traceStatus.textContent=this.recording?'Recording raw input. Effects and desktop input are not captured.':`${e.events||0} events available. Recording stopped.`;return;
       }
@@ -96,15 +119,16 @@
       if(stats){
         this.table.replaceChildren();
         for(const [label,value] of [['HID read wait',stats.metrics.readWait],['Decode',stats.metrics.decode],['Input processing',stats.metrics.dispatch],['Loop period',stats.metrics.loopPeriod],['HID write call',stats.write]]){
-          const row=n('div',{class:'runtime-time'});row.append(n('strong',{text:label}),n('span',{text:value?.count?`${(value.p50Us/1000).toFixed(3)} ms median / ${(value.p95Us/1000).toFixed(3)} ms p95 / ${(value.maxUs/1000).toFixed(3)} ms max`:'No samples'}));this.table.append(row);
+          const row=n('div',{class:'runtime-time'});row.append(n('strong',{text:label}),n('span',{text:value?.count?`${(value.p50Us/1000).toFixed(3)} ms median / ${(value.p95Us/1000).toFixed(3)} ms p95 / ${(value.maxUs/1000).toFixed(3)} ms max`:'No samples'}),this.spark(this.hist?.[label]?.p50||[]));this.table.append(row);
         }
+        this.renderChart();
         const discovery=stats.processDiscovery,ram=stats.core?.residentBytes;
         this.resources.textContent=`Core CPU: ${this.cpu==null?'waiting':this.cpu.toFixed(1)+'%'}; memory: ${ram==null?'not available':(ram/1048576).toFixed(1)+' MiB'}. Discovery: ${discovery?.ready?`${(discovery.durationUs/1000).toFixed(1)} ms; ${discovery.ageMs} ms old`:'starting'}. CPU uses 100% for one core; memory covers this process only.`;
       }
       if(!this.probing&&!this.sampling)this.status.textContent=this.probeResult?`UI/core round trip: ${this.probeResult.count}/20 replies; median ${this.probeResult.p50?.toFixed(2)??'—'} ms, p95 ${this.probeResult.p95?.toFixed(2)??'—'} ms.${this.probeResult.missing?' Some replies timed out.':''}`:'Timings use the latest 512 samples. HID read wait includes time waiting for a report.';
     }
     async probe(){
-      if(this.probing)return;this.probing=true;this.ping.disabled=true;this.rtts=[];this.pending.clear();this.finishedSending=false;
+      if(this.probing)return;if(!this.a.native){this.status.textContent=window.controllerPlatform.desktopOnlyMessage('The round trip measurement');return;}if(!this.a.state.connected){this.status.textContent='Connect a controller to measure the round trip.';return;}this.probing=true;this.gate();this.rtts=[];this.pending.clear();this.finishedSending=false;
       this.status.textContent='Measuring 20 UI/core round trips. No controller output is sent.';
       for(let i=0;i<20&&this.probing;i++){
         const id=this.nextProbe++;this.pending.set(id,performance.now());
@@ -115,13 +139,13 @@
       if(!this.pending.size)this.finishProbe();else this.probeDeadline=setTimeout(()=>this.finishProbe(),4000);
     }
     finishProbe(){
-      if(!this.probing)return;clearTimeout(this.probeDeadline);this.probing=false;this.ping.disabled=false;
+      if(!this.probing)return;clearTimeout(this.probeDeadline);this.probing=false;this.gate();
       this.probeResult={...quantiles(this.rtts),missing:20-this.rtts.length};this.pending.clear();this.render();
     }
     capture(){
-      if(this.sampling)return;this.sampling=true;this.samples=[];this.sampleStart=this.a.visualStats();this.sample.disabled=true;this.watch();
+      if(this.sampling)return;this.sampling=true;this.samples=[];this.sampleStart=this.a.visualStats();this.gate();this.watch();
       this.status.textContent='Capturing five seconds of core resources and render activity. You can minimize the window.';
-      setTimeout(()=>{this.sampling=false;this.sample.disabled=false;this.sampleEnd=this.a.visualStats();this.watch();if(this.visible())this.status.textContent=`Captured ${this.samples.length} core samples. Copy the timing report to save them.`;},5000);
+      setTimeout(()=>{this.sampling=false;this.gate();this.sampleEnd=this.a.visualStats();this.watch();if(this.visible())this.status.textContent=`Captured ${this.samples.length} core samples. Copy the timing report to save them.`;},5000);
     }
     getTrace(mode){
       if(this.tracePending)return;this.tracePending=mode;this.exportTrace.disabled=this.copyTrace.disabled=true;

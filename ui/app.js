@@ -7,6 +7,10 @@
   const native = window.__TAURI__?.core && window.__TAURI__?.event;
   const invoke = native ? window.__TAURI__.core.invoke : null;
   const platform=window.controllerPlatform;
+  const bindingExtraKeys=['modifiers','layerOnly','toggleLayer','longPressMs','doubleTapMs','turboMs','consume'];
+  const bindingExtraLimits={longPressMs:2000,doubleTapMs:1000,turboMs:500};
+  const bindingExtras=b=>Object.fromEntries(bindingExtraKeys.filter(k=>b[k]!=null&&b[k]!==false&&b[k]!==0&&!(Array.isArray(b[k])&&!b[k].length)).map(k=>[k,Array.isArray(b[k])?[...b[k]]:bindingExtraLimits[k]?Math.max(0,Math.min(bindingExtraLimits[k],Math.round(Number(b[k])||0))):b[k]]));
+  const bindKey=b=>`${b.button}:${b.modifier??'base'}:${[...(b.modifiers||[])].sort((x,y)=>x-y).join('.')}:${b.longPressMs||0}:${b.doubleTapMs||0}`;
   const names = ['CROSS', 'CIRCLE', 'SQUARE', 'TRIANGLE', 'L1', 'R1', 'L2', 'R2', 'CREATE', 'OPTIONS', 'L3', 'R3', 'UP', 'DOWN', 'LEFT', 'RIGHT', 'PS', 'TOUCHPAD', 'MIC', 'EDGE FN1', 'EDGE FN2', 'LEFT PADDLE', 'RIGHT PADDLE'];
   const vkChoices = [
     {vk: 0x11, label: platform.keyLabel(17,'Ctrl')}, {vk: 0x10, label: 'Shift'}, {vk: 0x12, label: platform.keyLabel(18,'Alt')},
@@ -41,21 +45,28 @@
     genji:{name:'Genji · Shuriken',description:'Light R2, pulsing L2. Throw and dash cues need game events.',left:{mode:'vibration',strength:42,curve:clone(presets.Pulse),zoneForces:[0,.28,.48,.48,.48,.48,.48,.48,.48,.48]},right:{mode:'resistance',strength:28,curve:clone(presets.Linear),zoneForces:[0,0,.08,.12,.14,.16,.18,.2,.2,.2]},haptics:{shape:'square',frequency:120,attack:2,release:45,strength:42,pan:0},inputEffects:{enabled:true,threshold:.82,strength:32}},
     soldier:{name:'Soldier: 76 · Pulse Rifle',description:'R2 rifle recoil, L2 rocket break. Shot cues need game events.',left:{mode:'weapon',strength:78,curve:clone(presets.Break),startZone:4,endZone:6,snapStrength:55},right:{mode:'vibration',strength:66,curve:clone(presets.Pulse),zoneForces:[0,.42,.66,.66,.66,.66,.66,.66,.66,.66]},haptics:{shape:'square',frequency:95,attack:3,release:135,strength:65,pan:0},inputEffects:{enabled:true,threshold:.78,strength:48}}
   };
+  // Waveform choices. Pulse, double and swell differ by timing and envelope, so they stay distinct on the grips.
+  const hapticShapes = ['sine','triangle','square','saw','noise','pulse','double','swell'];
   const textures = [
-    {name:'Soft tick',type:'Light',settings:{shape:'sine',frequency:175,attack:3,release:80,strength:30,pan:0}},
-    {name:'Heartbeat',type:'Warm',settings:{shape:'sine',frequency:65,attack:20,release:270,strength:62,pan:0}},
-    {name:'Gravel',type:'Grain',settings:{shape:'noise',frequency:78,attack:9,release:340,strength:47,pan:-20}},
-    {name:'Impact',type:'Sharp',settings:{shape:'saw',frequency:95,attack:3,release:190,strength:70,pan:0}},
-    {name:'Bow release',type:'Snap',settings:{shape:'saw',frequency:88,attack:2,release:125,strength:52,pan:0}},
-    {name:'Mechanical click',type:'Click',settings:{shape:'square',frequency:185,attack:2,release:55,strength:38,pan:0}},
-    {name:'Deep rumble',type:'Low',settings:{shape:'sine',frequency:45,attack:35,release:420,strength:67,pan:0}}
+    {name:'Soft tick',type:'Light',desc:'Faint, high, very short tap.',settings:{shape:'sine',frequency:170,attack:6,release:90,strength:28,pan:0}},
+    {name:'Mechanical click',type:'Click',desc:'One crisp, tiny, sharp click.',settings:{shape:'square',frequency:240,attack:2,release:28,strength:60,pan:0}},
+    {name:'Heartbeat',type:'Thump x2',desc:'Two soft low thumps: lub-dub.',settings:{shape:'double',frequency:55,attack:4,release:420,strength:70,pan:0}},
+    {name:'Double tap',type:'Tap x2',desc:'Two quick, firm mid taps.',settings:{shape:'double',frequency:140,attack:3,release:300,strength:60,pan:0}},
+    {name:'Impact',type:'Heavy',desc:'One hard low thump that dies fast.',settings:{shape:'saw',frequency:48,attack:2,release:220,strength:85,pan:0}},
+    {name:'Bow release',type:'Snap',desc:'A sharp snap that rings out.',settings:{shape:'saw',frequency:130,attack:2,release:150,strength:60,pan:0}},
+    {name:'Ratchet',type:'Buzz',desc:'Fast buzzy ticks, like a ratchet.',settings:{shape:'pulse',frequency:150,attack:2,release:450,strength:85,pan:0}},
+    {name:'Gravel',type:'Grain',desc:'Rough, uneven rattle.',settings:{shape:'noise',frequency:120,attack:8,release:360,strength:62,pan:-20}},
+    {name:'Purr',type:'Smooth',desc:'Even, soft mid hum.',settings:{shape:'triangle',frequency:70,attack:10,release:260,strength:55,pan:0}},
+    {name:'Slow swell',type:'Swell',desc:'Smooth rise and fall, no hard edge.',settings:{shape:'swell',frequency:80,attack:280,release:420,strength:70,pan:0}},
+    {name:'Deep rumble',type:'Low',desc:'Long low growl that builds and fades.',settings:{shape:'sine',frequency:42,attack:120,release:600,strength:75,pan:0}}
   ];
+  const hapticDefaults = {frequency:90,attack:12,release:220,strength:44,pan:0};
   const hapticFields = [
-    {key:'frequency',label:'FREQUENCY',min:40,max:300,unit:'HZ'},
-    {key:'attack',label:'ATTACK',min:2,max:200,unit:'MS'},
-    {key:'release',label:'RELEASE',min:25,max:650,unit:'MS'},
-    {key:'strength',label:'STRENGTH',min:0,max:100,unit:'%'},
-    {key:'pan',label:'LEFT / RIGHT',min:-100,max:100,unit:'%'}
+    {key:'frequency',label:'FREQUENCY',min:40,max:300,unit:'HZ',hint:'Low = deep thump, high = sharp tick.'},
+    {key:'attack',label:'ATTACK',min:2,max:200,unit:'MS',hint:'How fast it starts.'},
+    {key:'release',label:'RELEASE',min:25,max:650,unit:'MS',hint:'How long it fades.'},
+    {key:'strength',label:'Strength (this effect)',min:0,max:100,unit:'%',hint:'Inside the overall intensity'},
+    {key:'pan',label:'BALANCE',min:-100,max:100,unit:'%',hint:'Left grip \u2194 right grip.'}
   ];
   const state = {
     connected:false,name:'',transport:'',path:'',battery:null,charging:false,
@@ -152,6 +163,7 @@
   const trigger = () => profile().triggers[state.side];
   const timeLabel = () => new Date().toLocaleTimeString('en-US',{hour12:false});
   const modeLabel = {off:'Off',resistance:'Resistance',weapon:'Weapon',vibration:'Vibration',bow:'Bow · experimental'};
+  const modeHelp = {off:'Trigger moves freely with no resistance.',resistance:'Steady push-back that follows the force curve you draw.',weapon:'Resistance that gives way at a break point, like a gun trigger.',vibration:'Pulsing motor feel; strength follows the curve, rate sets the pulse.',bow:'Tension builds as you draw and clears at the release point. Experimental.'};
 
   function normalizeProfile(p) {
     const n = clone(p);
@@ -179,15 +191,73 @@
       t.forceCap=clamp(Math.round(t.forceCap??6),1,8);
       if(!Array.isArray(t.zoneForces)||t.zoneForces.length!==10)t.zoneForces=Array.from({length:10},(_,i)=>(t.curve[i]+t.curve[i+1])/2);
     }
-    n.remap.bindings = Array.isArray(n.remap.bindings) ? n.remap.bindings.map(b=>({button:b.button,vk:b.vk,modifier:b.modifier??null,behavior:b.behavior||'hold',sequence:Array.isArray(b.sequence)?b.sequence:[],chord:Array.isArray(b.chord)?b.chord:[]})) : [];
+    n.remap.bindings = Array.isArray(n.remap.bindings) ? n.remap.bindings.map(b=>({button:b.button,vk:b.vk,modifier:b.modifier??null,behavior:b.behavior||'hold',sequence:Array.isArray(b.sequence)?b.sequence:[],chord:Array.isArray(b.chord)?b.chord:[],...bindingExtras(b)})) : [];
     return n;
   }
 
-  function toast(message) {
-    const node = $('#toast'); node.textContent = String(message);
-    node.classList.add('is-visible'); clearTimeout(toastTimeout);
-    toastTimeout = setTimeout(() => node.classList.remove('is-visible'), 3400);
+  // Toasts stack. Repeats merge into one row with a counter, errors stay until dismissed,
+  // and an undo toast keeps an Undo button for five seconds.
+  const toastItems = [];
+  // Only plain text is announced (a hidden polite region); the toast buttons stay outside it.
+  let announcer = null, announceTimer = 0;
+  function announce(message) {
+    if (!announcer) {
+      announcer = document.createElement('div'); announcer.id = 'toast-announcer'; announcer.setAttribute('role', 'status'); announcer.setAttribute('aria-live', 'polite');
+      announcer.style.cssText = 'position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap';
+      document.body.append(announcer);
+    }
+    clearTimeout(announceTimer); announcer.textContent = '';
+    announceTimer = setTimeout(() => { announcer.textContent = message; }, 40);
   }
+  const pendingUndo = () => [...toastItems].reverse().find(i => i.undo && i.node.isConnected);
+  function undoLast() { const item = pendingUndo(); if (!item) return false; const run = item.undo; item.dismiss(); run(); return true; }
+  const errorPattern = /\b(fail(ed|ure)?|error|could not|couldn't|unable|invalid|not supported|unavailable|rejected|too large)\b/i;
+  function toast(message, options = {}) {
+    const host = $('#toast'), text = String(message);
+    const error = options.error ?? errorPattern.test(text);
+    if (!options.undo) {
+      const dup = toastItems.find(item => item.text === text && !item.undo);
+      if (dup) { dup.count++; dup.render(); dup.arm(); return dup; }
+    }
+    const item = {text, count: 1, error, undo: options.undo || null, timer: 0, hold: false};
+    item.node = document.createElement('div');
+    item.node.className = 'toast-item' + (error ? ' is-error' : '');
+    const body = document.createElement('span'), counter = document.createElement('span');
+    body.className = 'toast-text'; counter.className = 'toast-count';
+    item.node.append(body, counter);
+    item.render = () => { body.textContent = item.text; counter.textContent = `\u00d7${item.count}`; counter.hidden = item.count < 2; };
+    item.dismiss = () => {
+      clearTimeout(item.timer);
+      const index = toastItems.indexOf(item); if (index >= 0) toastItems.splice(index, 1);
+      item.node.remove(); host.classList.toggle('is-visible', toastItems.length > 0);
+    };
+    item.arm = () => {
+      clearTimeout(item.timer);
+      if ((item.error && !item.undo) || item.hold) return;
+      item.timer = setTimeout(item.dismiss, item.undo ? 10000 : 3400);
+    };
+    // Hovering or focusing a toast pauses its timer so it can be read and used.
+    item.node.addEventListener('mouseenter', () => { item.hold = true; clearTimeout(item.timer); });
+    item.node.addEventListener('focusin', () => { item.hold = true; clearTimeout(item.timer); });
+    item.node.addEventListener('mouseleave', () => { item.hold = false; item.arm(); });
+    item.node.addEventListener('focusout', () => { if (!item.node.contains(document.activeElement)) { item.hold = false; item.arm(); } });
+    if (item.undo) {
+      const undoButton = document.createElement('button');
+      undoButton.type = 'button'; undoButton.textContent = options.undoLabel || 'Undo';
+      undoButton.addEventListener('click', () => { const run = item.undo; item.dismiss(); run(); });
+      item.node.append(undoButton);
+    }
+    const close = document.createElement('button');
+    close.type = 'button'; close.className = 'toast-close'; close.textContent = '\u00d7'; close.setAttribute('aria-label', 'Dismiss message');
+    close.addEventListener('click', item.dismiss);
+    item.node.append(close);
+    item.render(); toastItems.push(item); host.append(item.node); host.classList.add('is-visible');
+    announce(item.undo ? `${text} Press ${platform.primaryLabel}+Z to undo.` : text);
+    while (toastItems.length > 3) (toastItems.find(i => !i.error && !i.undo) || toastItems[0]).dismiss();
+    item.arm();
+    return item;
+  }
+  const undoToast = (message, undo, undoLabel = 'Undo') => toast(message, {undo, undoLabel, error: false});
   async function checkForUpdates(manual=false) {
     if(!native || !platform.updates || updateChecking || updateInstalling)return;
     updateChecking=true;
@@ -216,8 +286,19 @@
     }
   }
   $('#check-update').addEventListener('click',()=>checkForUpdates(true));
+  {
+    const panel=$('.update-panel'),status=$('#update-status'),install=$('#install-update'),check=$('#check-update');
+    const out=$('#settings-update-status'),sCheck=$('#settings-check-update'),sInstall=$('#settings-install-update');
+    const sync=()=>{out.textContent=status.textContent;sInstall.hidden=install.hidden;sInstall.textContent=install.textContent;sInstall.disabled=install.disabled;sCheck.disabled=check.disabled;};
+    new MutationObserver(sync).observe(panel,{subtree:true,childList:true,characterData:true,attributes:true});
+    sCheck.addEventListener('click',()=>check.click());sInstall.addEventListener('click',()=>install.click());sync();
+  }
   $('#install-update').addEventListener('click',async()=>{
     if(!availableVersion||updateChecking||updateInstalling)return;
+    if(!$('#profile-name').value.trim()){
+      toast('The editor has an empty profile name, so the app cannot save before restarting for the update. Give the profile a name on the Profiles page, then install again.');
+      navigate('profiles');showNameError('Enter a name for this profile.');return;
+    }
     if(!await commitProfileDraft(false))return;
     updateInstalling=true;
     $('#check-update').disabled=true;
@@ -245,27 +326,45 @@
       $('#update-status').textContent=`Downloading ${availableVersion}: ${Math.min(100,Math.round(progress.downloaded/progress.total*100))}%`;
     }
   }
-  const eventRows=[];
-  function log(message){eventRows.unshift({time:timeLabel(),message:String(message)});eventRows.length=Math.min(eventRows.length,11);renderLog();}
+  const eventRows=[];let logFilter='';
+  function log(message){eventRows.unshift({time:timeLabel(),message:String(message)});if(eventRows.length>200)eventRows.length=200;renderLog();}
+  function visibleLogRows(){const q=logFilter.trim().toLowerCase();return q?eventRows.filter(row=>row.message.toLowerCase().includes(q)):eventRows;}
   function renderLog(){
     if(document.hidden||state.currentView!=='diagnostics')return;
     const list=$('#event-log');list.replaceChildren();
-    for(const row of eventRows){const item=document.createElement('li'),time=document.createElement('time'),detail=document.createElement('span');time.textContent=row.time;detail.textContent=row.message;item.append(time,detail);list.append(item);}
+    const rows=visibleLogRows();
+    if(!rows.length){const item=document.createElement('li'),detail=document.createElement('span');detail.textContent=eventRows.length?'No log lines match this filter.':'Nothing logged yet.';item.append(document.createElement('time'),detail);list.append(item);return;}
+    for(const row of rows){const item=document.createElement('li'),time=document.createElement('time'),detail=document.createElement('span');time.textContent=row.time;detail.textContent=row.message;item.append(time,detail);list.append(item);}
   }
-  async function send(command, sessionOwned=false,applyTicket=null) {
+  async function copyText(text,done,failed){
+    try {
+      if(navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+      else {
+        const field=document.createElement('textarea');field.value=text;field.style.position='fixed';field.style.opacity='0';document.body.append(field);field.select();
+        const copied=document.execCommand('copy');field.remove();
+        if(!copied)throw new Error('Clipboard unavailable');
+      }
+      if(done)toast(done);return true;
+    } catch { toast(failed||'Could not copy to the clipboard.');return false; }
+  }
+  $('#log-filter').addEventListener('input',e=>{logFilter=e.target.value;renderLog();});
+  $('#log-copy').addEventListener('click',()=>copyText(visibleLogRows().slice().reverse().map(row=>`${row.time} ${row.message}`).join('\n')||'(log is empty)','Log copied.','Could not copy the log.'));
+  let lastSendError='';
+  async function send(command, sessionOwned=false,applyTicket=null,quiet=false) {
     if(command.action==='reset'||command.action==='selectDevice'){weaponRequest++;weaponApplying=false;activeWeaponPreset='';}
     if (!native) { toast('Open the desktop app for hardware.'); return false; }
     const commandEpoch=window.gameSessions?.epoch;
+    if(window.shellExtras?.persistent(command.action))command={...command,persistent:true};
     try { await invoke('send_command',{command});
       if(command.action!=='reset'&&commandEpoch!==window.gameSessions?.epoch)return false;
       if(command.action==='applyTriggers')appliedTriggerState={profileId:state.profileId,triggers:clone({left:command.left,right:command.right}),inputEffects:clone(appliedTriggerState?.inputEffects||profile().inputEffects)};
       if(command.action==='setInputEffects'&&appliedTriggerState)appliedTriggerState.inputEffects=clone(command);
       if(command.action==='reset')appliedTriggerState=null;
       window.gameSessions?.command(command,sessionOwned); window.studioHooks?.command(command); window.dailyUse?.command(command,applyTicket); return true; }
-    catch (error) { window.dailyUse?.commandFailed(error); toast(String(error)); log(`CORE ERROR / ${error}`); return false; }
+    catch (error) { lastSendError=String(error); window.dailyUse?.commandFailed(error); if(!quiet){toast(String(error)); log(`CORE ERROR / ${error}`);} return false; }
   }
   function sendPcBindings(){
-    if(state.connected)send({action:'setPcBindings',bindings:pcBindings.filter(b=>b.behavior!=='launch'||validAppPath(b.launchPath||'')),click_threshold:pcClickThreshold,pointer_sensitivity:pcPointerSensitivity,reverse_scroll:pcReverseScroll});
+    if(state.connected)send({action:'setPcBindings',bindings:pcBindings.filter(b=>b.behavior!=='launch'||validAppPath(b.launchPath||'')),click_threshold:pcClickThreshold,pointer_sensitivity:pcPointerSensitivity,reverse_scroll:pcReverseScroll,...(window.shellExtras?.pcOptions()||{})});
   }
   function sendCalibration(){
     if(state.connected)return send({action:'setCalibration',calibration:inputCalibration||defaultCalibration()});
@@ -419,19 +518,28 @@
     if(run.stage===3){await finishCalibration();return;}
     run.stage++;renderCalibrationStatus();
   });
-  $('#cancel-calibration').addEventListener('click',()=>{
-    if(calibrationRun?.saving)return;
+  function cancelCalibration(){
+    if(!calibrationRun||calibrationRun.saving)return false;
     calibrationRun=null;sendCalibration();$('#calibration-step').textContent='Calibration canceled';
     $('#calibration-instruction').textContent='Previous ranges restored. Start again to retry.';
     $('#cal-range-feedback').textContent='No new ranges were saved.';
     $('#calibration-status').textContent='Previous ranges restored.';renderCalibrationStatus();
-  });
+    return true;
+  }
+  $('#cancel-calibration').addEventListener('click',cancelCalibration);
   $('#reset-calibration').addEventListener('click',async()=>{
     if(calibrationRun||window.outputCalibration?.busy)return;
+    const previous=inputCalibration?clone(inputCalibration):null;
     try{if(native)await window.outputCalibration.save(defaultCalibration(),null,'reset');}catch(error){$('#calibration-status').textContent=String(error?.message||error);return;}
     inputCalibration=null;calibrationRecord(true);
     sendCalibration();$('#calibration-step').textContent='Default ranges restored';
     $('#calibration-status').textContent='Using default ranges.';$('#calibration-fill').style.width='0%';renderCalibrationStatus();
+    if(previous)undoToast('Calibration ranges reset to defaults.',async()=>{
+      if(calibrationRun||window.outputCalibration?.busy){toast('Finish the current calibration step before undoing.');return;}
+      try{if(native)await window.outputCalibration.save(previous);}catch(error){toast(`Could not restore the previous ranges: ${error?.message||error}`);return;}
+      inputCalibration=previous;calibrationRecord(true);sendCalibration();
+      $('#calibration-status').textContent='Previous ranges restored.';renderCalibrationStatus();
+    });
   });
   function savePcBindings(){
     try{
@@ -470,10 +578,17 @@
     window.addEventListener('keydown',capture,true);timer=setTimeout(()=>{if(!finished)toast('Use the modifier buttons and key selector for system shortcuts.');finish();},10000);
     if(native)invoke('record_shortcut').then(accept).catch(error=>{if(!finished){$('#pc-bindings-status').textContent=String(error);}});
   }
+  const pcDefaultRows=new Set([0,1,2,3,4,5,12,13,14,15]),pcCustomOpen=new Set();
+  window.controllerUI?.onChange(()=>renderPcBindings());
   function renderPcBindings(){
-    const host=$('#pc-bindings');host.replaceChildren();
+    const host=$('#pc-bindings');
+    const otherWasOpen=!!window.controllerUI?.isOpen('pc.bindings-other'),expandAll=!!window.controllerUI?.prefs().showAll;
+    host.replaceChildren();
+    const otherRows=gameNode('div',{class:'pc-other-rows'}),other=gameNode('details',{class:'pc-other'},[gameNode('summary',{text:'Other buttons'}),otherRows]);
+    Object.assign(other.dataset,{uiSection:'pc.bindings-other',level:'advanced',title:'Other buttons',hint:'Create, Options, L3, R3, PS, Touchpad, Mic, Edge',keywords:'create options l3 r3 ps touchpad mic edge paddle fn button macro shortcut keyboard mouse'});
+    other.open=otherWasOpen||expandAll;
     for(const button of pcButtons){
-      const binding=pcBindings.find(item=>item.button===button),row=gameNode('div',{class:'pc-binding'}),label=gameNode('span',{text:names[button]});
+      const binding=pcBindings.find(item=>item.button===button),row=gameNode('div',{class:'pc-binding'}),label=gameNode('span',{text:names[button]}),customBody=gameNode('div',{class:'pc-customize-body'});
       const behavior=gameSelect([['','Unassigned'],['hold','Hold key / shortcut'],['tap','Tap key / shortcut'],['macro','Key sequence'],['launch','Open app'],['program','Macro steps']],binding?.behavior||'',value=>{
         pcBindings=pcBindings.filter(item=>item.button!==button);
         if(value)pcBindings.push({button,vk:['launch','program'].includes(value)?0:(binding?.vk||13),behavior:value,sequence:value==='macro'?[32]:[],chord:['launch','macro','program'].includes(value)?[]:(binding?.chord||[]),launchPath:value==='launch'?(binding?.launchPath||''):undefined,launchArgs:value==='launch'?(binding?.launchArgs||[]):[],program:value==='program'?(binding?.program||{steps:[{type:'wait',ms:100}],repeat:1}):undefined});
@@ -516,27 +631,47 @@
           const sequence=gameNode('input',{type:'text',maxLength:120,placeholder:'Then: E, Space',value:binding.sequence.map(vk=>vkChoices.find(k=>k.vk===vk)?.label||`Key ${vk}`).join(', ')});sequence.setAttribute('aria-label',`${names[button]} following keys`);
           sequence.addEventListener('change',()=>{const values=sequence.value.split(',').map(v=>v.trim()).filter(Boolean).map(label=>vkChoices.find(k=>k.label.toLowerCase()===label.toLowerCase())?.vk||Number(label.replace(/^Key\s+/i,'')));if(values.length<1||values.length>5||!values.every(validPcKey)){toast('Enter one to five key names or key codes, separated by commas.');return;}binding.sequence=values;savePcBindings();});keys.append(sequence);
         }
-        row.append(keys);
+        customBody.append(keys);
       }
-      host.append(row);
+      if(binding&&window.shellExtras)customBody.append(window.shellExtras.bindingExtras(binding,{pc:true,label:names[button],onChange:savePcBindings}));
+      if(customBody.childElementCount){
+        const hint=binding.behavior==='program'||binding.behavior==='launch'?'':binding.chord?.length?binding.chord.map(vk=>vkChoices.find(k=>k.vk===vk)?.label||`Key ${vk}`).join(' + '):(vkChoices.find(k=>k.vk===binding.vk)?.label||'');
+        const custom=gameNode('details',{class:'pc-customize'},[gameNode('summary',{},[gameNode('span',{text:'Customize'}),gameNode('small',{class:'pc-customize-hint',text:hint})]),customBody]);
+        custom.open=expandAll||pcCustomOpen.has(button);
+        custom.addEventListener('toggle',()=>{if(window.controllerUI?.prefs().showAll)return;custom.open?pcCustomOpen.add(button):pcCustomOpen.delete(button);});
+        row.append(custom);
+      }
+      (pcDefaultRows.has(button)?host:otherRows).append(row);
     }
+    host.append(other);
     window.studioHooks?.renderPc();
     $('#pc-click-threshold').value=String(Math.round(pcClickThreshold*100));$('#pc-click-value').textContent=`${Math.round(pcClickThreshold*100)}%`;
     $('#pc-pointer-sensitivity').value=String(Math.round(pcPointerSensitivity*100));$('#pc-pointer-value').textContent=`${Math.round(pcPointerSensitivity*100)}%`;$('#pc-reverse-scroll').checked=pcReverseScroll;
   }
+  // Live sends are throttled to one per frame; the value is stored once the drag ends.
+  let pcSendFrame=0;
+  const schedulePcSend=()=>{if(!pcSendFrame)pcSendFrame=requestAnimationFrame(()=>{pcSendFrame=0;sendPcBindings();});};
+  const commitPcSliders=()=>{if(pcSendFrame){cancelAnimationFrame(pcSendFrame);pcSendFrame=0;}savePcBindings();};
   $('#pc-click-threshold').addEventListener('input',event=>{
     pcClickThreshold=+event.target.value/100;
     $('#pc-click-value').textContent=`${event.target.value}%`;
-    savePcBindings();
+    schedulePcSend();
   });
+  $('#pc-click-threshold').addEventListener('change',commitPcSliders);
   $('#pc-reset-bindings').addEventListener('click',()=>{
+    const previous={bindings:clone(pcBindings),click:pcClickThreshold,pointer:pcPointerSensitivity,reverse:pcReverseScroll};
     pcBindings=defaultPcBindings();pcClickThreshold=.55;pcPointerSensitivity=.7;pcReverseScroll=true;renderPcBindings();savePcBindings();
+    undoToast('Default PC shortcuts restored.',()=>{
+      pcBindings=previous.bindings;pcClickThreshold=previous.click;pcPointerSensitivity=previous.pointer;pcReverseScroll=previous.reverse;
+      renderPcBindings();savePcBindings();
+    });
   });
   $('#pc-pointer-sensitivity').addEventListener('input',event=>{
     pcPointerSensitivity=+event.target.value/100;
     $('#pc-pointer-value').textContent=`${event.target.value}%`;
-    savePcBindings();
+    schedulePcSend();
   });
+  $('#pc-pointer-sensitivity').addEventListener('change',commitPcSliders);
   $('#pc-reverse-scroll').addEventListener('change',event=>{
     pcReverseScroll=event.target.checked;savePcBindings();
   });
@@ -574,7 +709,9 @@
   function navigate(view) {
     if (!$('#' + view)?.classList.contains('screen')) return;
     if(zoneRun&&view!=='triggers')stopZoneCalibration();
+    if(calibrationRun&&view!=='calibration'&&cancelCalibration())toast('Calibration canceled because you left the page. Your previous ranges were restored.');
     if(view!=='pc-controls')cancelPcRecording?.();
+    try{localStorage.setItem('controller.lastView',view);}catch{}
     clearPadFocus();
     window.studioHooks?.beforeNavigate(view);
     state.currentView = view;
@@ -618,8 +755,8 @@
     $('.xinput-block>strong').textContent=platform.os==='linux'?'Virtual gamepad':'XInput bridge';
     $('.xinput-block>p').textContent=platform.os==='linux'?'Create a virtual Xbox-compatible gamepad through uinput. Install the optional access rule and load the uinput module before enabling it.':'Create a virtual Xbox 360 pad with ViGEmBus. Install the included driver only if you use this feature.';
     const driverNote=$('.driver-actions small');if(driverNote)driverNote.textContent=platform.os==='linux'?'Use /dev/uinput access for the active desktop user. Select the virtual gamepad in your game and avoid duplicate Steam mappings.':'ViGEmBus creates the virtual Xbox pad. Use HidHide if a game sees both pads.';
-    renderPcMode();renderGyroControls();renderPcBindings();renderRemapEditor();
-    platform.apply();window.motionStudio?.renderProfile();window.gameSessions?.renderProfile();window.studioHooks?.platform();
+    renderPcMode();renderGyroControls();renderMouseSwitch();renderPcBindings();renderRemapEditor();
+    platform.apply();window.motionStudio?.renderProfile();window.gameSessions?.renderProfile();window.studioHooks?.platform();explainDisabled();
   }
   document.addEventListener('controller-platform',renderPlatform);
   if(native)invoke('platform_capabilities').then(cap=>{if(!cap)return;platform.update(cap);if(Array.isArray(cap.supportedKeys))supportedKeys=new Set(cap.supportedKeys);renderPcBindings();window.motionStudio?.renderProfile();}).catch(()=>{});
@@ -630,10 +767,10 @@
     button.disabled=!state.connected||!state.platformDesktopInput;
     button.setAttribute('aria-pressed',String(enabled));
     button.classList.toggle('is-active',enabled);
-    $('strong',button).textContent=enabled?'PC control':'Game mode';
+    $('strong',button).textContent=enabled?'Desktop':'Games';
     $('#input-mode-help').textContent=!state.platformDesktopInput?'Desktop control is unavailable in this session.':enabled
-      ?'Touchpad: pointer. Right stick: scroll. L2/R2: clicks. Edit shortcuts under PC controls.'
-      :'Game mode sends input to games. Switch to PC control for desktop shortcuts.';
+      ?'Touchpad: pointer. Right stick: scroll. L2/R2: clicks. Edit shortcuts under Desktop mode.'
+      :'Games sends input to games. Switch to Desktop for shortcuts and mouse control.';
     if(!enabled){padNavPrev=null;clearPadFocus();}
   }
   $('#input-mode-toggle').addEventListener('click',()=>send({action:'setPcMode',enabled:!state.pcMode}));
@@ -644,7 +781,7 @@
   function padControls(){
     const selector='button:not(:disabled),input:not(:disabled),select:not(:disabled),textarea:not(:disabled),a[href],[tabindex]:not([tabindex="-1"])';
     return (document.querySelector('dialog[open]')?[document.querySelector('dialog[open]')]:[$('#'+state.currentView),$('.masthead'),$('.session-rail')]).flatMap(root=>$$(selector,root))
-      .filter(el=>el.getClientRects().length && el.getAttribute('type')!=='hidden').sort((a,b)=>Number(!!a.closest('.preset-library,.trigger-tools'))-Number(!!b.closest('.preset-library,.trigger-tools')));
+      .filter(el=>el.getClientRects().length && el.getAttribute('type')!=='hidden').sort((a,b)=>Number(!!a.closest('.preset-library,.trigger-tools,#trigger-gallery'))-Number(!!b.closest('.preset-library,.trigger-tools,#trigger-gallery')));
   }
   function focusPadControl(el){
     if(!el)return;
@@ -722,7 +859,7 @@
     const shortcuts=p.gameShortcuts??[];
     if(p.favorite!=null&&typeof p.favorite!=='boolean')return false;
     if(!Array.isArray(shortcuts)||shortcuts.length>12||shortcuts.some(s=>!s||!integer(s.button,0,22)||[6,7,16,18].includes(s.button)||s.modifier!=null&&(!integer(s.modifier,0,22)||s.modifier===s.button||[6,7,16,18].includes(s.modifier))||!['nextProfile','previousProfile','nextWeapon','previousWeapon'].includes(s.action))||new Set(shortcuts.map(s=>`${s.button}:${s.modifier??'none'}`)).size!==shortcuts.length)return false;
-    if(rules.some(r=>!r||!text(r.id,80)||!text(r.name,40)||!['press','double','hold','event'].includes(r.source)||!integer(r.button??0,0,22)||!integer(r.windowMs??280,80,1000)||!integer(r.durationMs,20,2000)||!integer(r.cooldownMs??180,0,10000)||r.source==='event'&&!text(r.event,80)||!r.timeline&&!r.haptic&&!r.leftTrigger&&!r.rightTrigger||r.haptic&&(!['sine','square','saw','noise'].includes(r.haptic.shape)||!integer(r.haptic.frequency,20,300)||!integer(r.haptic.strength,0,100)||!integer(r.haptic.pan??0,-100,100))))return false;
+    if(rules.some(r=>!r||!text(r.id,80)||!text(r.name,40)||!['press','double','hold','event'].includes(r.source)||!integer(r.button??0,0,22)||!integer(r.windowMs??280,80,1000)||!integer(r.durationMs,20,2000)||!integer(r.cooldownMs??180,0,10000)||r.source==='event'&&!text(r.event,80)||!r.timeline&&!r.haptic&&!r.leftTrigger&&!r.rightTrigger||r.haptic&&(!['sine','triangle','square','saw','noise','pulse','double','swell'].includes(r.haptic.shape)||!integer(r.haptic.frequency,20,300)||!integer(r.haptic.strength,0,100)||!integer(r.haptic.pan??0,-100,100))))return false;
     if(rules.some(r=>(r.conditionButton!=null&&!integer(r.conditionButton,0,22))||!Number.isFinite(r.conditionThreshold??.5)||(r.conditionThreshold??.5)<0||(r.conditionThreshold??.5)>1||typeof(r.cancelOnRelease??false)!=='boolean'||typeof(r.cancelEvent??'')!=='string'||(r.cancelEvent??'').length>80||!['restart','ignore'].includes(r.retrigger??'restart')))return false;
     if(rules.some(r=>r.timeline&&(!window.ControllerHapticAuthoring.validClip(r.timeline)||r.haptic||r.leftTrigger||r.rightTrigger)))return false;
     if(new Set(rules.map(r=>r.id)).size!==rules.length||weapons.some(b=>!b||!text(b.weapon,80)||!text(b.presetId,80))||new Set(weapons.map(b=>b.weapon.toLowerCase())).size!==weapons.length)return false;
@@ -750,7 +887,7 @@
         && (t.snapStrength==null||Number.isFinite(t.snapStrength)&&t.snapStrength>=0&&t.snapStrength<=100)
         && (t.preloadStrength==null||Number.isFinite(t.preloadStrength)&&t.preloadStrength>=0&&t.preloadStrength<=100)
         && (t.frequencyHz==null||Number.isInteger(t.frequencyHz)&&t.frequencyHz>=1&&t.frequencyHz<=255);
-    }) && p.haptics && ['sine','square','saw','noise'].includes(p.haptics.shape)
+    }) && p.haptics && hapticShapes.includes(p.haptics.shape)
       && hapticFields.every(f=>Number.isInteger(p.haptics[f.key]) && p.haptics[f.key]>=f.min && p.haptics[f.key]<=f.max)
       && Number.isFinite(g.sensitivity) && g.sensitivity>=.05 && g.sensitivity<=8
       && Number.isFinite(g.yawScale) && g.yawScale>=0 && g.yawScale<=4
@@ -779,7 +916,7 @@
         && ['hold','tap','macro'].includes(b.behavior||'hold') && Array.isArray(b.sequence||[])
         && (b.behavior==='macro'?(b.sequence?.length>=1&&b.sequence.length<=5):!(b.sequence?.length))
         && (b.sequence||[]).every(vk=>Number.isInteger(vk)&&vk>=1&&vk<=255))
-      && new Set(bindings.map(b=>`${b.button}:${b.modifier??'base'}`)).size===bindings.length;
+      && new Set(bindings.map(bindKey)).size===bindings.length;
   }
   async function loadProfiles() {
     let loaded=false,loadError='';
@@ -794,11 +931,14 @@
       }
       if(data&&!loaded){loadError='Invalid profile archive';log(`PROFILE LOAD / ${loadError}`);}
     } catch (error) { loadError=String(error);log(`PROFILE LOAD / ${error}`); }
+    state.loadFailed=loadError?{error:loadError}:null;
     renderAutoApply();
     renderAllProfileControls();
     window.studioHooks?.loaded();window.dailyUse?.loaded(loaded,loadError);
+    renderLoadFailed();
   }
   function persistProfiles() {
+    if(state.loadFailed){toast('Profiles failed to load, so saving is paused. Restore a backup or start fresh on the Profiles page.',{error:true});return Promise.resolve(false);}
     const data={schemaVersion:3,activeId:state.profileId,autoApply:state.autoApply,profiles:clone(state.profiles),triggerPresets:clone(triggerPresets),tactileClips:window.hapticAuthoring.archive()};
     const saveId=window.dailyUse?.saving();
     saveChain=saveChain.catch(()=>{}).then(async()=>{
@@ -809,15 +949,67 @@
     return saveChain.then(()=>true).catch(error=>{window.dailyUse?.saveFailed(saveId,error);toast(`Profile save failed: ${error}`);log(`PROFILE SAVE / ${error}`);return false;});
   }
   function saveProfiles(immediate=false) {
-    window.studioHooks?.capture();window.dailyUse?.changed();
+    window.studioHooks?.capture();window.dailyUse?.changed(true);scheduleLivePreview();
     clearTimeout(saveTimeout);
     if(immediate)return persistProfiles();
     saveTimeout=setTimeout(persistProfiles,180);
   }
-  function gameNode(tag,props={},children=[]){const n=document.createElement(tag);for(const [key,value] of Object.entries(props))if(key==='text')n.textContent=value;else if(key==='class')n.className=value;else n[key]=value;for(const child of children)n.append(child);return n;}
+  state.loadFailed=null;
+  function renderLoadFailed(){
+    const failed=state.loadFailed;
+    $('#profile-load-failed').hidden=!failed;
+    if(failed)$('#profile-load-failed-detail').textContent=`${failed.error}. Saving is paused so the file on disk is not replaced. Restore the newest readable backup, or start fresh with the default profiles (this replaces the unreadable file).`;
+    window.shellExtras?.recoveryStatus(!!failed);
+    window.dailyUse?.changed();
+  }
+  $('#load-failed-recover').addEventListener('click',async event=>{
+    const button=event.currentTarget;button.disabled=true;
+    try{await invoke('recover_profiles');await loadProfiles();toast(state.loadFailed?'Recovery ran, but the profiles still could not be read.':'Recovered the newest valid backup. Press Apply when ready.');}
+    catch(error){toast(`Could not recover profiles: ${error}`);}
+    finally{button.disabled=false;}
+  });
+  $('#load-failed-retry').addEventListener('click',async event=>{
+    const button=event.currentTarget;button.disabled=true;
+    try{await loadProfiles();toast(state.loadFailed?`Profiles still could not be read: ${state.loadFailed.error}`:'Profiles loaded.',{error:!!state.loadFailed});}
+    finally{button.disabled=false;}
+  });
+  let freshArmed=0;
+  $('#load-failed-fresh').addEventListener('click',async event=>{
+    const button=event.currentTarget;
+    if(!freshArmed){freshArmed=setTimeout(()=>{freshArmed=0;button.textContent='Start fresh';},6000);button.textContent='Click again to replace the unreadable file';return;}
+    clearTimeout(freshArmed);freshArmed=0;button.textContent='Start fresh';
+    const failure=state.loadFailed;
+    state.profiles=defaultProfiles.map(normalizeProfile);triggerPresets=[];window.hapticAuthoring.restore([]);state.profileId=state.profiles[0].id;
+    state.loadFailed=null;renderLoadFailed();renderAllProfileControls();
+    if(await saveProfiles(true))toast('Started fresh with the default profiles.');
+    else{state.loadFailed=failure;renderLoadFailed();}
+  });
+  $('#load-failed-restore').addEventListener('click',async event=>{
+    const button=event.currentTarget;button.disabled=true;
+    const failure=state.loadFailed;
+    try{
+      let rows=[];
+      if(native)rows=await invoke('profile_backups',{create:false})||[];
+      else{try{rows=JSON.parse(localStorage.getItem('controller.profileBackups')||'[]');}catch{}}
+      rows=[...rows].sort((a,b)=>(b.createdMs||0)-(a.createdMs||0));
+      if(!rows.length){toast('No backups were found. Use Start fresh instead.');return;}
+      let lastError='';
+      for(const row of rows){
+        try{
+          const data=native?await invoke('restore_profile_backup',{id:row.id}):row.data;
+          state.loadFailed=null;
+          await window.controllerStudio.replaceArchive(data);
+          renderLoadFailed();toast('Restored the newest readable backup. Press Apply when ready.');return;
+        }catch(error){state.loadFailed=failure;lastError=String(error?.message||error);}
+      }
+      toast(`None of the ${rows.length} backups could be restored: ${lastError}`);
+    }catch(error){state.loadFailed=failure;toast(`Could not read backups: ${error}`);}
+    finally{button.disabled=false;}
+  });
+  function gameNode(tag,props={},children=[]){const n=document.createElement(tag);for(const [key,value] of Object.entries(props))if(key==='text')n.textContent=value;else if(key==='class')n.className=value;else if(key==='id'&&!value)continue;else n[key]=value;for(const child of children)n.append(child);return n;}
   function gameSelect(items,value,onchange=()=>{}){const n=gameNode('select');items.forEach(([v,label])=>n.add(new Option(label,String(v))));n.value=String(value);n.addEventListener('change',()=>onchange(n.value));return n;}
   function gameField(label,input){return gameNode('label',{class:'game-field',text:label},[input]);}
-  function gameNumber(value,min,max,change,step=1){const n=gameNode('input',{type:'number',min,max,step,value});n.addEventListener('change',()=>{const value=Number(n.value);if(!Number.isFinite(value)||value<min||value>max){n.value=String(min);toast(`Enter ${min}–${max}`);return;}change(value);saveProfiles();});return n;}
+  function gameNumber(value,min,max,change,step=1){const n=gameNode('input',{type:'number',min,max,step,value});let previous=value;n.addEventListener('change',()=>{const next=Number(n.value);if(n.value===''||!Number.isFinite(next)||next<min||next>max||(Number.isInteger(step)&&!Number.isInteger(next))){n.value=String(previous);toast(`Enter ${Number.isInteger(step)?'a whole number':'a number'} from ${min} to ${max}.`);return;}previous=next;change(next);saveProfiles();});return n;}
   function libraryOptions(){return [['','No trigger change'],...triggerPresets.map(p=>[p.id,p.name])];}
   function renderTriggerLibrary(){const select=$('#trigger-library'),old=select.value;select.replaceChildren(new Option(triggerPresets.length?'Choose a preset':'No saved presets',''));triggerPresets.forEach(p=>select.add(new Option(p.name,p.id)));select.value=triggerPresets.some(p=>p.id===old)?old:'';for(const id of ['load-trigger-preset','delete-trigger-preset','update-trigger-preset'])$('#'+id).disabled=!select.value;}
   $('#trigger-library').addEventListener('change',()=>{const preset=triggerPresets.find(p=>p.id===$('#trigger-library').value);if(preset)$('#trigger-preset-name').value=preset.name;renderTriggerLibrary();});
@@ -828,7 +1020,7 @@
   });
   $('#update-trigger-preset').addEventListener('click',async()=>{const p=triggerPresets.find(p=>p.id===$('#trigger-library').value);if(!p)return;const previous=clone(p);Object.assign(p,{name:$('#trigger-preset-name').value.trim()||p.name,triggers:clone(profile().triggers),inputEffects:clone(profile().inputEffects)});if(!await saveProfiles(true))Object.assign(p,previous);renderGameProfiles();});
   $('#load-trigger-preset').addEventListener('click',()=>{const p=triggerPresets.find(p=>p.id===$('#trigger-library').value);if(!p)return;profile().triggers=clone(p.triggers);profile().inputEffects=clone(p.inputEffects);renderTriggerControls();saveProfiles();toast(`Loaded ${p.name}. Press Apply to use it.`);});
-  $('#delete-trigger-preset').addEventListener('click',async()=>{const id=$('#trigger-library').value;if(!id)return;const used=state.profiles.some(p=>p.weaponBindings.some(b=>b.presetId===id));if(used){toast('Remove this preset’s weapon mappings before deleting it.');return;}const previous=triggerPresets.slice();triggerPresets=triggerPresets.filter(p=>p.id!==id);if(!await saveProfiles(true))triggerPresets=previous;renderGameProfiles();});
+  $('#delete-trigger-preset').addEventListener('click',async()=>{const id=$('#trigger-library').value;if(!id)return;const used=state.profiles.some(p=>p.weaponBindings.some(b=>b.presetId===id));if(used){toast('Remove this preset’s weapon mappings before deleting it.');return;}const previous=triggerPresets.slice(),at=previous.findIndex(p=>p.id===id),removed=previous[at];triggerPresets=triggerPresets.filter(p=>p.id!==id);if(!await saveProfiles(true)){triggerPresets=previous;renderGameProfiles();return;}renderGameProfiles();undoToast(`Deleted preset "${removed.name}".`,async()=>{if(triggerPresets.some(p=>p.id===id)||triggerPresets.length>=100)return;triggerPresets.splice(Math.min(at,triggerPresets.length),0,removed);await saveProfiles(true);renderGameProfiles();});});
   async function applyGameRules(sessionOwned=false,epoch=window.gameSessions?.epoch,p=profile(),applyTicket=null){
     const dispatch=command=>epoch===window.gameSessions?.epoch?send(command,sessionOwned,applyTicket):Promise.resolve(false);
     const active=!state.pcMode&&!state.autoSuppressed&&(!p.matchExe||matchesForeground(p));
@@ -863,11 +1055,11 @@
       const card=gameNode('div',{class:'game-action-card'}),grid=gameNode('div',{class:'game-form-grid'});
       const name=gameNode('input',{value:rule.name,maxLength:40});name.addEventListener('change',()=>{rule.name=name.value.trim()||'Action';saveProfiles();});
       grid.append(gameField('Action name',name),gameField('When',gameSelect([['press','Press'],['double','Double-tap'],['hold','Hold'],['event','Game event']],rule.source,v=>{rule.source=v;saveProfiles();renderGameProfiles();})));
-      if(rule.source==='event'){const e=gameNode('input',{value:rule.event,maxLength:80,placeholder:'dash'});e.addEventListener('change',()=>{rule.event=e.value.trim();saveProfiles();});grid.append(gameField('Event name',e));}
+      if(rule.source==='event'){const e=gameNode('input',{value:rule.event,maxLength:80,placeholder:'dash'});e.addEventListener('change',()=>{const next=e.value.trim();if(!next){toast('Event name cannot be empty.');e.value=rule.event;return;}rule.event=next;saveProfiles();});grid.append(gameField('Event name',e));}
       else grid.append(gameField('Button',gameSelect(names.map((name,i)=>[i,name]),rule.button,v=>{rule.button=+v;saveProfiles();})));
       grid.append(gameField('Tap / hold window · ms',gameNumber(rule.windowMs,80,1000,v=>rule.windowMs=v)),gameField('Duration · ms',gameNumber(rule.durationMs,20,650,v=>rule.durationMs=v)),gameField('Cooldown · ms',gameNumber(rule.cooldownMs,0,10000,v=>rule.cooldownMs=v)));
       grid.append(gameField('Retrigger while playing',gameSelect([['restart','Restart'],['ignore','Finish current effect']],rule.retrigger||'restart',v=>{rule.retrigger=v;saveProfiles();})),gameField('Only while held',gameSelect([['','No condition'],...names.map((name,i)=>[String(i),name])],rule.conditionButton==null?'':String(rule.conditionButton),v=>{rule.conditionButton=v===''?null:+v;saveProfiles();renderGameProfiles();})));
-      if(rule.conditionButton!=null)grid.append(gameField('Condition threshold ? %',gameNumber(Math.round((rule.conditionThreshold??.5)*100),0,100,v=>{rule.conditionThreshold=v/100;saveProfiles();})));
+      if(rule.conditionButton!=null)grid.append(gameField('Condition threshold · %',gameNumber(Math.round((rule.conditionThreshold??.5)*100),0,100,v=>{rule.conditionThreshold=v/100;saveProfiles();})));
       const cancel=gameNode('input',{type:'checkbox',checked:!!rule.cancelOnRelease});cancel.addEventListener('change',()=>{rule.cancelOnRelease=cancel.checked;saveProfiles();});const cancelLabel=gameNode('label',{class:'check-row',text:'Stop on button release'});cancelLabel.prepend(cancel);if(rule.source!=='event')grid.append(cancelLabel);
       const cancelEvent=gameNode('input',{value:rule.cancelEvent||'',maxLength:80,placeholder:'Optional game event'});cancelEvent.addEventListener('change',()=>{rule.cancelEvent=cancelEvent.value.trim();saveProfiles();});grid.append(gameField('Cancel event',cancelEvent));
       const clips=window.hapticAuthoring?.archive()||[],clipChoices=[['','Simple feel'],...clips.map(c=>[c.id,c.name])];
@@ -875,28 +1067,28 @@
       grid.append(gameField('Tactile clip',gameSelect(clipChoices,rule.timeline?.id&&clips.some(c=>c.id===rule.timeline.id)?rule.timeline.id:rule.timeline?'snapshot':'',v=>{const c=clips.find(c=>c.id===v);rule.timeline=c?clone(c):null;rule.haptic=c?null:{shape:'sine',frequency:85,strength:45,pan:0};rule.leftTrigger=null;rule.rightTrigger=null;saveProfiles();renderGameProfiles();})));
       if(!rule.timeline){
       const h=rule.haptic||{shape:'sine',strength:45,frequency:85,pan:0};
-      grid.append(gameField('Grip texture',gameSelect([['','No grip effect'],['sine','Smooth'],['square','Sharp'],['saw','Snap'],['noise','Rough']],rule.haptic?.shape||'',v=>{rule.haptic=v?{...h,shape:v}:null;saveProfiles();renderGameProfiles();})));
+      grid.append(gameField('Grip texture',gameSelect([['','No grip effect'],['sine','Smooth'],['triangle','Soft'],['square','Sharp'],['saw','Snap'],['noise','Rough'],['pulse','Pulse'],['double','Double tap'],['swell','Swell']],rule.haptic?.shape||'',v=>{rule.haptic=v?{...h,shape:v}:null;saveProfiles();renderGameProfiles();})));
       if(rule.haptic)grid.append(gameField('Grip strength · %',gameNumber(h.strength,0,100,v=>h.strength=v)),gameField('Frequency · Hz',gameNumber(h.frequency,20,300,v=>h.frequency=v)),gameField('Left / right · −100 / 100',gameNumber(h.pan,-100,100,v=>h.pan=v)));
       const snapshots=triggerPresets.find(t=>JSON.stringify(t.triggers.left)===JSON.stringify(rule.leftTrigger)&&JSON.stringify(t.triggers.right)===JSON.stringify(rule.rightTrigger));
       const options=libraryOptions();if(!snapshots&&(rule.leftTrigger||rule.rightTrigger))options.push(['snapshot','Saved action trigger settings']);
       grid.append(gameField('Trigger feel',gameSelect(options,snapshots?.id||(rule.leftTrigger||rule.rightTrigger?'snapshot':''),v=>{const t=triggerPresets.find(p=>p.id===v);rule.leftTrigger=t?clone(t.triggers.left):null;rule.rightTrigger=t?clone(t.triggers.right):null;saveProfiles();})));
       }else grid.append(gameNode('p',{class:'pc-note',text:'Timeline: '+rule.timeline.name+'. Duration and feel come from the saved clip copy.'}));
       const buttons=gameNode('div',{class:'game-buttons'}),test=gameNode('button',{type:'button',class:'quiet-action',text:'Test feel'}),remove=gameNode('button',{type:'button',class:'quiet-action',text:'Remove'});
-      test.addEventListener('click',()=>{if(state.connected)send({action:'testGameAction',rule:clone(rule)});else toast('Connect a controller.');});remove.addEventListener('click',()=>{p.actions=p.actions.filter(r=>r.id!==rule.id);saveProfiles();renderGameProfiles();});buttons.append(test,remove);card.append(grid,buttons);host.append(card);
+      test.addEventListener('click',()=>{if(state.connected)send({action:'testGameAction',rule:clone(rule)});else toast('Connect a controller.');});remove.addEventListener('click',()=>{const at=p.actions.findIndex(r=>r.id===rule.id);if(at<0)return;const [removed]=p.actions.splice(at,1);saveProfiles();renderGameProfiles();undoToast(`Removed action "${removed.name}".`,()=>{if(!state.profiles.includes(p)||p.actions.length>=24||p.actions.some(r=>r.id===removed.id))return;p.actions.splice(Math.min(at,p.actions.length),0,removed);saveProfiles();renderGameProfiles();});});buttons.append(test,remove);card.append(grid,buttons);host.append(card);
     });
     const weapons=$('#weapon-bindings');weapons.replaceChildren();const manual=$('#manual-weapon');manual.replaceChildren(new Option('Profile default',''));
-    p.weaponBindings.forEach((binding,index)=>{const row=gameNode('div',{class:'weapon-binding'}),name=gameNode('input',{value:binding.weapon,placeholder:'Weapon name, e.g. smg',maxLength:80});name.setAttribute('aria-label','Weapon name');name.addEventListener('change',()=>{binding.weapon=name.value.trim();saveProfiles();renderGameProfiles();});
+    p.weaponBindings.forEach((binding,index)=>{const row=gameNode('div',{class:'weapon-binding'}),name=gameNode('input',{value:binding.weapon,placeholder:'Weapon name, e.g. smg',maxLength:80});name.setAttribute('aria-label','Weapon name');name.addEventListener('change',()=>{const next=name.value.trim();if(!next){toast('Weapon name cannot be empty.');name.value=binding.weapon;return;}if(p.weaponBindings.some((b,i)=>i!==index&&b.weapon.toLowerCase()===next.toLowerCase())){toast(`Another weapon is already named "${next}". Weapon names must be unique.`);name.value=binding.weapon;return;}binding.weapon=next;saveProfiles();renderGameProfiles();});
       const preset=gameSelect(triggerPresets.map(t=>[t.id,t.name]),binding.presetId,v=>{binding.presetId=v;saveProfiles();});preset.setAttribute('aria-label','Weapon trigger preset');
-      const remove=gameNode('button',{class:'quiet-action',type:'button',text:'Remove'});remove.addEventListener('click',()=>{p.weaponBindings.splice(index,1);saveProfiles();renderGameProfiles();});row.append(name,preset,remove);weapons.append(row);manual.add(new Option(binding.weapon,binding.weapon));});
+      const remove=gameNode('button',{class:'quiet-action',type:'button',text:'Remove'});remove.addEventListener('click',()=>{const [removed]=p.weaponBindings.splice(index,1);saveProfiles();renderGameProfiles();undoToast(`Removed weapon "${removed.weapon}".`,()=>{if(!state.profiles.includes(p)||p.weaponBindings.length>=100||p.weaponBindings.some(b=>b.weapon.toLowerCase()===removed.weapon.toLowerCase()))return;p.weaponBindings.splice(Math.min(index,p.weaponBindings.length),0,removed);saveProfiles();renderGameProfiles();});});row.append(name,preset,remove);weapons.append(row);manual.add(new Option(binding.weapon,binding.weapon));});
   }
   $('#game-actions-enabled').addEventListener('change',e=>{profile().actionsEnabled=e.target.checked;saveProfiles();});
   $('#add-game-action').addEventListener('click',()=>{if(profile().actions.length>=24){toast('24 action limit.');return;}profile().actions.push({id:crypto.randomUUID(),name:'New action',source:'press',button:1,event:'dash',windowMs:280,cooldownMs:180,durationMs:120,haptic:{shape:'sine',frequency:85,strength:45,pan:0},leftTrigger:null,rightTrigger:null});saveProfiles();renderGameProfiles();});
   $('#save-game-actions').addEventListener('click',async()=>{if(await saveProfiles(true)&&state.connected){state.autoSuppressed=false;await applyGameRules();toast('Game rules applied');}else if(!state.connected)toast('Saved. Connect a controller to apply.');});
-  for(const id of ['game-link-enabled','game-link-format','game-link-port'])$('#'+id).addEventListener('change',()=>{profile().gameLink={...profile().gameLink,enabled:$('#game-link-enabled').checked,format:$('#game-link-format').value,port:Number($('#game-link-port').value)};saveProfiles();});
+  for(const id of ['game-link-enabled','game-link-format','game-link-port'])$('#'+id).addEventListener('change',()=>{const port=Number($('#game-link-port').value);if($('#game-link-port').value===''||!Number.isInteger(port)||port<1024||port>65535){toast('Game link port must be a whole number from 1024 to 65535.');$('#game-link-port').value=profile().gameLink.port;return;}profile().gameLink={...profile().gameLink,enabled:$('#game-link-enabled').checked,format:$('#game-link-format').value,port};saveProfiles();});
   $('#add-weapon-binding').addEventListener('click',()=>{if(!triggerPresets.length){toast('Save a trigger preset on Triggers first.');return;}if(profile().weaponBindings.length>=100)return;let name='Weapon',i=1;while(profile().weaponBindings.some(b=>b.weapon===name))name=`Weapon ${++i}`;profile().weaponBindings.push({weapon:name,presetId:triggerPresets[0].id});saveProfiles();renderGameProfiles();});
   $('#apply-manual-weapon').addEventListener('click',()=>useWeapon($('#manual-weapon').value));
 
-  function renderAllProfileControls() { rangeDirty=true;requestVisualFrame();renderProfiles(); renderTriggerControls(); renderHapticControls(); renderRemapEditor(); renderGyroControls(); renderGameProfiles(); window.motionStudio?.renderProfile(); window.gameSessions?.renderProfile(); window.studioHooks?.renderProfile(); window.dailyUse?.changed(); }
+  function renderAllProfileControls() { rangeDirty=true;requestVisualFrame();renderProfiles(); renderTriggerControls(); renderHapticControls(); renderRemapEditor(); renderGyroControls(); renderGameProfiles(); window.motionStudio?.renderProfile(); window.gameSessions?.renderProfile(); window.studioHooks?.renderProfile(); window.dailyUse?.changed(); window.shellExtras?.profileChanged(); }
 
   let profileApplyQueue=Promise.resolve();
   function applyProfileHardware(announce=true,sessionOwned=false,epoch=window.gameSessions?.epoch) {
@@ -905,10 +1097,11 @@
     profileApplyQueue=task;return task;
   }
   async function applyProfileHardwareNow(announce,sessionOwned,epoch) {
-    const p = clone(profile()), dispatch=async command=>{
+    const p = clone(profile()), dispatch=async (command,soft=false)=>{
       const ok=epoch===window.gameSessions?.epoch?await send(command,sessionOwned,requestId):false;
-      if(!ok)window.dailyUse?.abortApply(requestId);return ok;
+      if(!ok&&!soft)window.dailyUse?.abortApply(requestId);return ok;
     };
+    if(announce){autoReapplyFailures=0;autoReapplyNext=0;}
     if(!announce&&state.autoSuppressed)return false;
     if (!state.connected) {
       if (announce) toast('Connect a controller.');
@@ -933,16 +1126,18 @@
         activation: p.gyroAim.activation || 'always',
         bias: p.gyroAim.bias || [0,0,0],
         deadzone: p.gyroAim.deadzone??90,
-        smoothing: p.gyroAim.smoothing??.18
+        smoothing: p.gyroAim.smoothing??.18,
+        ...(window.shellExtras?.gyroExtras(p.gyroAim)||{})
       })) return false;
     }
     if (p.remap) {
       if (!await dispatch({
         action:'setRemap',
         enabled: !!p.remap.enabled,
-        bindings: (p.remap.bindings||[]).map(b=>({button:+b.button,vk:+b.vk,modifier:b.modifier??null,behavior:b.behavior||'hold',sequence:b.sequence||[],chord:b.chord||[]}))
+        bindings: (p.remap.bindings||[]).map(b=>({button:+b.button,vk:+b.vk,modifier:b.modifier??null,behavior:b.behavior||'hold',sequence:b.sequence||[],chord:b.chord||[],...bindingExtras(b)}))
       })) return false;
     }
+    if((p.lightbar||p.audioPreset)&&window.shellExtras&&!await window.shellExtras.applyProfileLights(p,dispatch))return false;
     if(requestId!==undefined&&!await dispatch({action:'profileCheckpoint',requestId}))return false;
     if (announce) { state.autoSuppressed=false; toast(`Sent ${p.name} settings to controller`); log(`PROFILE / ${p.name} sent`); }
     return true;
@@ -954,15 +1149,24 @@
     if(p.matchPath && path(p.matchPath)!==path(state.foregroundPath))return false;
     return true;
   }
+  let autoReapplyFailures=0,autoReapplyNext=0;
+  let autoReapplyProfile='';
   setInterval(async () => {
+    if(!state.connected||state.profileId!==autoReapplyProfile){autoReapplyFailures=0;autoReapplyNext=0;autoReapplyProfile=state.profileId;}
     if (!state.connected || !state.autoApply || state.autoSuppressed || !state.autoMatchId ||
         state.profileId !== state.autoMatchId || !profile().autoApply ||
         !matchesForeground(profile())) return;
     if(!appliedTriggerState||appliedTriggerState.profileId!==state.profileId)return;
     const {triggers,inputEffects}=appliedTriggerState;
     if(triggers.left.mode==='off'&&triggers.right.mode==='off'&&!inputEffects.enabled)return;
-    if(state.leaseUntil>performance.now())await send({action:'renewTriggers'});
-    else {await send({action:'applyTriggers',...triggers});await send(inputEffectCommand(inputEffects));}
+    if(performance.now()<autoReapplyNext)return;
+    let ok;
+    if(state.leaseUntil>performance.now())ok=await send({action:'renewTriggers'},false,null,true);
+    else ok=await send({action:'applyTriggers',...triggers},false,null,true)&&await send(inputEffectCommand(inputEffects),false,null,true);
+    if(ok){autoReapplyFailures=0;autoReapplyNext=0;return;}
+    // Back off (10 s, 20 s ... 2 min) and report the first failure once instead of spamming the log.
+    autoReapplyFailures++;autoReapplyNext=performance.now()+Math.min(5000*2**autoReapplyFailures,120000);
+    if(autoReapplyFailures===1){toast(`Automatic trigger re-apply failed: ${lastSendError||'no response'}. Retrying less often.`);log(`AUTO REAPPLY / ${lastSendError||'failed'}`);}
   }, 5000);
 
   function renderAutoApply() {
@@ -984,12 +1188,25 @@
     $('#session-profile-name').textContent=profile().name;
     $('#profile-count').textContent = String(state.profiles.length).padStart(2,'0');
     const list=$('#profile-list'); list.replaceChildren();
-    state.profiles.forEach((p,i) => {
-      const b=document.createElement('button'); b.className='profile-row'+(p.id===state.profileId?' is-active':''); b.type='button'; b.dataset.profile=p.id;
-      b.innerHTML=`<span class="number">${String(i+1).padStart(2,'0')}</span><span><strong></strong><small></small></span><span class="arrow">↗</span>`;
+    let shown=0;
+    state.profiles.forEach(p => {
       if(window.studioHooks?.filterProfile(p)===false)return;
+      shown++;
+      const b=document.createElement('button'); b.className='profile-row'+(p.id===state.profileId?' is-active':''); b.type='button'; b.dataset.profile=p.id;
+      if(p.id===state.profileId)b.setAttribute('aria-current','true');
+      b.innerHTML=`<span class="number">${String(shown).padStart(2,'0')}</span><span><strong></strong><small></small></span><span class="arrow">↗</span>`;
       $('strong',b).textContent=(p.favorite?'★ ':'')+p.name; $('small',b).textContent=p.tag||'Custom'; list.append(b);
     });
+    const empty=$('#profile-empty');
+    empty.hidden=shown>0;
+    if(!shown){
+      const clear=document.createElement('button');clear.type='button';clear.className='quiet-action';clear.textContent='Clear search and filters';
+      clear.addEventListener('click',()=>{const search=document.getElementById('profile-search');if(search){search.value='';search.dispatchEvent(new Event('input',{bubbles:true}));}document.querySelectorAll('.studio-profile-filter input[type="checkbox"]:checked').forEach(box=>{box.checked=false;box.dispatchEvent(new Event('change',{bubbles:true}));});renderProfiles();});
+      empty.replaceChildren(document.createTextNode(state.profiles.length?'No profiles match the current search or filter. ':'No profiles yet. Use + New to add one. '),...(state.profiles.length?[clear]:[]));
+    }
+    const at=state.profiles.findIndex(p=>p.id===state.profileId);
+    $('#move-profile-up').disabled=at<=0;$('#move-profile-down').disabled=at<0||at>=state.profiles.length-1;
+    $('#sort-profiles').disabled=state.profiles.length<2;
     $('#profile-name').value=profile().name; $('#profile-description').value=profile().description||''; $('#profile-match').value=profile().matchExe||'';
     $('#profile-match-title').value=profile().matchTitle||'';$('#profile-match-path').value=profile().matchPath||'';
     $('#profile-auto-apply').checked = profile().autoApply !== false;
@@ -997,12 +1214,36 @@
   }
   $('#profile-list').addEventListener('click',async e => {
     const b=e.target.closest('[data-profile]'); if(!b)return;
+    if(!guardDraft())return;
     state.profileId=b.dataset.profile; renderAllProfileControls(); saveProfiles();
     toast(profile().name);
     if (state.connected && state.autoApply && profile().autoApply !== false) await applyProfileHardware(true);
   });
+  function moveProfile(delta){
+    const i=state.profiles.findIndex(p=>p.id===state.profileId),j=i+delta;
+    if(i<0||j<0||j>=state.profiles.length)return;
+    [state.profiles[i],state.profiles[j]]=[state.profiles[j],state.profiles[i]];
+    renderProfiles();saveProfiles();
+    $(delta<0?'#move-profile-up':'#move-profile-down').focus();
+  }
+  $('#move-profile-up').addEventListener('click',()=>moveProfile(-1));
+  $('#move-profile-down').addEventListener('click',()=>moveProfile(1));
+  $('#sort-profiles').addEventListener('click',()=>{
+    const before=state.profiles.slice(),sorted=before.slice().sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base',numeric:true}));
+    if(sorted.every((p,i)=>p===before[i])){toast('Profiles are already in A–Z order.');return;}
+    state.profiles=sorted;renderProfiles();saveProfiles();
+    undoToast('Profiles sorted A–Z.',()=>{state.profiles=before;renderProfiles();saveProfiles();});
+  });
+  $('#new-profile-defaults').addEventListener('click',() => {
+    if(state.profiles.length>=50){toast('50 profile limit.');return;}
+    if(!guardDraft())return;
+    const p=normalizeProfile(clone(defaultProfiles[0]));p.id=`profile-${crypto.randomUUID()}`;p.name='Untitled';p.description='';p.tag='Custom';p.matchExe='';p.matchTitle='';p.matchPath='';
+    state.profiles.unshift(p);state.profileId=p.id;
+    renderAllProfileControls();saveProfiles();$('#profile-name').focus();$('#profile-name').select();toast('New profile from default settings');
+  });
   $('#new-profile').addEventListener('click',() => {
     if(state.profiles.length>=50){toast('50 profile limit.');return;}
+    if(!guardDraft())return;
     const p=normalizeProfile(clone(profile())); p.id=`profile-${crypto.randomUUID()}`; p.name='Untitled'; p.description='';p.tag='Custom';p.matchExe='';p.matchTitle='';p.matchPath='';state.profiles.unshift(p); state.profileId=p.id;
     renderAllProfileControls(); saveProfiles(); $('#profile-name').focus(); $('#profile-name').select();
   });
@@ -1021,20 +1262,51 @@
   });
   $('#duplicate-profile').addEventListener('click',() => {
     if(state.profiles.length>=50){toast('50 profile limit.');return;}
+    if(!guardDraft())return;
     const p=normalizeProfile(clone(profile())); p.id=`profile-${crypto.randomUUID()}`; p.name=(p.name+' copy').slice(0,40); p.tag='Custom';p.matchExe='';p.matchTitle='';p.matchPath='';state.profiles.unshift(p); state.profileId=p.id;
     renderAllProfileControls(); saveProfiles(); toast('Duplicated');
   });
   $('#delete-profile').addEventListener('click',() => {
     if(state.profiles.length===1){toast('Need one profile.');return;}
-    state.profiles=state.profiles.filter(p=>p.id!==state.profileId); state.profileId=state.profiles[0].id; renderAllProfileControls();saveProfiles();toast('Deleted');
+    const at=state.profiles.findIndex(p=>p.id===state.profileId),removed=state.profiles[at];
+    state.profiles=state.profiles.filter(p=>p.id!==removed.id); state.profileId=(state.profiles[at]||state.profiles[at-1]||state.profiles[0]).id; renderAllProfileControls();saveProfiles();
+    undoToast(`Deleted profile "${removed.name}".`,()=>{
+      if(state.profiles.some(p=>p.id===removed.id)||state.profiles.length>=50)return;
+      state.profiles.splice(Math.min(at,state.profiles.length),0,removed);state.profileId=removed.id;renderAllProfileControls();saveProfiles(true);
+    });
   });
-  async function commitProfileDraft(announce=false) {
-    const name=$('#profile-name').value.trim(); if(!name){toast('Enter a name.');return false;}
+  function showNameError(message){
+    const error=$('#profile-name-error'),input=$('#profile-name');
+    error.hidden=!message;error.textContent=message||'';
+    if(message)input.setAttribute('aria-invalid','true');else input.removeAttribute('aria-invalid');
+  }
+  // Returns the first problem in the editor fields without touching the stored profile.
+  function validateDraft(){
+    const name=$('#profile-name').value.trim();
+    if(!name)return {field:'#profile-name',message:'Enter a name for this profile.'};
     const matchExe=$('#profile-match').value.trim().toLowerCase();
-    if(matchExe && (/[\/\\\x00-\x1f]/.test(matchExe)||matchExe.length>80)){toast('Enter an executable name without its folder path.');return false;}
+    if(matchExe && (/[\/\\\x00-\x1f]/.test(matchExe)||matchExe.length>80))return {field:'#profile-match',message:'Enter an executable name without its folder path.'};
+    if(($('#profile-match-title').value.trim()||$('#profile-match-path').value.trim())&&!matchExe)return {field:'#profile-match',message:'Set an executable name before refining the match.'};
+    return null;
+  }
+  // Used before switching profiles: an invalid draft stays in the editor instead of being replaced.
+  function guardDraft(){
+    const problem=validateDraft();
+    if(!problem){showNameError('');return true;}
+    if(problem.field==='#profile-name')showNameError(problem.message);
+    toast(problem.message);$(problem.field).focus();return false;
+  }
+  async function commitProfileDraft(announce=false,focusInvalid=true) {
+    const problem=validateDraft();
+    if(problem){
+      if(problem.field==='#profile-name')showNameError(problem.message);
+      toast(problem.message);if(focusInvalid)$(problem.field).focus();return false;
+    }
+    showNameError('');
+    const name=$('#profile-name').value.trim();
+    const matchExe=$('#profile-match').value.trim().toLowerCase();
     const matchTitle=$('#profile-match-title').value.trim();
     const matchPath=$('#profile-match-path').value.trim();
-    if((matchTitle||matchPath)&&!matchExe){toast('Set an executable name before refining the match.');return false;}
     profile().name=name.slice(0,40); profile().description=$('#profile-description').value.trim().slice(0,180); profile().matchExe=matchExe;profile().matchTitle=matchTitle;profile().matchPath=matchPath;
     profile().autoApply = $('#profile-auto-apply').checked;
     profile().remap.enabled = $('#remap-enabled').checked;
@@ -1048,11 +1320,11 @@
   $('#save-profile').addEventListener('click',()=>commitProfileDraft(true));
   $('#apply-profile-now').addEventListener('click',async()=>{if(await commitProfileDraft(false))await applyProfileHardware(true);});
   $$('#profile-name,#profile-description,#profile-match,#profile-match-title,#profile-match-path').forEach(el=>{
-    el.addEventListener('input',()=>{$('#save-profile').textContent='Save •';});
-    el.addEventListener('change',()=>commitProfileDraft(false));
+    el.addEventListener('input',()=>{$('#save-profile').textContent='Save •';if(el.id==='profile-name'&&el.value.trim())showNameError('');});
+    el.addEventListener('change',()=>commitProfileDraft(false,false));
   });
-  $('#profile-auto-apply').addEventListener('change',()=>commitProfileDraft(false));
-  $('#remap-enabled').addEventListener('change',()=>commitProfileDraft(false));
+  $('#profile-auto-apply').addEventListener('change',()=>commitProfileDraft(false,false));
+  $('#remap-enabled').addEventListener('change',()=>commitProfileDraft(false,false));
   $('#learn-process').addEventListener('click',()=>{if(!state.lastExternalExe){toast('Focus the game first.');return;}$('#profile-match').value=state.lastExternalExe;commitProfileDraft(true);});
   $('#learn-process-path').addEventListener('click',()=>{if(!state.lastExternalExe||!state.lastExternalPath){toast('Focus the game first.');return;}$('#profile-match').value=state.lastExternalExe;$('#profile-match-path').value=state.lastExternalPath;commitProfileDraft(true);});
   $('#export-profiles').addEventListener('click',async () => {
@@ -1062,9 +1334,7 @@
     else { const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='CONTROLLER-profiles.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000); }
   });
   $('#import-profiles').addEventListener('click',()=>$('#import-file').click());
-  $('#import-file').addEventListener('change',async e => {
-    const file=e.target.files[0]; if(!file)return;
-    try { if(file.size>1_000_000)throw Error('File is too large'); const data=JSON.parse(await file.text());
+  async function importArchive(data){
       if(![1,2,3].includes(data.schemaVersion)||!Array.isArray(data.profiles)||!data.profiles.length||data.profiles.length>50||!data.profiles.every(validProfile)||!validLibrary(data.triggerPresets??[])||!window.ControllerHapticAuthoring.validLibrary(data.tactileClips??[]))throw Error('Unsupported or invalid profile file');
       if(window.studioHooks&&!await window.studioHooks.previewImport(data))return;
       if(state.profiles.length+data.profiles.length>50)throw Error('50 profile limit');
@@ -1080,7 +1350,24 @@
       state.profiles.unshift(...imported);state.profileId=imported[0].id;renderAllProfileControls();
       if(await saveProfiles(true))toast(`Imported ${imported.length}`);
       else{state.profiles=previousProfiles;state.profileId=previousId;triggerPresets=previousPresets;window.hapticAuthoring.restore(previousClips);renderAllProfileControls();}
-    } catch(error){toast(`Import failed: ${error.message}`);} finally {e.target.value='';}
+  }
+  $('#import-file').addEventListener('change',async e => {
+    const file=e.target.files[0]; if(!file)return;
+    try { if(file.size>1_000_000)throw Error('File is too large'); await importArchive(JSON.parse(await file.text())); }
+    catch(error){toast(`Import failed: ${error.message}`);} finally {e.target.value='';}
+  });
+  $('#copy-profile').addEventListener('click',async()=>{
+    if(!guardDraft()||!await commitProfileDraft(false))return;
+    const p=profile(),ids=new Set(p.weaponBindings.map(b=>b.presetId));
+    const data={schemaVersion:3,activeId:p.id,autoApply:state.autoApply,profiles:[clone(p)],triggerPresets:clone(triggerPresets.filter(t=>ids.has(t.id))),tactileClips:[]};
+    await copyText(JSON.stringify(data,null,2),`Copied "${p.name}" to the clipboard.`,'Could not copy the profile. Use Export instead.');
+  });
+  $('#paste-profile').addEventListener('click',async()=>{
+    let text='';
+    try{text=await navigator.clipboard.readText();}catch{toast('The clipboard could not be read. Allow clipboard access, or use Import with a file.');return;}
+    if(!text.trim()){toast('The clipboard is empty.');return;}
+    if(text.length>1_000_000){toast('Import failed: the clipboard text is too large.');return;}
+    try{await importArchive(JSON.parse(text));}catch(error){toast(`Import failed: ${error.message}`);}
   });
 
   function renderRemapEditor() {
@@ -1090,6 +1377,7 @@
       box.innerHTML = '<p class="remap-empty">No bindings.</p>';
       return;
     }
+    window.controllerUI?.openIfUnset?.('profiles.remap'); // a profile that already remaps buttons shows them
     bindings.forEach((binding, index) => {
       const row = document.createElement('div');
       row.className = 'remap-row';
@@ -1121,7 +1409,7 @@
       const macroInput=document.createElement('input');macroInput.className='remap-macro';macroInput.type='text';macroInput.placeholder='Then: E, Space (up to five)';macroInput.maxLength=60;macroInput.setAttribute('aria-label',`Binding ${index+1} following macro keys`);
       macroInput.value=(binding.sequence||[]).map(vk=>vkChoices.find(choice=>choice.vk===vk)?.label||String(vk)).join(', ');
       macroInput.hidden=behaviorSelect.value!=='macro';
-      const pairTaken=(button,modifier)=>bindings.some((b,i)=>i!==index&&b.button===button&&(b.modifier??null)===modifier);
+      const pairTaken=(button,modifier)=>bindings.some((b,i)=>i!==index&&bindKey(b)===bindKey({...binding,button,modifier}));
       btnSelect.addEventListener('change', () => {
         const next=+btnSelect.value;
         const modifier=binding.modifier===next?null:(binding.modifier??null);
@@ -1147,15 +1435,16 @@
       });
       remove.addEventListener('click', () => { profile().remap.bindings.splice(index, 1); renderRemapEditor(); saveProfiles(); });
       row.append(btnSelect, keySelect, remove, modifierSelect, behaviorSelect, macroInput);
+      if(window.shellExtras)row.append(window.shellExtras.bindingExtras(binding,{label:`Binding ${index+1}`,onChange:()=>saveProfiles()}));
       box.append(row);
     });
   }
   $('#add-remap').addEventListener('click', () => {
     if (profile().remap.bindings.length >= 46) { toast('46 binding limit.'); return; }
-    const used=new Set(profile().remap.bindings.map(b=>`${b.button}:${b.modifier??'base'}`));
+    const used=new Set(profile().remap.bindings.map(bindKey));
     let choice=null;
     for(const modifier of [null,4,5,8,9,17,18]){
-      const button=names.findIndex((_,i)=>i!==modifier&&!used.has(`${i}:${modifier??'base'}`));
+      const button=names.findIndex((_,i)=>i!==modifier&&!used.has(bindKey({button:i,modifier})));
       if(button>=0){choice={button,modifier};break;}
     }
     if(!choice){toast('No free binding pair.');return;}
@@ -1163,12 +1452,15 @@
     renderRemapEditor(); saveProfiles();
   });
 
+  function syncCurveCards(){const all=!!window.controllerUI?.prefs().showAll;$$('[data-curve-card]').forEach(c=>{c.hidden=!all&&c.dataset.curveCard!==state.side;});}
+  window.controllerUI?.onChange(syncCurveCards);
   function renderTriggerControls() {
     window.hapticAuthoring?.inspectTrigger();
-    const t=trigger();
-    $$('.side-tab').forEach(b=>b.classList.toggle('is-active',b.dataset.side===state.side));
+    const t=trigger();syncCurveCards();
+    $$('.side-tab').forEach(b=>{const on=b.dataset.side===state.side;b.classList.toggle('is-active',on);b.setAttribute('aria-selected',String(on));b.tabIndex=on?0:-1;});
     $('#curve-side-label').textContent=state.side==='left'?'L2':'R2';
-    $('#trigger-modes').innerHTML=Object.entries(modeLabel).map(([key,label])=>`<button class="mode-button ${t.mode===key?'is-active':''}" data-mode="${key}" type="button"><span>${label}</span><small>${key}</small></button>`).join('');
+    $('#trigger-modes').innerHTML=Object.entries(modeLabel).map(([key,label])=>`<button class="mode-button ${t.mode===key?'is-active':''}" data-mode="${key}" type="button" aria-pressed="${t.mode===key}" title="${modeHelp[key]}"><span>${label}</span><small>${key}</small></button>`).join('');
+    const modeNote=$('#trigger-mode-help');if(modeNote)modeNote.textContent=modeHelp[t.mode]||'';
     $('#trigger-strength').value=t.strength;renderTriggerStrength(t);fillRange($('#trigger-strength'));renderCurve();
     renderBreakControls(t);
     const c=profile().inputEffects||defaultInputEffects();
@@ -1317,7 +1609,17 @@
     }
   });
   $('#zone-cal-cancel').addEventListener('click',()=>stopZoneCalibration());
-  $$('.side-tab').forEach(b=>b.addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration();state.side=b.dataset.side;renderTriggerControls();}));
+  const sidePanel=$('.trigger-work');
+  if(sidePanel){sidePanel.id=sidePanel.id||'trigger-side-panel';sidePanel.setAttribute('role','tabpanel');}
+  $$('.side-tab').forEach(b=>{b.id=`side-tab-${b.dataset.side}`;if(sidePanel)b.setAttribute('aria-controls',sidePanel.id);});
+  const syncSidePanel=()=>sidePanel?.setAttribute('aria-labelledby',`side-tab-${state.side}`);syncSidePanel();
+  $$('.side-tab').forEach(b=>b.addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration();state.side=b.dataset.side;try{localStorage.setItem('controller.triggerSide',state.side);}catch{}renderTriggerControls();syncSidePanel();}));
+  $('.side-selector').addEventListener('keydown',event=>{
+    if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
+    event.preventDefault();const tabs=$$('.side-tab'),next=tabs[event.key==='Home'?0:event.key==='End'?tabs.length-1:(tabs.findIndex(b=>b.dataset.side===state.side)+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length];
+    next.click();next.focus();
+  });
+  $('#trigger-modes').insertAdjacentHTML('afterend','<small class="mode-help" id="trigger-mode-help"></small>');
   $('#trigger-modes').addEventListener('click',async e=>{const b=e.target.closest('[data-mode]');if(!b)return;if(zoneRun)await stopZoneCalibration();const t=trigger(),was=t.mode;t.mode=b.dataset.mode;if(t.mode==='bow'&&was!=='bow'){t.strength=Math.max(85,t.strength);t.forceCap=8;t.startZone=0;t.endZone=9;t.snapStrength=35;if(state.side==='right')profile().inputEffects.enabled=false;}renderTriggerControls();saveProfiles();});
   $('#break-start').addEventListener('input',event=>{
     const t=trigger();t.startZone=+event.target.value;
@@ -1398,7 +1700,7 @@
       const xy=(v,i)=>`${78.5+i*67},${205-v*175}`;
       svg.querySelector('.curve-line').setAttribute('d',zones.map((v,i)=>(i?'L':'M')+xy(v,i)).join(' '));
       svg.querySelector('.curve-zone-steps').setAttribute('d',zones.map((v,i)=>`M${45+i*67},${205-v*175} L${45+(i+1)*67},${205-v*175}`).join(' '));
-      svg.querySelector('.curve-points').innerHTML=zones.map((v,i)=>`<circle data-point="${i}" data-side="${side}" cx="${78.5+i*67}" cy="${205-v*175}" r="8" tabindex="0" aria-label="${side==='left'?'L2':'R2'} hardware zone ${i+1}, force ${Math.round(v*100)} percent"/>`).join('');
+      svg.querySelector('.curve-points').innerHTML=zones.map((v,i)=>`<circle data-point="${i}" data-side="${side}" cx="${78.5+i*67}" cy="${205-v*175}" r="8" tabindex="0" role="slider" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(v*100)}" aria-valuetext="${Math.round(v*100)} percent" aria-label="${side==='left'?'L2':'R2'} hardware zone ${i+1}, force ${Math.round(v*100)} percent"/>`).join('');
       const card=$(`[data-curve-card="${side}"]`);
       card.classList.toggle('is-selected',side===state.side);
       card.classList.toggle('is-mode-inactive',!active);
@@ -1446,31 +1748,122 @@
   $('#click-enabled').addEventListener('change',e=>{profile().inputEffects.enabled=e.target.checked;saveProfiles();});
   $('#click-threshold').addEventListener('input',e=>{profile().inputEffects.threshold=+e.target.value/100;$('#click-threshold-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
   $('#click-strength').addEventListener('input',e=>{profile().inputEffects.strength=+e.target.value;$('#click-strength-value').textContent=`${e.target.value}%`;fillRange(e.target);saveProfiles();});
-  $('#apply-triggers').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration();const p=profile();for(const side of ['left','right']){const t=p.triggers[side],map=motorZones[side];if(t.mode==='bow')t.releasePoint=validMotorZones(map)?map[t.endZone??9]:clamp((t.endZone??9)/10,.2,.97);}if(await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right})){if(await send(inputEffectCommand(p.inputEffects))){state.autoSuppressed=false;await applyGameRules();}}});
+  function prepareBowReleases(p){for(const side of ['left','right']){const t=p.triggers[side],map=motorZones[side];if(t.mode==='bow')t.releasePoint=validMotorZones(map)?map[t.endZone??9]:clamp((t.endZone??9)/10,.2,.97);}}
+  // Opt-in live preview: edits on the Triggers page are applied after a short pause (this renews the 15 s lease).
+  let livePreview=false,livePreviewTimer=0,lastLiveSig=null;
+  // Only edits that change what the triggers would send count, not every profile save.
+  const liveSignature=()=>{const p=profile();return JSON.stringify([p.id,p.triggers.left,p.triggers.right,p.inputEffects]);};
+  try{livePreview=localStorage.getItem('controller.livePreview')==='true';}catch{}
+  $('#live-preview').checked=livePreview;
+  $('#live-preview').addEventListener('change',event=>{
+    livePreview=event.target.checked;clearTimeout(livePreviewTimer);lastLiveSig=null;
+    try{localStorage.setItem('controller.livePreview',String(livePreview));}catch{}
+    toast(livePreview?'Live preview on: trigger edits are sent to the controller as you make them.':'Live preview off.');
+    if(livePreview)scheduleLivePreview();
+  });
+  function scheduleLivePreview(){
+    if(!livePreview||!state.connected||state.currentView!=='triggers'||zoneRun)return;
+    if(lastLiveSig!==null&&liveSignature()===lastLiveSig)return;
+    clearTimeout(livePreviewTimer);
+    livePreviewTimer=setTimeout(async()=>{
+      if(!livePreview||!state.connected||state.currentView!=='triggers'||zoneRun)return;
+      const p=profile();prepareBowReleases(p);
+      if(await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right},false,null,true)){lastLiveSig=liveSignature();state.autoSuppressed=false;await send(inputEffectCommand(p.inputEffects),false,null,true);}
+      else toast(`Live preview could not reach the controller: ${lastSendError||'no response'}`);
+    },450);
+  }
+  $('#apply-triggers').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration();const p=profile();prepareBowReleases(p);if(await send({action:'applyTriggers',left:p.triggers.left,right:p.triggers.right})){if(await send(inputEffectCommand(p.inputEffects))){state.autoSuppressed=false;await applyGameRules();}}});
   $('#reset-effects').addEventListener('click',async()=>{if(zoneRun)await stopZoneCalibration(false);send({action:'reset'});});
 
   function renderHapticControls(){
     const h=profile().haptics;
-    $('#wave-shapes').innerHTML=['sine','square','saw','noise'].map(s=>`<button type="button" data-shape="${s}" class="${s===h.shape?'is-active':''}">${s}</button>`).join('');
-    $('#haptic-sliders').innerHTML=hapticFields.map(f=>`<div class="haptic-slider"><label for="haptic-${f.key}">${f.label} <b id="haptic-${f.key}-value">${h[f.key]}${f.unit}</b></label><input id="haptic-${f.key}" data-field="${f.key}" type="range" min="${f.min}" max="${f.max}" value="${h[f.key]}"></div>`).join('');
-    $$('#haptic-sliders input').forEach(fillRange);drawWave(performance.now());
+    $('#wave-shapes').innerHTML=hapticShapes.map(s=>`<button type="button" data-shape="${s}" class="${s===h.shape?'is-active':''}" aria-pressed="${s===h.shape}">${s}</button>`).join('');
+    $('#haptic-sliders').innerHTML=hapticFields.map(f=>`<div class="haptic-slider"><label for="haptic-${f.key}">${f.label} <b id="haptic-${f.key}-value">${h[f.key]}${f.unit}</b></label><input id="haptic-${f.key}" data-field="${f.key}" data-default="${hapticDefaults[f.key]}" aria-describedby="haptic-${f.key}-hint" type="range" min="${f.min}" max="${f.max}" value="${h[f.key]}"><small class="haptic-hint" id="haptic-${f.key}-hint">${f.hint}</small></div>`).join('');
+    $$('#haptic-sliders input').forEach(fillRange);renderHapticBase();drawWave(performance.now());
+  }
+  // "Based on" state: which example the current settings started from, remembered per profile (localStorage only).
+  const HAPTIC_BASE_KEY='controller.hapticBase.v1',hapticSettingKeys=['shape','frequency','attack','release','strength','pan'];
+  function readHapticBases(){try{const v=JSON.parse(localStorage.getItem(HAPTIC_BASE_KEY)||'{}');return v&&typeof v==='object'&&!Array.isArray(v)?v:{};}catch{return {};}}
+  function hapticBaseName(){const v=readHapticBases()[state.profileId];return typeof v==='string'?v:'';}
+  function setHapticBase(name){try{const all=readHapticBases();if(name)all[state.profileId]=name;else delete all[state.profileId];localStorage.setItem(HAPTIC_BASE_KEY,JSON.stringify(all));}catch{}}
+  function hapticBaseTexture(){const name=hapticBaseName();if(!name)return null;try{return allTextures().find(t=>t.name===name)||null;}catch{return null;}}
+  function hapticFormula(h){const base=hapticBaseTexture(),edited=!!base&&hapticSettingKeys.some(k=>h[k]!==base.settings[k]);return `${base?base.name+(edited?' (edited) \u00b7 ':' \u00b7 '):''}${h.shape} / ${h.frequency} Hz`;}
+  function renderHapticBase(){
+    const label=$('#haptic-based-label');if(!label)return;
+    const h=profile().haptics,base=hapticBaseTexture(),edited=!!base&&hapticSettingKeys.some(k=>h[k]!==base.settings[k]);
+    label.textContent=base?`Based on: ${base.name}`:'Custom';
+    $('#haptic-edited-badge').hidden=!edited;
+    const reset=$('#haptic-reset-preset');reset.disabled=!edited;reset.textContent=base?`Reset to ${base.name}`:'Reset to example';
+    $$('#texture-list [data-texture]').forEach(b=>{const on=!!base&&allTextures()[+b.dataset.texture]?.name===base.name;b.classList.toggle('is-based',on);b.setAttribute('aria-pressed',String(on));});
+    setTextIfChanged($('#wave-formula'),hapticFormula(h));
   }
   $('#wave-shapes').addEventListener('click',e=>{const b=e.target.closest('[data-shape]');if(!b)return;profile().haptics.shape=b.dataset.shape;renderHapticControls();saveProfiles();});
-  $('#haptic-sliders').addEventListener('input',e=>{const el=e.target.closest('[data-field]');if(!el)return;profile().haptics[el.dataset.field]=+el.value;$('#haptic-'+el.dataset.field+'-value').textContent=el.value+hapticFields.find(f=>f.key===el.dataset.field).unit;fillRange(el);drawWave(performance.now());saveProfiles();});
-  $('#texture-list').innerHTML=textures.map((t,i)=>`<button type="button" data-texture="${i}"><small>${t.type}</small><strong>${t.name}</strong><i>Load</i></button>`).join('');
-  $('#texture-list').addEventListener('click',e=>{const b=e.target.closest('[data-texture]');if(!b)return;Object.assign(profile().haptics,textures[+b.dataset.texture].settings);renderHapticControls();saveProfiles();playHaptic();});
-  function waveSample(shape,p){const v=p%1;if(shape==='square')return Math.sin(p*Math.PI*2)>0?1:-1;if(shape==='saw')return 2*v-1;if(shape==='noise')return Math.sin(p*39.5)*Math.sin(p*61.3);return Math.sin(p*Math.PI*2);}
+  $('#haptic-reset-preset').addEventListener('click',()=>{const base=hapticBaseTexture();if(!base)return;Object.assign(profile().haptics,base.settings);renderHapticControls();saveProfiles();});
+  $('#haptic-sliders').addEventListener('input',e=>{const el=e.target.closest('[data-field]');if(!el)return;profile().haptics[el.dataset.field]=+el.value;$('#haptic-'+el.dataset.field+'-value').textContent=el.value+hapticFields.find(f=>f.key===el.dataset.field).unit;fillRange(el);renderHapticBase();drawWave(performance.now());saveProfiles();});
+  const validTexture=t=>t&&typeof t.name==='string'&&t.name.length>0&&t.name.length<=40&&t.settings&&hapticShapes.includes(t.settings.shape)&&hapticFields.every(f=>Number.isFinite(t.settings[f.key])&&t.settings[f.key]>=f.min&&t.settings[f.key]<=f.max);
+  let userTextures=[];
+  try{const saved=JSON.parse(localStorage.getItem('controller.userTextures.v1')||'[]');if(Array.isArray(saved))userTextures=saved.filter(validTexture).slice(0,24);}catch{}
+  const allTextures=()=>[...textures,...userTextures.map(t=>({...t,type:'Custom'}))];
+  function storeTextures(){try{localStorage.setItem('controller.userTextures.v1',JSON.stringify(userTextures));return true;}catch{toast('Could not save textures. Local storage is full or unavailable.');return false;}}
+  function renderTextures(){
+    const list=$('#texture-list');list.replaceChildren();
+    allTextures().forEach((t,i)=>{
+      const b=document.createElement('button'),type=document.createElement('small'),name=document.createElement('strong'),hint=document.createElement('i'),d=document.createElement('span');
+      b.type='button';b.dataset.texture=String(i);type.textContent=t.type;name.textContent=t.name;
+      d.className='texture-desc';d.textContent=t.desc||'One of your saved vibrations.';b.title=`${t.name}: ${d.textContent} Plays it and loads it into the sliders below.`;b.append(type,name,d,hint);
+      list.append(b);
+    });
+    const select=$('#user-texture-select');
+    if(select){select.replaceChildren(new Option(userTextures.length?'My textures':'No saved textures',''),...userTextures.map((t,i)=>new Option(t.name,String(i))));$('#remove-user-texture').disabled=!userTextures.length;}
+  }
+  $('#texture-list').addEventListener('click',e=>{const b=e.target.closest('[data-texture]');if(!b)return;const t=allTextures()[+b.dataset.texture];Object.assign(profile().haptics,t.settings);setHapticBase(t.name);renderHapticControls();saveProfiles();playHaptic();});
+  $('#haptic-sliders').insertAdjacentHTML('afterend','<div class="texture-save-row game-buttons" data-ui-section="haptics.textures" data-level="advanced" data-title="Save your own vibration" data-hint="Name and keep your own vibrations" data-keywords="texture save vibration custom preset"><input id="user-texture-name" aria-label="Texture name" placeholder="Name this texture" maxlength="40"><button id="save-user-texture" class="quiet-action" type="button">Save current as texture</button><select id="user-texture-select" aria-label="My textures"></select><button id="remove-user-texture" class="quiet-action" type="button">Remove</button></div>');
+  $('#save-user-texture').addEventListener('click',()=>{
+    const name=$('#user-texture-name').value.trim();
+    if(!name){toast('Name the texture first.');$('#user-texture-name').focus();return;}
+    if(allTextures().some(t=>t.name.toLowerCase()===name.toLowerCase())){toast(`A texture named "${name}" already exists.`);return;}
+    if(userTextures.length>=24){toast('24 saved textures is the limit. Remove one first.');return;}
+    const h=profile().haptics,texture={name,settings:{shape:h.shape,frequency:h.frequency,attack:h.attack,release:h.release,strength:h.strength,pan:h.pan}};
+    userTextures.push(texture);if(!storeTextures()){userTextures.pop();return;}
+    setHapticBase(name);$('#user-texture-name').value='';renderTextures();renderHapticBase();toast(`Saved texture "${name}".`);
+  });
+  $('#remove-user-texture').addEventListener('click',()=>{
+    const index=Number($('#user-texture-select').value);if($('#user-texture-select').value===''||!userTextures[index])return;
+    const [removed]=userTextures.splice(index,1);storeTextures();renderTextures();renderHapticBase();
+    undoToast(`Removed texture "${removed.name}".`,()=>{userTextures.splice(Math.min(index,userTextures.length),0,removed);storeTextures();renderTextures();renderHapticBase();});
+  });
+  renderTextures();
+  // Canvas colors come from CSS tokens so they follow the active theme.
+  let chartCache=null;
+  function chartColors(){
+    if(chartCache)return chartCache;
+    const token=(name,fallback)=>window.controllerTheme?.token(name,fallback)||fallback;
+    return chartCache={line:token('--chart-line','#7ec9bc'),accent:token('--chart-accent','#d4a84b'),fill:token('--chart-fill','rgba(212,168,75,.2)'),warn:token('--chart-warn','#e7b46b')};
+  }
+  document.addEventListener('controller-theme',()=>{chartCache=null;waveDirty=true;inputDirty=true;widgetSignatures.delete('activity');requestVisualFrame();});
+  function waveSample(shape,p){const v=p%1;if(shape==='square')return Math.sin(p*Math.PI*2)>0?1:-1;if(shape==='saw')return 2*v-1;if(shape==='triangle')return 4*Math.abs(v-.5)-1;if(shape==='noise')return Math.sin(p*39.5)*Math.sin(p*61.3);return Math.sin(p*Math.PI*2);}
+  // Pulse and double are drawn against real time (hits, gaps) with the carrier cycles compressed the same way as the other shapes.
+  function waveValue(h,t,ms,cycles){
+    const sec=t*ms/1000,shown=cycles/Math.max(.001,ms/1000);
+    if(h.shape==='pulse'){const period=1/Math.min(40,Math.max(8,h.frequency/6)),local=sec%period,gate=Math.max(0,1-local/.012);return Math.cos(local*shown*Math.PI*2)*gate;}
+    if(h.shape==='double'){const c=sec,hit=u=>u<0?0:Math.min(1,u/.004)*Math.exp(-u/.07)*Math.sin(u*shown*Math.PI*2);return Math.max(-1,Math.min(1,hit(c)*1.25+hit(c-.17)));}
+    return waveSample(h.shape,t*cycles);
+  }
+  /* Writing identical text still queues a mutation record; the wave redraws every frame during playback. */
+  function setTextIfChanged(el,text){if(el&&el.textContent!==text)el.textContent=text;}
   function drawWave(now){
     const canvas=$('#wave-canvas'),ctx=canvas.getContext('2d'),h=profile().haptics,w=canvas.width,ht=canvas.height,ms=h.attack+h.release;
     ctx.clearRect(0,0,w,ht);ctx.beginPath();ctx.moveTo(0,ht/2);
-    const cycles=Math.min(75,h.frequency*ms/1000);
-    for(let x=0;x<=w;x+=3){const t=x/w,attack=h.attack/ms,env=t<attack?t/attack:(1-t)/(1-attack),amp=clamp(env)*Math.min(125,h.strength*1.25);ctx.lineTo(x,ht/2-waveSample(h.shape,t*cycles)*amp);}
-    ctx.lineWidth=3;ctx.strokeStyle='#7ec9bc';ctx.stroke();ctx.strokeStyle='#d4a84b';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(0,ht/2);ctx.lineTo(w,ht/2);ctx.stroke();
-    if(now<state.playUntil){const x=clamp((now-state.playStart)/state.playDuration)*w;ctx.fillStyle='rgba(212,168,75,.2)';ctx.fillRect(0,0,x,ht);ctx.fillStyle='#d4a84b';ctx.fillRect(x-2,0,4,ht);}
-    $('#wave-formula').textContent=`${h.shape} / ${h.frequency} Hz`;$('#wave-duration').textContent=`${ms} MS`;
+    const cycles=Math.min(75,h.frequency*ms/1000),step=h.shape==='pulse'||h.shape==='double'?1:3;
+    for(let x=0;x<=w;x+=step){const t=x/w,attack=h.attack/ms;let env=clamp(t<attack?t/attack:(1-t)/(1-attack));if(h.shape==='swell')env=.5-.5*Math.cos(env*Math.PI);const amp=env*Math.min(125,h.strength*1.25);ctx.lineTo(x,ht/2-waveValue(h,t,ms,cycles)*amp);}
+    const colors=chartColors();
+    ctx.lineWidth=3;ctx.strokeStyle=colors.line;ctx.stroke();ctx.strokeStyle=colors.accent;ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(0,ht/2);ctx.lineTo(w,ht/2);ctx.stroke();
+    if(now<state.playUntil){const x=clamp((now-state.playStart)/state.playDuration)*w;ctx.fillStyle=colors.fill;ctx.fillRect(0,0,x,ht);ctx.fillStyle=colors.accent;ctx.fillRect(x-2,0,4,ht);}
+    setTextIfChanged($('#wave-formula'),hapticFormula(h));setTextIfChanged($('#wave-duration'),`${ms} MS`);
   }
   async function playHaptic(){
     const h=profile().haptics,duration=h.attack+h.release;
+    if(!state.connected)toast('Connect a controller to feel this — playing a preview on this PC.',{error:false});
     if(state.connected) {
       send({action:'playHaptic',shape:h.shape,frequency:h.frequency,attack:h.attack,release:h.release,strength:h.strength,pan:h.pan});
     }
@@ -1479,12 +1872,30 @@
       const gain=audioContext.createGain(),pan=audioContext.createStereoPanner();pan.pan.value=h.pan/100;
       gain.gain.setValueAtTime(.0001,now);gain.gain.linearRampToValueAtTime(Math.min(.08,h.strength/100*.08),now+h.attack/1000);gain.gain.linearRampToValueAtTime(.0001,now+duration/1000);
       let source;if(h.shape==='noise'){const buf=audioContext.createBuffer(1,Math.ceil(audioContext.sampleRate*duration/1000),audioContext.sampleRate),data=buf.getChannelData(0);for(let i=0;i<data.length;i++)data[i]=Math.random()*2-1;source=audioContext.createBufferSource();source.buffer=buf;}
-      else{source=audioContext.createOscillator();source.type=h.shape==='saw'?'sawtooth':h.shape;source.frequency.value=h.frequency;}
+      else{source=audioContext.createOscillator();source.type=h.shape==='saw'?'sawtooth':['square','triangle'].includes(h.shape)?h.shape:'sine';source.frequency.value=h.frequency;}
       source.connect(gain).connect(pan).connect(audioContext.destination);source.start(now);source.stop(now+duration/1000);
     }catch(error){log(`AUDIO SKETCH / ${error}`);}
-    state.playStart=performance.now();state.playDuration=duration;state.playUntil=state.playStart+duration;requestVisualFrame();
+    /* Very short sounds (a 30 ms click) would sweep faster than a frame: stretch the on-screen sweep so it is visible. */
+    state.playStart=performance.now();state.playDuration=Math.max(duration,700);state.playUntil=state.playStart+state.playDuration;requestVisualFrame();
   }
   $('#play-haptic').addEventListener('click',playHaptic);
+
+  // Overall intensity: the grip output ceiling (master limit). Remembered here and re-sent whenever a pad connects.
+  // The third value is the measured relative loudness (RMS) against Soft for the current output caps (1 / 2.0 / 3.1 / 4.7), shown as a hint. Normal is the default; Strong and Max are opt-in.
+  const hapticLevels=[['soft','Soft','1x'],['normal','Normal','2x'],['strong','Strong','3x'],['max','Max','4.7x']];
+  let hapticLevel='normal';
+  try{const saved=localStorage.getItem('controller.hapticLevel.v1');if(hapticLevels.some(([id])=>id===saved))hapticLevel=saved;}catch{}
+  $('#haptic-level-slot').innerHTML='<div class="haptic-level"><p class="haptic-level-explain" id="haptic-level-explain">Master limit for everything the grips can do. Raise it if effects feel weak.</p><div class="wave-shapes" id="haptic-level" role="group" aria-label="Overall intensity" aria-describedby="haptic-level-explain"></div><small id="haptic-level-note" class="screen-light-status">Picking a level plays a short test pulse so you can feel the step. It scales both short hits and sustained rumble (roughly 1x / 2x / 3x / 4.7x). Strong and Max are more intense and can warm the grips on long effects; thermal limiting still applies. Not verified on all hardware.</small><small id="haptic-battery-note" class="screen-light-status" role="status" hidden>Battery is very low \u2014 haptics may feel weaker. Charge it for a fair test.</small></div>';
+  function renderHapticLevel(){
+    $('#haptic-level').innerHTML=hapticLevels.map(([id,label,gain])=>`<button type="button" data-level="${id}" class="${id===hapticLevel?'is-active':''}" aria-pressed="${id===hapticLevel}" aria-label="${label}" title="Roughly ${gain} as strong as Soft">${label}<small class="haptic-level-hint" aria-hidden="true">${gain}</small></button>`).join('');
+  }
+  function sendHapticLevel(quiet=false){if(state.connected)return send({action:'setHapticOutputLevel',level:hapticLevel,persistent:true},false,null,quiet);}
+  // Fixed reference pulse (150 ms, 90 Hz sine, strength 70), independent of the generator, so each level feels comparable.
+  const hapticReferencePulse={action:'playHaptic',shape:'sine',frequency:90,attack:5,release:145,strength:70,pan:0};
+  $('#haptic-level').addEventListener('click',async e=>{const b=e.target.closest('[data-level]');if(!b||b.dataset.level===hapticLevel&&!state.connected)return;hapticLevel=b.dataset.level;try{localStorage.setItem('controller.hapticLevel.v1',hapticLevel);}catch{}renderHapticLevel();if(!state.connected)toast('Saved. It applies when a controller connects.');const sent=await sendHapticLevel();if(sent&&state.connected)send({...hapticReferencePulse},false,null,true);});
+  renderHapticLevel();
+  // Battery at 10% or less (charging or not) may weaken the grips; shown as a note, never assumed.
+  function renderHapticBatteryNote(){const note=$('#haptic-battery-note');if(note)note.hidden=!(state.connected&&Number.isFinite(state.battery)&&state.battery<=10);}
 
   function renderBridge(){
     if(document.hidden||state.currentView!=='haptics')return;
@@ -1516,7 +1927,7 @@
   }
   $('#alert-ping').addEventListener('click',()=>send({action:'playHaptic',shape:'sine',frequency:125,attack:5,release:160,strength:26,pan:0}));
   $('#alert-ping').insertAdjacentHTML('afterend','<button id="speaker-chirp" class="quiet-action" type="button" disabled title="Play a test tone through the controller speaker over USB">Speaker test · USB</button>');
-  $('.alert-body > div > p').textContent='Low battery and timer alerts tap the grips. Find my pad taps them now. Speaker chirp uses the controller speaker over USB. Reset, disconnect, or exit to stop alerts.';
+  $('.alert-body > div > p').textContent='Low battery and timer alerts tap the grips. Find my controller taps them now. Speaker chirp uses the controller speaker over USB. Reset, disconnect, or exit to stop alerts.';
   const musicPlayer=new window.ControllerPlayer(send,route=>state.connected&&(state.transport==='USB'||state.btAudioEnabled&&route==='grips'),invoke);
   const audioMixer=new window.ControllerAudioMixer(send,()=>state.connected);
   async function testSpeaker(){await musicPlayer.stop('Playing speaker test');await send({action:'playSpeakerChirp'});}
@@ -1567,7 +1978,7 @@
     if(!validHex(hex))return false;
     hex=hex.toLowerCase();$('#light-color').value=hex;$('#light-hex-input').value=hex.toUpperCase();
     $('#light-hex').textContent=hex.toUpperCase();$('#light-arcs').style.setProperty('--light',hex);
-    $('#light-hex-error').textContent='';return true;
+    $('#light-hex-error').textContent='';markSwatches();return true;
   }
   const lightPalettes={
     'Classic':['#d4a84b','#3d9b8c','#f1f0e8','#3d74d8','#dc4565','#212c51'],
@@ -1575,29 +1986,41 @@
     'Soft':['#e9a8c0','#b9a7e8','#93c8df','#9dd7c1','#f1d198','#d9b7a0'],
     'Warm':['#ff642e','#ec324f','#ff9e45','#f5c73d','#c77b4b','#ad556b']
   };
-  const colorButton=c=>`<button type="button" data-color="${c}" style="--color:${c}" aria-label="Choose ${c}"></button>`;
-  $('#light-presets').innerHTML=Object.entries(lightPalettes).map(([name,colors])=>`<div class="light-palette-row"><span>${name}</span><div>${colors.map(colorButton).join('')}</div></div>`).join('');
+  const paletteNames={'Classic':['Gold','Teal','Ivory','Blue','Rose','Navy'],'Neon':['Pink','Violet','Cyan','Green','Amber','Red'],'Soft':['Blush','Lilac','Sky','Mint','Cream','Clay'],'Warm':['Orange','Crimson','Tangerine','Yellow','Copper','Plum']};
+  const colorButton=(c,name='')=>`<button type="button" data-color="${c}" style="--color:${c}" aria-label="${name?name+' ':''}${c.toUpperCase()}" aria-pressed="false" title="${name?name+' · ':''}${c.toUpperCase()}"></button>`;
+  $('#light-presets').innerHTML=Object.entries(lightPalettes).map(([name,colors])=>`<div class="light-palette-row"><span>${name}</span><div>${colors.map((c,i)=>colorButton(c,paletteNames[name]?.[i])).join('')}</div></div>`).join('');
   let savedColors=[];
   try{const saved=JSON.parse(localStorage.getItem('aftertouch.lightColors')||'[]');if(Array.isArray(saved))savedColors=saved.filter(validHex).slice(-12);}catch{}
   function renderSavedColors(){
-    $('#light-favorites').innerHTML=savedColors.length?savedColors.map(colorButton).join(''):'<span class="light-empty">No saved colors yet.</span>';
+    $('#light-favorites').innerHTML=savedColors.length?savedColors.map(c=>colorButton(c,'Saved')).join(''):'<span class="light-empty">No saved colours yet.</span>';
+    markSwatches();
   }
+  function markSwatches(){
+    const current=$('#light-color').value.toLowerCase();
+    $$('#light-presets [data-color],#light-favorites [data-color]').forEach(b=>{const on=b.dataset.color.toLowerCase()===current;b.classList.toggle('is-selected',on);b.setAttribute('aria-pressed',String(on));});
+  }
+  let lightApplyOnPick=false;
+  try{lightApplyOnPick=localStorage.getItem('controller.lightApplyOnPick')==='true';}catch{}
+  $('#light-apply-on-pick').checked=lightApplyOnPick;
+  $('#light-apply-on-pick').addEventListener('change',e=>{lightApplyOnPick=e.target.checked;try{localStorage.setItem('controller.lightApplyOnPick',String(lightApplyOnPick));}catch{}});
+  function applyLightColor(){if(!state.connected)return;const h=$('#light-color').value;send({action:'setLightbar',rgb:[1,3,5].map(i=>parseInt(h.slice(i,i+2),16))});}
   renderSavedColors();
-  $$('#light-presets,#light-favorites').forEach(host=>host.addEventListener('click',e=>{const b=e.target.closest('[data-color]');if(b)setLightColor(b.dataset.color);}));
+  $$('#light-presets,#light-favorites').forEach(host=>host.addEventListener('click',e=>{const b=e.target.closest('[data-color]');if(b){setLightColor(b.dataset.color);if(lightApplyOnPick)applyLightColor();}}));
   $('#light-color').addEventListener('input',e=>setLightColor(e.target.value));
-  $('#light-hex-input').addEventListener('change',e=>{if(!setLightColor(e.target.value.trim()))$('#light-hex-error').textContent='Use a six-digit hex color, for example #42A5F5.';});
+  $('#light-color').addEventListener('change',()=>{if(lightApplyOnPick)applyLightColor();});
+  $('#light-hex-input').addEventListener('change',e=>{if(!setLightColor(e.target.value.trim()))$('#light-hex-error').textContent='Use a six-digit hex color, for example #42A5F5.';else if(lightApplyOnPick)applyLightColor();});
   $('#save-light-color').addEventListener('click',()=>{
     const color=$('#light-color').value.toLowerCase();savedColors=[...savedColors.filter(item=>item!==color),color].slice(-12);
     try{localStorage.setItem('aftertouch.lightColors',JSON.stringify(savedColors));}catch{}
     renderSavedColors();toast('Color saved locally.');
   });
-  $('#send-light').addEventListener('click',()=>{const h=$('#light-color').value;send({action:'setLightbar',rgb:[1,3,5].map(i=>parseInt(h.slice(i,i+2),16))});});
+  $('#send-light').addEventListener('click',applyLightColor);
   $('#battery-light').addEventListener('click',()=>send({action:'batteryLightbar',enabled:!state.batteryLight}));
-  $('#battery-light').insertAdjacentHTML('afterend','<button class="quiet-action" data-feature="screenColor" id="screen-light" type="button" aria-pressed="false" disabled>Follow screen color: off</button><small class="screen-light-status" data-feature="screenColor" id="screen-light-status" role="status">Samples the primary display locally only while enabled.</small>');
-  $('#battery-light').insertAdjacentHTML('afterend','<button class="quiet-action" id="temperature-light" type="button" aria-pressed="false" disabled>Sensor color: off</button><small class="screen-light-status" id="temperature-light-status" role="status">Maps an uncalibrated raw byte to color.</small>');
+  $('#light-auto-more').insertAdjacentHTML('afterbegin','<button class="quiet-action" data-feature="screenColor" id="screen-light" type="button" aria-pressed="false" disabled>Follow screen colour: off</button><small class="screen-light-status" data-feature="screenColor" id="screen-light-status" role="status">Samples the primary display locally only while enabled.</small>');
+  $('#light-auto-more').insertAdjacentHTML('afterbegin','<button class="quiet-action" id="temperature-light" type="button" aria-pressed="false" disabled>Sensor colour: off</button><small class="screen-light-status" id="temperature-light-status" role="status">Maps an uncalibrated raw byte to colour.</small>');
   $('#temperature-light').addEventListener('click',()=>send({action:'setTemperatureLightbar',enabled:!state.temperatureLight}));
-  $('#screen-light').addEventListener('click',()=>send({action:'setScreenLightbar',enabled:!state.screenLight}));
-  $('#lights .page-heading p').textContent='Set a color or follow battery, race data, sensor, or screen color.';
+  $('#screen-light').addEventListener('click',()=>send({action:'setScreenLightbar',enabled:!state.screenLight,...(window.shellExtras?.monitorOption()||{})}));
+  $('#lights .page-heading p').textContent='Set the lightbar colour or let it follow battery level. Give it back to other apps any time.';
   $('#release-light').addEventListener('click',()=>send({action:'releaseLightbar'}));
   document.querySelector('label[for="telemetry-port"]').insertAdjacentHTML('beforebegin','<label for="telemetry-format">Input format</label><select id="telemetry-format"><option value="forza">Forza Data Out · Dash</option><option value="json">Local JSON adapter</option></select><details id="telemetry-json-help" class="telemetry-schema" hidden><summary>JSON packet format</summary><code>{"rpm":6100,"maxRpm":8000,"speedKmh":108,"gear":4,"brake":150,"slip":1.4,"frontSlip":1.3,"kerb":[true,false,false,false]}</code><p>Send one UTF-8 JSON object per UDP datagram. Keep each under 512 bytes. Fields after maxRpm are optional.</p></details>');
   function renderTelemetryFormat(){
@@ -1605,22 +2028,27 @@
     $('.telemetry-panel .panel-cap span').textContent=json?'Local adapter':'Forza Data Out';
     $('#telemetry-json-help').hidden=!json;
     $('.telemetry-intro p').textContent=json
-      ?'Send local JSON telemetry to drive light color and short grip cues. Enable LAN only for a trusted sender.'
-      :"Set Forza Data Out to Dash. Motorsport 2023 sends to 127.0.0.1. For Horizon 4/5 or a console, enable LAN and use this PC's IPv4 address. Revs set light color; gear changes play a short grip cue. Brake slip is estimated from wheel slip.";
+      ?'Send local JSON telemetry to drive light colour and short grip cues. Enable LAN only for a trusted sender.'
+      :"Set Forza Data Out to Dash. Motorsport 2023 sends to 127.0.0.1. For Horizon 4/5 or a console, enable LAN and use this PC's IPv4 address. Revs set light colour; gear changes play a short grip cue. Brake slip is estimated from wheel slip.";
   }
-  $('#telemetry-format').addEventListener('change',()=>{renderTelemetryFormat();renderTelemetry();if(state.telemetryOn)send({action:'setTelemetry',enabled:true,port:Number($('#telemetry-port').value),lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});});
+  function telemetryPort(announce=true){
+    const raw=$('#telemetry-port').value,port=Number(raw);
+    if(raw===''||!Number.isInteger(port)||port<1024||port>65535){if(announce)toast('Choose a UDP port from 1024 to 65535.');return null;}
+    return port;
+  }
+  $('#telemetry-format').addEventListener('change',()=>{renderTelemetryFormat();renderTelemetry();if(state.telemetryOn){const port=telemetryPort();if(port!=null)send({action:'setTelemetry',enabled:true,port,lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});}});
   renderTelemetryFormat();
   $('#telemetry-toggle').addEventListener('click',()=>{
-    const port=Number($('#telemetry-port').value);
-    if(!Number.isInteger(port)||port<1024||port>65535){toast('Choose a UDP port from 1024 to 65535.');return;}
+    const port=telemetryPort();
+    if(port==null)return;
     send({action:'setTelemetry',enabled:!state.telemetryOn,port,lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});
   });
   $('#telemetry-port').addEventListener('change',()=>{
-    const port=Number($('#telemetry-port').value);
-    if(state.telemetryOn&&Number.isInteger(port)&&port>=1024&&port<=65535)send({action:'setTelemetry',enabled:true,port,lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});
+    const port=telemetryPort(state.telemetryOn);
+    if(state.telemetryOn&&port!=null)send({action:'setTelemetry',enabled:true,port,lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});
   });
-  $('#telemetry-lan').addEventListener('change',()=>{if(state.telemetryOn)send({action:'setTelemetry',enabled:true,port:Number($('#telemetry-port').value),lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});});
-  $('.light-layout').insertAdjacentHTML('afterend',`<div class="script-panel framed"><div class="panel-cap"><span>Telemetry rules</span><span>LOCAL SCRIPT</span></div><div class="script-body"><div class="script-intro"><span class="script-kicker">01 / Rule</span><h2>Edit telemetry rule</h2><p>Use race data to set a light color or grip cue. Runs locally up to 10 Hz.</p><div class="script-signals"><strong>Signals</strong><span>rpm · max_rpm · speed_kmh · gear · brake · slip · front_slip · kerb_left · kerb_right</span></div><div class="script-signals"><strong>Outputs</strong><span>light: [red, green, blue] · cue: "pulse", "grit", or "shift"</span></div><p class="script-boundary">Rules can set lights and grip cues only. They cannot access files, the network, keys, or triggers. Invalid rules stop automatically.</p></div><div class="script-editor"><label for="script-source">Effect rule <small>Rhai · 4 KB max</small></label><textarea id="script-source" maxlength="4096" spellcheck="false" rows="8" aria-describedby="script-status"></textarea><div class="script-actions"><button id="script-example" class="quiet-action" type="button">Load example</button><button id="script-toggle" class="main-action" type="button" aria-pressed="false">Arm rule</button><button id="telemetry-demo" class="quiet-action" type="button" disabled>Send test lap</button></div><p id="script-status" role="status">Off · start telemetry to see a response</p><div class="script-monitor"><span>Last output</span><strong id="script-output">Waiting for a signal</strong></div></div></div></div>`);
+  $('#telemetry-lan').addEventListener('change',()=>{const port=state.telemetryOn?telemetryPort():null;if(state.telemetryOn&&port!=null)send({action:'setTelemetry',enabled:true,port,lan:$('#telemetry-lan').checked,format:$('#telemetry-format').value});});
+  $('.light-layout').insertAdjacentHTML('afterend',`<div class="script-panel framed" data-ui-section="lights.rules" data-level="tool" data-title="Telemetry rules" data-hint="Script a light or cue from race data" data-keywords="script rhai telemetry rules code custom light cue"><div class="panel-cap"><span>Telemetry rules</span><span>LOCAL SCRIPT</span></div><div class="script-body"><div class="script-intro"><span class="script-kicker">01 / Rule</span><h2>Edit telemetry rule</h2><p>Use race data to set a light colour or grip cue. Runs locally up to 10 Hz.</p><div class="script-signals"><strong>Signals</strong><span>rpm · max_rpm · speed_kmh · gear · brake · slip · front_slip · kerb_left · kerb_right</span></div><div class="script-signals"><strong>Outputs</strong><span>light: [red, green, blue] · cue: "pulse", "grit", or "shift"</span></div><p class="script-boundary">Rules can set lights and grip cues only. They cannot access files, the network, keys, or triggers. Invalid rules stop automatically.</p></div><div class="script-editor"><label for="script-source">Effect rule <small>Rhai · 4 KB max</small></label><textarea id="script-source" maxlength="4096" spellcheck="false" rows="8" aria-describedby="script-status"></textarea><div class="script-actions"><button id="script-example" class="quiet-action" type="button">Load example</button><button id="script-toggle" class="main-action" type="button" aria-pressed="false">Arm rule</button><button id="telemetry-demo" class="quiet-action" type="button" disabled>Send test lap</button></div><p id="script-status" role="status">Off · start telemetry to see a response</p><div class="script-monitor"><span>Last output</span><strong id="script-output">Waiting for a signal</strong></div></div></div></div>`);
   const scriptExample='if rpm / max_rpm > 0.8 { #{ light: [220, 40, 20], cue: "pulse" } } else { #{ light: [40, 145, 130] } }';
   try{$('#script-source').value=localStorage.getItem('aftertouch.script.v1')||scriptExample;}catch{$('#script-source').value=scriptExample;}
   $('#script-source').addEventListener('input',()=>{try{localStorage.setItem('aftertouch.script.v1',$('#script-source').value);}catch{}});
@@ -1628,7 +2056,7 @@
   $('#script-toggle').addEventListener('click',()=>send({action:'setScript',enabled:!state.scriptEnabled,source:$('#script-source').value}));
   $('#telemetry-demo').addEventListener('click',async()=>{
     if(!native||!state.telemetryOn||$('#telemetry-format').value!=='json')return;
-    try{await invoke('send_demo_telemetry',{port:Number($('#telemetry-port').value)});}
+    try{const port=telemetryPort();if(port==null)return;await invoke('send_demo_telemetry',{port});}
     catch(error){toast(`Test lap failed: ${error}`);}
   });
   function renderScript(){const button=$('#script-toggle');button.textContent=state.scriptEnabled?'Disarm rule':'Arm rule';button.setAttribute('aria-pressed',String(state.scriptEnabled));button.classList.toggle('is-armed',state.scriptEnabled);$('#script-source').readOnly=state.scriptEnabled;$('#script-example').disabled=state.scriptEnabled;}
@@ -1638,17 +2066,18 @@
     $('#telemetry-toggle').setAttribute('aria-pressed',String(state.telemetryOn));
     if(!state.telemetryOn){$('#telemetry-status').textContent='Off';$('#race-speed').textContent='—';$('#race-gear').textContent='—';$('#race-rpm').textContent='—';$('#race-source').textContent='Waiting for telemetry';$('#race-slip').textContent='Brake slip —';$('#rev-fill').style.width='0%';}
   }
-  function renderBatteryLight(){const b=$('#battery-light');b.textContent=`Battery color: ${state.batteryLight?'on':'off'}`;b.setAttribute('aria-pressed',String(state.batteryLight));b.classList.toggle('is-active',state.batteryLight);}
-  function renderTemperatureLight(){const b=$('#temperature-light');b.textContent=`Sensor color: ${state.temperatureLight?'on':'off'}`;b.setAttribute('aria-pressed',String(state.temperatureLight));b.classList.toggle('is-active',state.temperatureLight);$('#temperature-light-status').textContent=state.temperatureLight?'Waiting for the raw sensor byte.':'Maps an uncalibrated raw byte to color.';}
-  function renderScreenLight(){const b=$('#screen-light');b.textContent=`Follow screen color: ${state.screenLight?'on':'off'}`;b.setAttribute('aria-pressed',String(state.screenLight));b.classList.toggle('is-active',state.screenLight);$('#screen-light-status').textContent=state.screenLight?'Following your screen locally. Turn off to end capture.':platform.os==='windows'?'Samples the primary display only while enabled.':platform.os==='macos'?'Allow Screen Recording when asked. Frames stay on this Mac.':'Choose a display in the desktop sharing prompt. Frames stay on this computer.';}
-  $('#touch-mouse-toggle').addEventListener('click',()=>send({action:'setTouchMouse',enabled:!state.mouse}));
-  function renderMouseSwitch(){const b=$('#touch-mouse-toggle');b.classList.toggle('is-active',state.mouse);b.setAttribute('aria-pressed',String(state.mouse));b.textContent=state.mouse?'On':'Off';renderGestureSwitch();}
+  function renderBatteryLight(){const b=$('#battery-light');b.textContent=`Battery colour: ${state.batteryLight?'on':'off'}`;b.setAttribute('aria-pressed',String(state.batteryLight));b.classList.toggle('is-active',state.batteryLight);}
+  function renderTemperatureLight(){const b=$('#temperature-light');b.textContent=`Sensor colour: ${state.temperatureLight?'on':'off'}`;b.setAttribute('aria-pressed',String(state.temperatureLight));b.classList.toggle('is-active',state.temperatureLight);$('#temperature-light-status').textContent=state.temperatureLight?'Waiting for the raw sensor byte.':'Maps an uncalibrated raw byte to colour.';}
+  function renderScreenLight(){const b=$('#screen-light');b.textContent=`Follow screen colour: ${state.screenLight?'on':'off'}`;b.setAttribute('aria-pressed',String(state.screenLight));b.classList.toggle('is-active',state.screenLight);$('#screen-light-status').textContent=state.screenLight?'Following your screen locally. Turn off to end capture.':platform.os==='windows'?'Samples the primary display only while enabled.':platform.os==='macos'?'Allow Screen Recording when asked. Frames stay on this Mac.':'Choose a display in the desktop sharing prompt. Frames stay on this computer.';}
+  $('#touch-mouse-toggle').addEventListener('click',()=>send({action:'setTouchMouse',enabled:!state.mouse,...(window.shellExtras?.touchOptions()||{})}));
+  function renderMouseSwitch(){const b=$('#touch-mouse-toggle');b.disabled=!state.connected||!state.platformDesktopInput;b.title=!state.connected?'Connect a controller first.':!state.platformDesktopInput?'Desktop control is unavailable in this session.':'';b.classList.toggle('is-active',state.mouse);b.setAttribute('aria-pressed',String(state.mouse));b.textContent=state.mouse?'On':'Off';renderGestureSwitch();}
   $('#touch-gesture-toggle').addEventListener('click',()=>send({action:'setTouchGestures',enabled:!state.gestures}));
   $('#touch-gesture-toggle').parentElement.querySelector('strong').textContent='Edge and circle gestures';
   $('#touch-gesture-toggle').parentElement.querySelector('p').textContent='Swipe inward for an arrow key. Rotate two fingers for circle scrolling. Requires Touchpad mouse.';
   function renderGestureSwitch(){const b=$('#touch-gesture-toggle');b.classList.toggle('is-active',state.gestures&&state.mouse);b.setAttribute('aria-pressed',String(state.gestures));b.disabled=!state.connected||!state.mouse;b.textContent=state.gestures?(state.mouse?'On':'Paused'):'Off';}
 
   $('#gyro-sens').insertAdjacentHTML('afterend',`<label class="control-label" for="gyro-deadzone"><span>Noise floor</span><b id="gyro-deadzone-value">90</b></label><input id="gyro-deadzone" type="range" min="0" max="512" step="16" value="90"><label class="control-label" for="gyro-smoothing"><span>Smoothing</span><b id="gyro-smoothing-value">18%</b></label><input id="gyro-smoothing" type="range" min="0" max="85" value="18">`);
+  const gyroDeadzoneLabel=v=>`${(v/1024).toFixed(2)} °/s`;
   function syncGyroCommand() {
     const g = profile().gyroAim;
     g.sensitivity = (+$('#gyro-sens').value) / 10;
@@ -1669,7 +2098,8 @@
         pitchScale: g.pitchScale ?? 1,
         invertY: g.invertY,
         activation: g.activation,
-        bias: g.bias || [0,0,0],deadzone:g.deadzone,smoothing:g.smoothing
+        bias: g.bias || [0,0,0],deadzone:g.deadzone,smoothing:g.smoothing,
+        ...(window.shellExtras?.gyroExtras(g)||{})
       });
     }
   }
@@ -1680,13 +2110,14 @@
     $('#gyro-activation').value = g.activation || 'always';
     $('#gyro-invert').checked = !!g.invertY;
     $('#gyro-deadzone').value=g.deadzone??90;
-    $('#gyro-deadzone-value').textContent=String(g.deadzone??90);
+    $('#gyro-deadzone-value').textContent=gyroDeadzoneLabel(g.deadzone??90);
     $('#gyro-smoothing').value=Math.round((g.smoothing??.18)*100);
     $('#gyro-smoothing-value').textContent=`${Math.round((g.smoothing??.18)*100)}%`;
     fillRange($('#gyro-sens'));
     fillRange($('#gyro-deadzone'));fillRange($('#gyro-smoothing'));
     const b = $('#gyro-aim-toggle');
     b.disabled=!state.connected||!state.fullReport||!state.platformDesktopInput;
+    b.title=!state.connected?'Connect a controller first.':!state.platformDesktopInput?'Desktop control is unavailable in this session.':!state.fullReport?'Needs the full input report (USB, or full Bluetooth mode).':'';
     b.classList.toggle('is-active', state.gyroAim);
     b.setAttribute('aria-pressed', String(state.gyroAim));
     b.textContent = state.gyroAim ? 'On' : 'Off';
@@ -1700,7 +2131,7 @@
   });
   $('#gyro-sens').addEventListener('input', () => { fillRange($('#gyro-sens')); $('#gyro-sens-value').textContent = `${(+$('#gyro-sens').value/10).toFixed(1)}×`; });
   $('#gyro-sens').addEventListener('change', syncGyroCommand);
-  for(const [id,label] of [['gyro-deadzone','gyro-deadzone-value'],['gyro-smoothing','gyro-smoothing-value']]){$(`#${id}`).addEventListener('input',()=>{$(`#${label}`).textContent=$(`#${id}`).value+(id==='gyro-smoothing'?'%':'');fillRange($(`#${id}`));});$(`#${id}`).addEventListener('change',syncGyroCommand);}
+  for(const [id,label] of [['gyro-deadzone','gyro-deadzone-value'],['gyro-smoothing','gyro-smoothing-value']]){$(`#${id}`).addEventListener('input',()=>{$(`#${label}`).textContent=id==='gyro-smoothing'?$(`#${id}`).value+'%':gyroDeadzoneLabel(+$(`#${id}`).value);fillRange($(`#${id}`));});$(`#${id}`).addEventListener('change',syncGyroCommand);}
   $('#gyro-activation').addEventListener('change', syncGyroCommand);
   $('#gyro-invert').addEventListener('change', syncGyroCommand);
   $('#gyro-calibrate').addEventListener('click',()=>window.motionStudio.calibrate(true));
@@ -1750,7 +2181,7 @@
       `Sensor byte: ${$('#diag-temp').textContent}`,
       `XInput: ${$('#diag-xinput').textContent}`,
       `Conflict: ${$('#conflict-message').textContent}`
-    ].join('\n');
+    ].concat(await (window.shellExtras?.diagnosticsLines()||[])).join('\n');
     try {
       if(navigator.clipboard?.writeText) await navigator.clipboard.writeText(report);
       else {
@@ -1776,15 +2207,28 @@
       b.className = 'device-row' + (device.path === state.selectedPath || device.path === state.path ? ' is-active' : '');
       b.innerHTML = `<span class="number">${String(i+1).padStart(2,'0')}</span><span><strong></strong><small></small></span><span class="arrow">↗</span>`;
       $('strong', b).textContent = device.name || 'DualSense';
-      $('small', b).textContent = `${device.transport}${device.isEdge ? ' • EDGE' : ''} / ${device.productId || ''}`;
+      $('strong', b).textContent = device.assignedName ? `${device.assignedName} (${device.name || 'DualSense'})` : (device.name || 'DualSense');
+      const battery = Number.isFinite(device.battery) ? ` / ${device.battery}%${device.charging ? ' charging' : ''}` : '';
+      $('small', b).textContent = `${device.transport}${device.isEdge ? ' • EDGE' : ''} / ${device.productId || ''}${battery}${state.devicesStale ? ' / last known' : ''}`;
       b.addEventListener('click', () => send({action:'selectDevice', path: device.path}));
       list.append(b);
     });
   }
 
+  // Every disabled control says why, in plain words (kit text under the section, title and aria-describedby on the control).
+  function explainDisabled(){
+    const w=(selector,reason)=>$$(selector).forEach(el=>platform.why(el,el.disabled&&reason?reason:null));
+    const need=state.connected?null:'Needs a controller connected by USB or Bluetooth';
+    w('#apply-triggers,#reset-effects,#send-light,#set-player-leds,#release-light,#temperature-light,#screen-light,#diag-reset,#quick-reset,#apply-profile-now,#alert-ping,#alert-low-battery,#alert-timer-start,#battery-thresholds-apply,#bridge-toggle,#xinput-toggle,#gyro-aim-toggle,#gyro-calibrate,#start-drift,#start-circularity,#guided-start,#guided-sticks',need);
+    const usb=state.connected?(state.transport==='USB'?null:'Needs a USB connection'):'Needs a controller connected by USB';
+    w('#speaker-chirp,#speaker-panel-test',usb);
+    w('#controller-mic',need);
+    w('#touch-mouse-toggle,#touch-gesture-toggle',need||(!state.platformDesktopInput?'Desktop control is not available in this session':null));
+  }
   function setConnected(connected,name='',transport='',firmware='',path=''){
     const wasCalibrating=!!calibrationRun;
     state.connected=connected;state.name=name;state.transport=transport;state.path=connected?path:'';
+    if(connected)sendHapticLevel(true);
     if(!connected&&zoneRun)stopZoneCalibration(false);
     $('#side-dot').parentElement.classList.toggle('is-connected',connected);
     $('#side-state').textContent=connected?'Connected':'Searching';
@@ -1797,9 +2241,9 @@
     $('#diag-device-name').textContent=connected?name:'Waiting';
     $('#diag-transport').textContent=connected?`${transport} / 054C`:'USB / Bluetooth';
     $('#diag-firmware').textContent=connected?(firmware||'Firmware unknown'):'Firmware —';
-    $('#owner-status').textContent=connected?'Core writer':'No pad';
+    $('#owner-status').textContent=connected?'Core writer':'No controller';
     $('#owner-square').classList.toggle('is-live',connected);
-    $$('#apply-triggers,#reset-effects,#touch-mouse-toggle,#gyro-aim-toggle,#xinput-toggle,#send-light,#set-player-leds,#release-light,#temperature-light,#screen-light,#diag-reset,#quick-reset,#apply-profile-now,#alert-ping,#alert-low-battery,#alert-timer-start').forEach(b=>b.disabled=!connected);
+    $$('#apply-triggers,#reset-effects,#xinput-toggle,#send-light,#set-player-leds,#release-light,#temperature-light,#screen-light,#diag-reset,#quick-reset,#apply-profile-now,#alert-ping,#alert-low-battery,#alert-timer-start').forEach(b=>b.disabled=!connected);
     $('#speaker-chirp').disabled=!connected||transport!=='USB';
     $('#speaker-panel-test').disabled=!connected||transport!=='USB';
     $('#controller-mic').disabled=!connected;
@@ -1807,7 +2251,7 @@
     musicPlayer.render();
     if(!connected)audioMixer.clear();
     if(!connected){state.btAudioEnabled=false;clearPadFocus();calibrationRun=null;state.latestInput=null;widgetSignatures.clear();state.buttons.fill(0);state.axes.fill(0);state.touch=[null,null];state.battery=null;state.batteryInfo=null;state.charging=false;state.mouse=false;state.gestures=false;state.gyroAim=false;state.remapArmed=false;state.pcMode=false;state.inputEffectsActive=false;$('#click-status').textContent='Not armed';state.batteryLight=false;state.temperatureLight=false;state.screenLight=false;state.bridgeMessage='';state.audioBridge=false;state.audioRoute='off';state.xinput=false;state.xinputStatus='disabled';state.xinputMessage='ViGEm not connected';state.leaseUntil=0;state.lastInputAt=0;state.fullReport=false;state.activity.fill(0);state.stickTest=null;$('#diag-rate').textContent='—';$('#diag-gaps').textContent='—';$('#diag-invalid').textContent='—';renderMouseSwitch();renderGyroControls();renderXinput();renderBatteryLight();renderTemperatureLight();renderScreenLight();renderInput();}
-    renderPcMode();
+    renderPcMode();renderMouseSwitch();renderGyroControls();renderBatteryChip();
     if(!connected){state.lowBatteryAlert=false;state.timerUntil=0;}
     renderAlerts();renderBridge();
     renderStickButtons();
@@ -1819,6 +2263,7 @@
       $('#calibration-status').textContent='Calibration stopped.';
       $('#calibration-fill').style.width='0%';
     }
+    explainDisabled();renderGetStarted();
     renderSession();
   }
 
@@ -1844,10 +2289,24 @@
       bar.setAttribute('aria-label',bar.title);host.append(bar);
     });
   }
-  try{
-    const saved=JSON.parse(localStorage.getItem('aftertouch.batteryHistory')||'[]');
-    if(Array.isArray(saved))state.batteryHistory=saved.filter(v=>v&&Number.isFinite(v.time)&&Number.isInteger(v.level)&&v.level>=0&&v.level<=100&&typeof v.charging==='boolean').slice(-24);
-  }catch{}
+  // History is kept per controller. The old shared key is adopted once by the first controller that connects.
+  let batteryOwner='';
+  const batteryKey=owner=>`aftertouch.batteryHistory.${owner}`;
+  const validBatterySamples=saved=>Array.isArray(saved)?saved.filter(v=>v&&Number.isFinite(v.time)&&Number.isInteger(v.level)&&v.level>=0&&v.level<=100&&typeof v.charging==='boolean').slice(-24):[];
+  function loadBatteryHistory(owner){
+    batteryOwner=owner||'';state.batteryHistory=[];
+    if(batteryOwner){
+      try{
+        let raw=localStorage.getItem(batteryKey(batteryOwner));
+        if(raw==null&&localStorage.getItem('aftertouch.batteryHistory')!=null&&!localStorage.getItem('controller.batteryHistoryMigrated')){
+          raw=localStorage.getItem('aftertouch.batteryHistory');
+          localStorage.setItem('controller.batteryHistoryMigrated',batteryOwner);localStorage.setItem(batteryKey(batteryOwner),raw);
+        }
+        state.batteryHistory=validBatterySamples(JSON.parse(raw||'[]'));
+      }catch{}
+    }
+    renderBatteryHistory();
+  }
   renderBatteryHistory();
   function recordBattery(){
     if(state.battery==null)return;
@@ -1855,7 +2314,7 @@
     if(last&&last.level===state.battery&&last.charging===state.charging&&now-last.time<60*60*1000)return;
     state.batteryHistory.push({time:now,level:state.battery,charging:state.charging});
     state.batteryHistory=state.batteryHistory.slice(-24);
-    try{localStorage.setItem('aftertouch.batteryHistory',JSON.stringify(state.batteryHistory));}catch{}
+    if(batteryOwner)try{localStorage.setItem(batteryKey(batteryOwner),JSON.stringify(state.batteryHistory));}catch{}
     renderBatteryHistory();
   }
   function chargeRateLabel(){
@@ -1907,30 +2366,38 @@
     if(now<t.until){target.textContent=`Measuring… ${Math.ceil((t.until-now)/1000)} seconds left. ${t.count} readings collected.`;return;}
     if(t.count<30)target.textContent='Too few reports arrived to complete the test. Check the connection and try again.';
     else if(t.kind==='drift'){
+      state.stickResults.drift=[0,1].map(i=>({center:Math.hypot(t.sum[i*2]/t.count,t.sum[i*2+1]/t.count)*100,max:t.max[i]*100}));
       target.textContent=[0,1].map(i=>{
         const center=Math.hypot(t.sum[i*2]/t.count,t.sum[i*2+1]/t.count)*100;
         return `${i?'Right':'Left'}: center ${center.toFixed(1)}%, largest movement ${(t.max[i]*100).toFixed(1)}%`;
       }).join(' · ') + '. A game may apply its own deadzone.';
     }else{
+      state.stickResults.circularity=t.sectors.map(sectors=>({reached:sectors.filter(v=>v>=.6).length}));
       target.textContent=t.sectors.map((sectors,i)=>{
         const reached=sectors.filter(v=>v>=.6),spread=reached.length?100*(Math.max(...reached)-Math.min(...reached)):0;
         return `${i?'Right':'Left'}: ${reached.length}/12 directions, ${spread.toFixed(1)}% outer-travel variation`;
       }).join(' · ') + '. Fewer than ten directions usually means the stick needs another full rotation.';
     }
-    state.stickTest=null;renderStickButtons();
+    state.stickTest=null;renderStickButtons();renderGuided();
   }
   function formatAxis(n){return(Math.abs(n)<.005?0:n).toFixed(2);}
   const visualStats={frames:0,inputEvents:0,inputDraws:0,widgetDraws:0,rangeScans:0,hiddenEvents:0};
   const widgetSignatures=new Map();
   let inputDirty=true,rangeDirty=true,visualFrame=0,visualTimer=0,waveDirty=true,calibrationPaintedPacket=-1,signalTimer=0;
   const inputViews=new Set(['live','diagnostics','touch','triggers','calibration','lights']);
-  function changedWidget(key,value){
+  function changedWidget(key,value,counted=true){
     const signature=JSON.stringify(value);
     if(widgetSignatures.get(key)===signature)return false;
-    widgetSignatures.set(key,signature);visualStats.widgetDraws++;return true;
+    widgetSignatures.set(key,signature);if(counted)visualStats.widgetDraws++;return true;
   }
   function activityValue(){const b=state.buttons,a=state.axes;return clamp(b.filter(v=>v>.5).length/8+a.reduce((sum,v)=>sum+Math.abs(v)/4,0)+(b[6]+b[7])/4);}
   function sampleActivity(){state.activity.push(activityValue());state.activity.shift();}
+  // Sampled on a fixed 100 ms clock so the scope's time axis is even whatever the report rate is.
+  setInterval(()=>{
+    if(document.hidden)return;
+    sampleActivity();
+    if(state.currentView==='live'&&(state.connected||state.activity.some(v=>v>0))){inputDirty=true;requestVisualFrame();}
+  },100);
   function requestVisualFrame(){if(!document.hidden&&!visualFrame)visualFrame=requestAnimationFrame(frame);}
   function renderInput(){inputDirty=true;if(document.hidden)return;drawVisibleInput();inputDirty=false;}
   function renderRates(){for(const [id,value] of [['diag-rate',`${state.rate||0} / S`],['diag-gaps',String(state.sequenceGaps||0)],['diag-invalid',String(state.invalidReports||0)]]){const el=document.getElementById(id),text=state.connected?value:'\u2014';if(el.textContent!==text)el.textContent=text;}}
@@ -1950,7 +2417,8 @@
         state.touch.forEach((point,i)=>{const mark=$(`#map-touch-${i}`);mark.classList.toggle('is-active',!!point);if(point){const y=clamp(point.y),inset=y*36;mark.setAttribute('cx',String(480+inset+clamp(point.x)*(507-2*inset)));mark.setAttribute('cy',String(195+y*230));}});
       }
       if(changedWidget('map-report',[state.transport,state.fullReport]))$('#photo-status').textContent=state.fullReport?`${state.transport} live`:'Bluetooth basic';
-      if(changedWidget('activity',state.activity)){drawActivity();$('#activity-scope').setAttribute('aria-label',`Input activity ${Math.round(activityValue()*100)} percent`);}
+      if(changedWidget('activity',state.activity,false))drawActivity();
+      {const label=`Input activity ${Math.round(activityValue()*100)} percent`,scope=$('#activity-scope');if(scope.getAttribute('aria-label')!==label)scope.setAttribute('aria-label',label);}
     }
     if(view==='diagnostics'){
       renderRates();
@@ -1976,27 +2444,30 @@
     if(view==='calibration'&&calibrationPaintedPacket!==state.packet){renderCalibrationInput(state.latestInput||{axes:a,buttons:b,touch:state.touch});calibrationPaintedPacket=state.packet;}
   }
   $('#battery-segments').innerHTML=Array.from({length:10},()=>'<i></i>').join('');
-  function drawActivity(){const canvas=$('#activity-scope'),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);ctx.beginPath();state.activity.forEach((v,i)=>{const x=i/(state.activity.length-1)*w,y=h-8-v*(h-16);if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);});ctx.lineWidth=3;ctx.strokeStyle='#d4a84b';ctx.stroke();ctx.fillStyle='#7ec9bc';const last=state.activity.at(-1);ctx.fillRect(w-5,h-8-last*(h-16)-4,8,8);}
+  function drawActivity(){const canvas=$('#activity-scope'),ctx=canvas.getContext('2d'),w=canvas.width,h=canvas.height;ctx.clearRect(0,0,w,h);ctx.beginPath();state.activity.forEach((v,i)=>{const x=i/(state.activity.length-1)*w,y=h-8-v*(h-16);if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);});const colors=chartColors();ctx.lineWidth=3;ctx.strokeStyle=colors.accent;ctx.stroke();ctx.fillStyle=colors.line;const last=state.activity.at(-1);ctx.fillRect(w-5,h-8-last*(h-16)-4,8,8);}
   function handleEvent(event){
-    window.outputCalibration?.event(event);
+    // A failing feature module must never stop the device, input and safety handling below.
+    const guarded=(name,run)=>{try{run();}catch(error){console.error(`${name} event handler failed`,error);log(`MODULE ERROR / ${name}: ${error?.message||error}`);}};
+    guarded('outputCalibration',()=>window.outputCalibration?.event(event));
     if(event.type==='safetyReset'||event.type==='device'&&!event.connected){weaponRequest++;weaponApplying=false;activeWeaponPreset='';}
-    window.integrationStudio?.event(event);window.dailyUse?.event(event);window.motionStudio?.event(event);window.hardwareResearch?.event(event);window.runtimeLab?.event(event);window.hapticEvaluation?.event(event);
-    window.hapticAuthoring?.event(event);
-    window.gameSessions?.event(event);
-    window.studioHooks?.event(event);
+    guarded('integrationStudio',()=>window.integrationStudio?.event(event));guarded('dailyUse',()=>window.dailyUse?.event(event));guarded('motionStudio',()=>window.motionStudio?.event(event));
+    guarded('hardwareResearch',()=>window.hardwareResearch?.event(event));guarded('runtimeLab',()=>window.runtimeLab?.event(event));guarded('hapticEvaluation',()=>window.hapticEvaluation?.event(event));
+    guarded('hapticAuthoring',()=>window.hapticAuthoring?.event(event));
+    guarded('gameSessions',()=>window.gameSessions?.event(event));
+    guarded('studio',()=>window.studioHooks?.event(event));
     if(event.type==='device'){
       state.controllerId=event.connected?event.controllerId:null;state.btAudioEnabled=!!event.bluetoothAudio;
       const changed=state.connected!==!!event.connected || (event.connected&&((event.controllerId&&calibrationOwner?event.controllerId!==calibrationOwner:state.name!==event.name)||state.transport!==event.transport||state.path!==(event.path||'')));
       if(changed)padNavPrev=null;
-      if(changed&&event.connected)selectControllerCalibration(event);
+      if(changed&&event.connected){selectControllerCalibration(event);loadBatteryHistory(calibrationOwner);}
       setConnected(!!event.connected,event.name||'',event.transport||'',event.firmware||'',event.path||'');
-      if(changed && event.connected){window.outputCalibration?.device(event,inputCalibration);window.motionStudio?.device(event);window.hapticAuthoring?.device(event);sendPcBindings();sendCalibration();audioMixer.apply();applyGameRules();}
+      if(changed && event.connected){window.outputCalibration?.device(event,inputCalibration);window.motionStudio?.device(event);window.hapticAuthoring?.device(event);sendPcBindings();sendCalibration();audioMixer.apply(true);applyGameRules();}
       if(event.path) state.selectedPath = event.path;
       if(changed||state.manualScan){const msg=event.connected?`${event.name} · ${event.transport}`:(event.message||'Disconnected');log(msg);toast(msg);}
       if(state.manualScan)finishScan();
       renderDeviceList();
     }else if(event.type==='devices'){
-      state.devices = Array.isArray(event.items) ? event.items : [];
+      state.devices = Array.isArray(event.items) ? event.items : [];state.devicesStale = !!event.stale;
       state.selectedPath = event.selected || state.selectedPath;
       renderDeviceList();
       if(state.manualScan)finishScan();
@@ -2011,12 +2482,14 @@
       if(reportChanged)renderGyroControls();
 
       state.packet++;state.lastInputAt=performance.now();
-      sampleActivity();if(!document.hidden)renderInput();renderSession();
+      renderBatteryChip();guidedSample();if(!document.hidden)renderInput();renderSession();
     }else if(event.type==='xinput'){
       state.xinput=!!event.enabled && event.status==='active';
       state.xinputStatus=event.status||'disabled';
       state.xinputMessage=event.message||event.error||'ViGEm not connected';
       renderXinput();
+    }else if(event.type==='hapticOutputLevel'){
+      if(hapticLevels.some(([id])=>id===event.level)&&event.level!==hapticLevel){hapticLevel=event.level;renderHapticLevel();}
     }else if(event.type==='audioMeters'){
       musicPlayer.event(event);audioMixer.event(event);
     }else if(event.type==='bluetoothAudioStatus'&&event.controllerId===state.controllerId){
@@ -2049,7 +2522,7 @@
       if(typeof event.timerSeconds==='number')state.timerUntil=event.timerSeconds?performance.now()+event.timerSeconds*1000:0;
       renderAlerts();requestVisualFrame();
     }else if(event.type==='hapticAlert'){
-      toast(event.message||'Haptic alert');log(event.message||'Haptic alert');
+      toast(event.message||'Haptic alert',{error:event.level==='critical'||event.level==='warn'?true:undefined});log(`${event.level==='critical'?'CRITICAL / ':event.level==='warn'?'WARNING / ':''}${event.message||'Haptic alert'}`);
     }else if(event.type==='gameAction'){
       $('#game-action-status').textContent=`Played ${event.name}`;
     }else if(event.type==='gameLinkStatus'||event.type==='gameLinkError'){
@@ -2059,7 +2532,7 @@
       if(event.events?.length)$('#game-action-status').textContent=`Game event: ${event.events.join(', ')}`;
     }else if(event.type==='telemetryStatus'){
       state.telemetryOn=!!event.enabled;
-      if(event.port)$('#telemetry-port').value=event.port;
+      if(event.port&&document.activeElement!==$('#telemetry-port'))$('#telemetry-port').value=event.port;
       if(typeof event.lan==='boolean')$('#telemetry-lan').checked=event.lan;
       if(event.enabled&&['forza','json'].includes(event.format)){$('#telemetry-format').value=event.format;renderTelemetryFormat();}
       renderTelemetry();
@@ -2091,7 +2564,7 @@
       if(!document.hidden&&state.currentView==='diagnostics')renderRates();
     }else if(event.type==='conflict'){
       $('#conflict-message').textContent=event.message||'No conflicting tools.';
-      $('#conflict-message').style.color=event.detected?'#d4a84b':'';
+      $('#conflict-message').style.color=event.detected?'var(--chart-warn)':'';
       if(event.detected) log(`OUTPUT CONFLICT / ${event.message}`);
     }else if(event.type==='foreground'){
       const previousMatch=state.autoMatchId;
@@ -2102,6 +2575,9 @@
       $('#detected-app').textContent=`Last app: ${state.lastExternalExe||'none'}`;
       const match=state.profiles.filter(matchesForeground).sort((a,b)=>(!!b.matchPath+!!b.matchTitle)-(!!a.matchPath+!!a.matchTitle))[0];
       state.autoMatchId=match?.id||'';
+      const note=$('#session-auto-note');
+      if(match){note.hidden=false;note.textContent=`Auto: matched ${state.foregroundExe} \u2192 ${match.name}`;}else note.hidden=true;
+      if((match?.id||'')!==(previousMatch||'')&&match)log(`AUTO / ${state.foregroundExe} matched, profile ${match.name}`);
       window.gameSessions?.foreground(match,previousMatch);
     }else if(event.type==='mouseMode'){
       state.mouse=!!event.enabled;renderMouseSwitch();
@@ -2125,7 +2601,7 @@
       if(Array.isArray(event.rgb)){
         const hex='#'+event.rgb.map(value=>Math.max(0,Math.min(255,value)).toString(16).padStart(2,'0')).join('').toUpperCase();
         $('#light-arcs').style.setProperty('--light',hex);$('#light-hex').textContent=hex;
-        $('#screen-light-status').textContent=`Live primary display color · ${hex}`;
+        $('#screen-light-status').textContent=`Live primary display colour · ${hex}`;
       }
     }else if(event.type==='triggerLease'){
       state.leaseDuration=event.active?event.durationMs:0;
@@ -2153,27 +2629,31 @@
       }
       $('#core-status').textContent = event.status === 'restarting' ? 'Core: restarting'
         : event.status === 'stopped' ? 'Core: stopped'
+        : event.status === 'failed' ? 'Core: failed'
         : 'Core: ready';
-      $('#core-status').classList.toggle('is-warn', event.status === 'restarting' || event.status === 'stopped');
+      $('#core-status').classList.toggle('is-warn', ['restarting','stopped','failed'].includes(event.status));
       if (event.message) log(event.message);
       if(event.status==='ready')reportUiFocus();
     }else if(event.type==='notice'||event.type==='error'||event.type==='desktopInputError'){
-      toast(event.message);log(event.message);
+      toast(event.message);log(event.code?`${event.message} [${event.code}]`:event.message);
     }
+    guarded('shellExtras',()=>window.shellExtras?.event(event));
   }
   function frame(now){
     visualFrame=0;if(document.hidden)return;visualStats.frames++;
     if(rangeDirty){syncRangeFills();rangeDirty=false;visualStats.rangeScans++;}
     if(inputDirty){drawVisibleInput();inputDirty=false;renderSession();}
     const wave=state.currentView==='haptics'&&(now<state.playUntil||musicPlayer.mode==='playing');
-    if(wave||(waveDirty&&state.currentView==='haptics')){drawWave(now);waveDirty=false;}
+    /* One last clean frame when playback ends, otherwise the sweep freezes a frame short of the end. */
+    const waveEnded=state.currentView==='haptics'&&state.waveWasPlaying&&!wave;state.waveWasPlaying=wave;
+    if(wave||waveEnded||(waveDirty&&state.currentView==='haptics')){drawWave(now);waveDirty=false;}
     const lease=state.leaseUntil>now;
     if(lease||state.lastLeaseDraw){renderSession();state.lastLeaseDraw=lease;}
     if(state.currentView==='haptics'&&state.timerUntil)renderAlerts();
     if(state.stickTest)updateStickTest(now);
     if(state.telemetryOn&&state.telemetryLast&&now-state.telemetryLast>1500)$('#telemetry-status').textContent='Waiting for telemetry';
     clearTimeout(visualTimer);
-    if(wave||lease||state.stickTest||(state.currentView==='haptics'&&state.timerUntil))visualTimer=setTimeout(requestVisualFrame,50);
+    if(wave||lease||state.stickTest||(state.currentView==='haptics'&&state.timerUntil))visualTimer=setTimeout(requestVisualFrame,wave&&now<state.playUntil?0:50);
   }
   document.addEventListener('visibilitychange',()=>{
     clearTimeout(visualTimer);clearTimeout(signalTimer);signalTimer=0;if(visualFrame)cancelAnimationFrame(visualFrame);visualFrame=0;
@@ -2188,13 +2668,251 @@
   }).observe(document.body,{childList:true,subtree:true});
 
   const keyMap={j:2,k:0,l:1,i:3,q:4,e:5,z:6,c:7,ArrowUp:12,ArrowDown:13,ArrowLeft:14,ArrowRight:15};
-  const held=new Set();window.addEventListener('keydown',e=>{if(state.connected||e.ctrlKey||e.metaKey||e.altKey||e.target.matches('input,textarea,button,select'))return;if(!(e.key in keyMap))return;held.add(e.key);state.buttons[keyMap[e.key]]=1;renderInput();});
+  const held=new Set();window.addEventListener('keydown',e=>{if(state.connected||e.ctrlKey||e.metaKey||e.altKey||e.target.matches('input,textarea,select,[contenteditable="true"]'))return;if(!(e.key in keyMap))return;held.add(e.key);state.buttons[keyMap[e.key]]=1;renderInput();});
   window.addEventListener('keyup',e=>{if(!(e.key in keyMap)||state.connected)return;held.delete(e.key);state.buttons[keyMap[e.key]]=0;renderInput();});
   window.addEventListener('blur',()=>{if(state.connected)return;held.clear();state.buttons.fill(0);renderInput();});
 
+  state.stickResults={};
+
+  // ---- Battery chip and low-battery hook ----
+  let batteryChipSig='',lowBatteryWarned=false;
+  function lowBatterySettings(){
+    try{const v=JSON.parse(localStorage.getItem('controller.lowBattery.v1'));if(v&&typeof v.enabled==='boolean'&&Number.isInteger(v.threshold))return v;}catch{}
+    return {enabled:true,threshold:20};
+  }
+  function renderBatteryChip(){
+    const sig=`${state.connected}|${state.battery}|${state.charging}`;
+    if(sig===batteryChipSig)return;batteryChipSig=sig;renderHapticBatteryNote();
+    const chip=$('#side-battery'),level=state.battery;
+    chip.hidden=!state.connected||level==null;
+    if(chip.hidden){lowBatteryWarned=false;return;}
+    $('#side-battery-fill').style.width=`${level}%`;
+    $('#side-battery-text').textContent=`${level}%${state.charging?' charging':''}`;
+    const low=!state.charging&&level<=lowBatterySettings().threshold;
+    chip.classList.toggle('is-low',low);chip.classList.toggle('is-charging',!!state.charging);
+    // Hook only: a later pass can listen for this event and show a desktop notification.
+    const settings=lowBatterySettings();
+    if(low&&settings.enabled&&!lowBatteryWarned){lowBatteryWarned=true;document.dispatchEvent(new CustomEvent('controller-low-battery',{detail:{level,name:state.name,controllerId:state.controllerId||null,threshold:settings.threshold}}));}
+    else if(state.charging||level>settings.threshold+5)lowBatteryWarned=false;
+  }
+  function prepareLowBatteryWarning(options={}){
+    const next={...lowBatterySettings(),...options};
+    if(typeof next.enabled!=='boolean'||!Number.isInteger(next.threshold)||next.threshold<5||next.threshold>50)return false;
+    try{localStorage.setItem('controller.lowBattery.v1',JSON.stringify(next));}catch{return false;}
+    batteryChipSig='';renderBatteryChip();return true;
+  }
+
+  // ---- Guided button and stick test ----
+  const guided={running:false,done:new Set()};
+  const guidedItems=[...names.slice(0,19).map((n,i)=>[`b${i}`,n]),['l2full','L2 full pull'],['r2full','R2 full pull'],
+    ...['Left','Right'].flatMap((side,k)=>['up','down','left','right'].map(d=>[`s${k}${d}`,`${side} stick ${d}`]))];
+  function guidedSample(){
+    if(!guided.running)return false;
+    const before=guided.done.size,b=state.buttons,a=state.axes;
+    for(let i=0;i<19;i++)if((b[i]||0)>.5)guided.done.add(`b${i}`);
+    if((b[6]||0)>=.95)guided.done.add('l2full');if((b[7]||0)>=.95)guided.done.add('r2full');
+    for(let k=0;k<2;k++){
+      const x=a[k*2]||0,y=a[k*2+1]||0;
+      if(x<=-.85)guided.done.add(`s${k}left`);if(x>=.85)guided.done.add(`s${k}right`);
+      if(y<=-.85)guided.done.add(`s${k}up`);if(y>=.85)guided.done.add(`s${k}down`);
+    }
+    if(guided.done.size!==before){renderGuided();return true;}
+    return false;
+  }
+  function guidedSummary(){
+    const done=id=>guided.done.has(id),count=ids=>ids.filter(done).length;
+    const buttons=guidedItems.filter(([id])=>/^b\d+$/.test(id)).map(([id])=>id);
+    const lines=[`Buttons: ${count(buttons)}/${buttons.length} ${count(buttons)===buttons.length?'pass':'missing '+buttons.filter(id=>!done(id)).map(id=>names[+id.slice(1)]).join(', ')}`,
+      `Triggers: L2 ${done('l2full')?'pass':'not fully pulled'}, R2 ${done('r2full')?'pass':'not fully pulled'}`];
+    for(const [k,side] of ['Left','Right'].entries()){
+      const dirs=['up','down','left','right'],n=count(dirs.map(d=>`s${k}${d}`));
+      lines.push(`${side} stick edges: ${n}/4 ${n===4?'pass':'missing '+dirs.filter(d=>!done(`s${k}${d}`)).join(', ')}`);
+    }
+    const drift=state.stickResults.drift,circ=state.stickResults.circularity;
+    lines.push(drift?'Drift: '+drift.map((r,i)=>`${i?'Right':'Left'} center ${r.center.toFixed(1)}% ${r.center<8?'pass':'check'}`).join(', '):'Drift: not measured');
+    lines.push(circ?'Travel: '+circ.map((r,i)=>`${i?'Right':'Left'} ${r.reached}/12 ${r.reached>=10?'pass':'check'}`).join(', '):'Travel: not measured');
+    const complete=guidedItems.every(([id])=>done(id));
+    const bad=(drift||[]).some(r=>r.center>=8)||(circ||[]).some(r=>r.reached<10);
+    lines.push(`Overall: ${!complete?'INCOMPLETE':bad?'CHECK STICKS':'PASS'}`);
+    return lines.join('\n');
+  }
+  function renderGuided(){
+    const list=$('#guided-checklist');if(!list)return;
+    if(!list.childElementCount)for(const [id,label] of guidedItems){const span=document.createElement('span');span.dataset.guided=id;span.textContent=label;list.append(span);}
+    for(const span of list.children)span.classList.toggle('is-done',guided.done.has(span.dataset.guided));
+    $('#guided-start').textContent=guided.running?'Finish and score':'Start test';
+    $('#guided-start').disabled=!state.connected&&!guided.running;
+    $('#guided-sticks').disabled=!state.connected||!!state.stickTest;
+    $('#guided-result').textContent=guided.running?`Testing: ${guided.done.size}/${guidedItems.length} items seen.`:guided.done.size||Object.keys(state.stickResults).length?guidedSummary():'Not started. Connect a controller, then press Start test.';
+  }
+  $('#guided-start').addEventListener('click',()=>{guided.running=!guided.running;if(guided.running)guided.done.clear();renderGuided();});
+  $('#guided-sticks').addEventListener('click',()=>{startStickTest('drift');toast('Leave the sticks alone for five seconds, then run Check travel.');});
+  $('#guided-reset').addEventListener('click',()=>{guided.running=false;guided.done.clear();state.stickResults={};renderGuided();});
+  $('#guided-copy').addEventListener('click',()=>copyText(`CONTROLLER guided test\n${guidedSummary()}`,'Test result copied.','Could not copy the test result.'));
+  renderGuided();
+
+  // ---- Haptics sub-tabs (All is the default so nothing is hidden until you choose) ----
+  function setupHapticTabs(){
+    const section=$('#haptics'),tabs=$('#haptic-tabs');let current='',sectionSeq=0;
+    try{current=localStorage.getItem('controller.hapticTab')||'';}catch{}
+    const fallback=()=>window.controllerUI?.prefs().showAll?'all':'preview';
+    if(!current)current=fallback();
+    const groupOf=el=>el.dataset.hapticGroup||'studio';
+    // Panels may be wrapped by the UI kit (a <details> that carries the same data-haptic-group), so work on direct children.
+    const items=()=>[...section.children].filter(el=>el!==tabs&&!el.classList.contains('page-heading'));
+    function apply(){
+      const extra=items().some(el=>!el.dataset.hapticGroup);
+      $('#haptic-tab-studio').hidden=!extra;
+      if(current==='studio'&&!extra)current=fallback();
+      for(const el of items()){
+        el.classList.toggle('haptic-tab-hidden',current!=='all'&&groupOf(el)!==current);
+        if(!el.id)el.id=`haptic-section-${++sectionSeq}`;
+        if(!el.getAttribute('role'))el.setAttribute('role','tabpanel');
+        if(el.getAttribute('role')==='tabpanel')el.setAttribute('aria-labelledby',`haptic-tab-${groupOf(el)}`);
+      }
+      $$('[data-haptic-tab]',tabs).forEach(b=>{
+        b.id=`haptic-tab-${b.dataset.hapticTab}`;
+        const ids=items().filter(el=>b.dataset.hapticTab==='all'||groupOf(el)===b.dataset.hapticTab).map(el=>el.id);
+        if(ids.length)b.setAttribute('aria-controls',ids.join(' '));else b.removeAttribute('aria-controls');
+      });
+      $$('[data-haptic-tab]',tabs).forEach(b=>{const on=b.dataset.hapticTab===current;b.setAttribute('aria-selected',String(on));b.tabIndex=on?0:-1;});
+    }
+    tabs.addEventListener('click',e=>{const b=e.target.closest('[data-haptic-tab]');if(!b)return;current=b.dataset.hapticTab;try{localStorage.setItem('controller.hapticTab',current);}catch{}apply();});
+    tabs.addEventListener('keydown',e=>{
+      if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;
+      const buttons=$$('[data-haptic-tab]',tabs).filter(b=>!b.hidden),i=buttons.findIndex(b=>b.dataset.hapticTab===current),next=e.key==='Home'?buttons[0]:e.key==='End'?buttons[buttons.length-1]:buttons[(i+(e.key==='ArrowRight'?1:-1)+buttons.length)%buttons.length];
+      e.preventDefault();next.click();next.focus();
+    });
+    new MutationObserver(apply).observe(section,{childList:true});
+    apply();
+  }
+  setupHapticTabs();
+
+  // ---- Keyboard shortcuts ----
+  $$('.nav-link').forEach(b=>{const i=padPages.indexOf(b.dataset.view);if(i>=0)b.title=`${platform.primaryLabel}+${(i+1)%10}`;});
+  window.addEventListener('keydown',e=>{
+    if(state.shortcutRecording||e.defaultPrevented||e.altKey||!platform.primaryModifier(e)||document.querySelector('dialog[open]'))return;
+    // Digits come from e.code so AZERTY (where Shift makes the digit) and numpad both work.
+    const digit=/^(?:Digit|Numpad)([0-9])$/.exec(e.code||'');
+    const typing=e.target.closest?.('input,textarea,select,[contenteditable="true"]');
+    if(digit&&!e.shiftKey){
+      const view=padPages[digit[1]==='0'?9:Number(digit[1])-1];
+      if(view){e.preventDefault();navigate(view);}
+    }else if(e.key.toLowerCase()==='s'&&!e.shiftKey){
+      e.preventDefault();commitProfileDraft(true);
+    }else if(e.key.toLowerCase()==='z'&&!e.shiftKey&&!typing&&state.currentView!=='triggers'&&pendingUndo()){
+      e.preventDefault();undoLast();
+    }else if(e.key==='Enter'&&!e.repeat&&state.currentView==='triggers'&&!$('#apply-triggers').disabled){
+      e.preventDefault();$('#apply-triggers').click();
+    }
+  });
+
+  // ---- First-run tour (non-modal, skippable) ----
+  const tourSteps=[
+    {view:'live',title:'Connect your controller',text:'Plug in by USB or pair over Bluetooth, then press Find controller. The Controller page shows every button live once it connects.'},
+    {view:'live',title:'Check your input',text:'Press buttons and move the sticks. Use Tools and diagnostics later for drift and travel checks and the guided test.'},
+    {view:'triggers',title:'Tune and preview triggers',text:'Pick a mode, shape the force curve, then press Apply. A preview lasts 15 seconds (the lease bar in the top strip). Turn on Live preview to send edits as you make them.'},
+    {view:'profiles',title:'Match a game',text:'Save settings per game. Enter the game executable so the profile applies automatically when that game is in front.'},
+    {view:'live',title:'Stop everything, any time',text:`The Stop all button (or ${platform.primaryLabel}+Shift+Backspace) clears effects and input mappings immediately.`}
+  ];
+  let tourIndex=0,tourDialog=null,tourReturn=null;
+  // The tour is a non-modal role=dialog card (not a <dialog>) so it never disables the
+  // page shortcuts or gamepad navigation, and replaying it always works.
+  function endTour(){
+    try{localStorage.setItem('controller.tour.v1','done');}catch{}
+    const target=tourReturn&&tourReturn.isConnected&&!tourReturn.disabled?tourReturn:$('#replay-tour');
+    tourDialog?.remove();tourDialog=null;tourReturn=null;
+    try{if(!target||target===document.body||target.closest('[hidden]'))$('.nav-link.is-current')?.focus();else target.focus();}catch{}
+  }
+  function showTour(index=0){
+    tourIndex=index;
+    if(!tourDialog){
+      tourReturn=document.activeElement;
+      tourDialog=document.createElement('div');tourDialog.className='tour';tourDialog.setAttribute('role','dialog');tourDialog.setAttribute('aria-label','Welcome tour');tourDialog.setAttribute('aria-modal','false');
+      tourDialog.style.cssText='position:fixed;inset:auto auto 20px 20px;margin:0;z-index:90;display:block';
+      tourDialog.addEventListener('keydown',e=>{if(e.key==='Escape'){e.stopPropagation();endTour();}});
+      document.body.append(tourDialog);
+    }
+    const step=tourSteps[tourIndex];
+    if(state.currentView!==step.view)navigate(step.view);
+    const make=(text,fn,cls='')=>{const b=document.createElement('button');b.type='button';b.textContent=text;if(cls)b.className=cls;b.addEventListener('click',fn);return b;};
+    const title=document.createElement('h2'),count=document.createElement('small'),body=document.createElement('p'),actions=document.createElement('div');
+    title.textContent=step.title;count.textContent=`Step ${tourIndex+1} of ${tourSteps.length}`;body.textContent=step.text;actions.className='tour-actions';
+    actions.append(make('Skip tour',endTour));
+    if(tourIndex>0)actions.append(make('Back',()=>showTour(tourIndex-1)));
+    actions.append(make(tourIndex===tourSteps.length-1?'Done':'Next',()=>tourIndex===tourSteps.length-1?endTour():showTour(tourIndex+1),'primary'));
+    tourDialog.replaceChildren(count,title,body,actions);
+    actions.lastChild.focus();
+  }
+  $('#replay-tour').addEventListener('click',()=>showTour(0));
+  function maybeStartTour(){
+    let seen=true;try{seen=localStorage.getItem('controller.tour.v1')==='done';}catch{}
+    // Automated browsers skip it so scripted runs are never covered by the card.
+    if(!seen&&!navigator.webdriver)showTour(0);
+  }
+
+  // ---- First-run "Get started" card: Connect, pick a starting profile, feel it. Hides itself when done. ----
+  const startKey='controller.getStarted.v1';
+  const startState=()=>{try{return JSON.parse(localStorage.getItem(startKey))||{};}catch{return {};}};
+  const startSave=patch=>{try{localStorage.setItem(startKey,JSON.stringify({...startState(),...patch}));}catch{}};
+  function buildGetStarted(card){
+    card.dataset.built='1';
+    card.innerHTML='<div class="panel-cap"><span>Get started</span><button id="get-started-dismiss" class="text-action" type="button">Don\u2019t show again</button></div>'
+      +'<ol class="get-started-steps">'
+      +'<li data-step="connect"><span class="gs-num" aria-hidden="true">1</span><div class="gs-text"><strong>Connect</strong><small id="get-started-connect">Plug in by USB or pair over Bluetooth.</small></div><button id="get-started-scan" class="quiet-action" type="button">Find controller</button></li>'
+      +'<li data-step="profile"><span class="gs-num" aria-hidden="true">2</span><div class="gs-text"><strong>Pick a starting profile</strong><small>One click. You can change everything later.</small></div><div class="gs-actions" id="get-started-profiles" role="group" aria-label="Starting profiles"></div></li>'
+      +'<li data-step="feel"><span class="gs-num" aria-hidden="true">3</span><div class="gs-text"><strong>Feel it</strong><small id="get-started-feel-note">Pull a trigger to feel the profile.</small></div><button id="get-started-feel" class="main-action" type="button">Preview adaptive triggers</button></li>'
+      +'</ol>'
+      +'<p class="get-started-extra">Not sure the sticks and triggers read right? <button id="get-started-calibrate" class="text-action" type="button">Calibrate your controller</button></p>';
+    const host=$('#get-started-profiles');
+    defaultProfiles.slice(0,3).forEach(spec=>{
+      const b=document.createElement('button');b.type='button';b.className='quiet-action';b.textContent=spec.name;b.title=spec.description;b.dataset.startProfile=spec.id;
+      b.addEventListener('click',async()=>{
+        if(!guardDraft())return;
+        if(!state.profiles.some(p=>p.id===spec.id)){
+          if(state.profiles.length>=50){toast('50 profile limit.');return;}
+          state.profiles.unshift(normalizeProfile(clone(spec)));
+        }
+        state.profileId=spec.id;renderAllProfileControls();saveProfiles();startSave({profile:true});
+        toast(`Using ${spec.name}`,{error:false});renderGetStarted();
+        if(state.connected&&state.autoApply)await applyProfileHardware(true);
+      });
+      host.append(b);
+    });
+    $('#get-started-dismiss').addEventListener('click',()=>{startSave({dismissed:true});renderGetStarted();});
+    $('#get-started-scan').addEventListener('click',manualScan);
+    $('#get-started-calibrate').addEventListener('click',()=>navigate('calibration'));
+    $('#get-started-feel').addEventListener('click',()=>{
+      if(!state.connected){toast('Connect a controller to feel this.');return;}
+      $('#apply-triggers').click();startSave({feel:true});renderGetStarted();
+    });
+  }
+  function renderGetStarted(){
+    const card=$('#get-started');if(!card)return;
+    const st=startState();
+    if(state.connected&&!st.connected){startSave({connected:true});st.connected=true;}
+    const done={connect:!!(state.connected||st.connected),profile:!!st.profile,feel:!!st.feel};
+    // Like the tour, scripted browsers skip it unless a test forces it on (localStorage controller.getStarted.v1 {"force":true}).
+    card.hidden=!!st.dismissed||(done.connect&&done.profile&&done.feel)||(navigator.webdriver&&!st.force);
+    if(card.hidden)return;
+    if(!card.dataset.built)buildGetStarted(card);
+    for(const li of $$('li[data-step]',card)){const on=done[li.dataset.step];li.classList.toggle('is-done',on);li.setAttribute('aria-label',`${$('strong',li).textContent}${on?', done':''}`);}
+    $('#get-started-connect').textContent=state.connected?`Connected: ${state.name||'controller'}`:'Plug in by USB or pair over Bluetooth.';
+    $('#get-started-scan').hidden=state.connected;
+    $('#get-started-feel').disabled=!state.connected;
+    platform.why($('#get-started-feel'),state.connected?null:'Needs a controller connected by USB or Bluetooth');
+  }
+
+  // ---- Version label ----
+  Promise.resolve().then(()=>window.__TAURI__?.app?.getVersion?.()).then(v=>{if(v)$('#app-version').textContent=v;}).catch(()=>{});
+
   async function start(){
-    renderAllProfileControls();renderPcBindings();setLightColor('#d4a84b');setConnected(false);renderInput();renderDeviceList();renderGestureSwitch();renderXinput();navigate(location.hash.slice(1)||'live');
-    await loadProfiles();
+    try{const side=localStorage.getItem('controller.triggerSide');if(side==='left'||side==='right')state.side=side;}catch{}
+    syncSidePanel();
+    renderAllProfileControls();renderPcBindings();setLightColor('#d4a84b');setConnected(false);renderInput();renderDeviceList();renderGestureSwitch();renderXinput();
+    let remembered='';try{remembered=localStorage.getItem('controller.lastView')||'';}catch{}
+    navigate(location.hash.slice(1)||remembered||'live');
+    await loadProfiles();renderGetStarted();maybeStartTour();
     if(native){
       try{await window.__TAURI__.event.listen('core-event',e=>handleEvent(e.payload));await window.__TAURI__.event.listen('update-progress',e=>handleUpdateProgress(e.payload));await send({action:'listDevices'});reportUiFocus();log('Core ready');$('#core-status').textContent='Core: ready';}
       catch(error){toast(`Core connection failed: ${error}`);log(String(error));$('#core-status').textContent='Core: error';$('#core-status').classList.add('is-warn');}
@@ -2202,7 +2920,7 @@
       setInterval(()=>checkForUpdates(),12*60*60*1000);
     }else{$('#core-status').textContent='Core: browser preview';$('#update-status').textContent='Updates are available in the installed desktop app.';$('#check-update').disabled=true;log('Browser preview');}
   }
-  window.controllerStudio={visualStats:()=>({...visualStats}),invalidateView:()=>{inputDirty=true;rangeDirty=true;requestVisualFrame();},state,profile,trigger,clone,native,invoke,send,toast,names,vkChoices,validPcKey,gameNode,gameSelect,gameField,saveProfiles,commitProfileDraft,normalizeProfile,validProfile,validLibrary,renderProfiles,renderAllProfileControls,renderTriggerControls,renderPcBindings,savePcBindings,navigate,useWeapon,applyProfileHardware,applyGameRules,renderGameProfiles,getPlayer:()=>musicPlayer,getMixer:()=>clone(audioMixer.settings),
+  window.controllerStudio={prepareLowBatteryWarning,undoToast,undoLast,hasPendingUndo:()=>!!pendingUndo(),visualStats:()=>({...visualStats}),invalidateView:()=>{inputDirty=true;rangeDirty=true;requestVisualFrame();},state,profile,trigger,clone,native,invoke,send,toast,names,vkChoices,validPcKey,gameNode,gameSelect,gameField,saveProfiles,commitProfileDraft,normalizeProfile,validProfile,validLibrary,renderProfiles,renderAllProfileControls,renderTriggerControls,renderPcBindings,savePcBindings,navigate,useWeapon,applyProfileHardware,applyGameRules,renderGameProfiles,getPlayer:()=>musicPlayer,getMixer:()=>clone(audioMixer.settings),
     getPresets:()=>triggerPresets,getPcBindings:()=>pcBindings,
     calibrationInProgress:()=>!!calibrationRun,
     refreshCalibration:()=>renderCalibrationStatus(),

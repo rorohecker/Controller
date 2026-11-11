@@ -27,6 +27,7 @@
   const text = (value, tag = "p") => node(tag, { text: value });
   const label = (name, input) => field(name, input);
   const number = (name, value, min, max, change, step = 1) => {
+    let current = value;
     const input = node("input", { type: "number", value, min, max, step });
     input.setAttribute("aria-label", name);
     input.addEventListener("change", () => {
@@ -37,16 +38,19 @@
         v > max ||
         Math.abs(v / step - Math.round(v / step)) > 0.00001
       ) {
-        input.value = value;
+        input.value = current;
         toast(`Enter ${min}–${max}.`);
         return;
       }
+      current = v;
       change(v);
     });
     return label(name, input);
   };
-  function card(title, id) {
+  function card(title, id, meta) {
     const box = node("section", { class: "studio-card framed", id });
+    if (meta)
+      window.controllerPlatform?.section?.(box, meta.id, meta.level, meta.title || title, meta.hint, meta);
     box.append(node("div", { class: "panel-cap", text: title }));
     const body = node("div", { class: "studio-body" });
     box.append(body);
@@ -60,7 +64,7 @@
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
-  function dialog(title) {
+  function dialog(title, options = {}) {
     const d = node("dialog", { class: "studio-dialog" }),
       head = node("h2", { text: title }),
       body = node("div", { class: "studio-dialog-body" }),
@@ -78,7 +82,25 @@
         e.offsetY <= d.clientHeight
       )
         return;
-      if (e.target === d) d.close();
+      if (e.target === d) requestClose();
+    });
+    const requestClose = async () => {
+      if (
+        options.isDirty?.() &&
+        !(await platform.confirm(
+          "You have unsaved changes in this dialog. Discard them?",
+          { title: "Discard changes?", confirmLabel: "Discard" },
+        ))
+      )
+        return;
+      options.onDiscard?.();
+      d.close();
+    };
+    d.addEventListener("cancel", (e) => {
+      if (options.isDirty?.()) {
+        e.preventDefault();
+        requestClose();
+      }
     });
     d.addEventListener("close", () => d.remove(), { once: true });
     return { d, body, footer };
@@ -89,23 +111,36 @@
     return label(name, input);
   };
   let query = "",
-    onlyFavorites = false;
+    onlyFavorites = false,
+    savedQuery = "";
+  try {
+    savedQuery = (localStorage.getItem("controller.profileQuery") || "").slice(0, 120);
+    query = savedQuery.trim().toLowerCase();
+    onlyFavorites = localStorage.getItem("controller.profileFavorites") === "true";
+  } catch {}
   const search = node("input", {
     id: "profile-search",
     type: "search",
     placeholder: "Search profiles",
     maxLength: 120,
+    value: savedQuery,
   });
   search.setAttribute("aria-label", "Search profiles");
   search.addEventListener("input", () => {
     query = search.value.trim().toLowerCase();
+    try {
+      localStorage.setItem("controller.profileQuery", search.value);
+    } catch {}
     app.renderProfiles();
   });
   const filter = node("div", { class: "studio-profile-filter" });
   filter.append(
     search,
-    checkbox("Favorites", false, (v) => {
+    checkbox("Favorites", onlyFavorites, (v) => {
       onlyFavorites = v;
+      try {
+        localStorage.setItem("controller.profileFavorites", String(v));
+      } catch {}
       app.renderProfiles();
     }),
   );
@@ -133,6 +168,13 @@
         profiles: [p],
         triggerPresets: app.getPresets().filter((p) => ids.has(p.id)),
       };
+      const clipIds = new Set(
+        (p.actions || []).map((a) => a.timeline?.id).filter(Boolean),
+      );
+      const clips = (window.hapticAuthoring?.archive() || []).filter((c) =>
+        clipIds.has(c.id),
+      );
+      if (clips.length) data.tactileClips = clips;
       if (native) {
         try {
           toast(`Exported to ${await invoke("export_profiles", { data })}`);
@@ -151,7 +193,7 @@
   }
 
   // Native saves snapshot the previous archive. Browser previews keep the same bounded history.
-  const backupCard = card("Profile recovery", "profile-recovery");
+  const backupCard = card("Backups", "profile-recovery", { id: "profiles.recovery", level: "advanced", title: "Backups", hint: "Back up and restore profiles", keywords: "backup restore recovery profiles archive history undo save" });
   $(".profile-library-column").append(backupCard.box);
   const backupList = node("div", { id: "backup-list", class: "studio-list" }),
     backupStatus = text(
@@ -293,6 +335,7 @@
   let restoring = false;
   const undo = button("Undo", () => travel(-1), "trigger-undo"),
     redo = button("Redo", () => travel(1), "trigger-redo");
+  window.controllerPlatform?.section?.(triggerToolbar, "triggers.toolbar", "basic", "Edit helpers", "Undo, redo, copy, swap, compare", { open: true, keywords: "undo redo copy swap compare reset trigger edit" });
   triggerToolbar.append(
     undo,
     redo,
@@ -388,6 +431,18 @@
       `Copied ${from === "left" ? "L2" : "R2"} to ${to === "left" ? "L2" : "R2"}. Press Apply to use it.`,
     );
   }
+  const modeName = (m) =>
+    ({
+      off: "Off",
+      resistance: "Resistance",
+      weapon: "Weapon",
+      vibration: "Vibration",
+      bow: "Bow (experimental)",
+    })[m] || String(m);
+  const diffStyle = document.createElement("style");
+  diffStyle.textContent =
+    ".studio-diff td{background:rgba(231,180,107,.18);font-weight:600}.studio-diff td:first-child{border-left:3px solid var(--gold,#e7b46b)}.monitor-groups{display:flex;flex-wrap:wrap;gap:10px 18px}.monitor-group{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.monitor-group>small{color:var(--parchment-dim,#d5e3df);text-transform:uppercase;letter-spacing:.06em;font-size:.68rem}.rec-indicator{font:.85rem var(--mono,monospace);color:var(--danger,#c45c3e)}.rec-indicator[hidden]{display:none}.packet-inspector pre{max-height:220px;overflow:auto;background:var(--stage-mid,#192e42);padding:8px;border-radius:6px}.packet-inspector textarea{width:100%;min-height:70px}.macro-total{font:.85rem var(--mono,monospace)}.macro-total.over{color:var(--danger,#c45c3e)}.gallery-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}.gallery-card{border:1px solid var(--line,#a8bec1);border-radius:8px;padding:10px;display:grid;gap:6px}.gallery-tags span{display:inline-block;margin-right:4px;padding:0 6px;border-radius:8px;font-size:.7rem;background:var(--stage-lift,#254158);color:var(--cream,#f0f8f7)}.curve-editor svg{width:100%;max-width:340px;touch-action:none;background:var(--stage-mid,#192e42);border-radius:6px}.palette-active{outline:2px solid var(--teal,#54c6c5)}";
+  document.head.append(diffStyle);
   function compare() {
     const presets = app.getPresets();
     if (!presets.length) {
@@ -415,7 +470,7 @@
           "<thead><tr><th>Setting</th><th>Current</th><th>Saved</th></tr></thead>";
         const body = node("tbody");
         for (const [label, a, b] of [
-          ["Mode", current.mode, saved.mode],
+          ["Mode", modeName(current.mode), modeName(saved.mode)],
           ["Strength", `${current.strength}%`, `${saved.strength}%`],
           [
             "Start zone",
@@ -434,8 +489,11 @@
               .join(" / "),
           ],
         ]) {
-          const row = node("tr");
-          [label, a, b].forEach((v) => row.append(text(String(v), "td")));
+          const differs = String(a) !== String(b);
+          const row = node("tr", { class: differs ? "studio-diff" : "" });
+          [differs ? `${label} (differs)` : label, a, b].forEach((v) =>
+            row.append(text(String(v), "td")),
+          );
           body.append(row);
         }
         table.append(body);
@@ -446,37 +504,192 @@
     view.d.showModal();
   }
   const guide = node("details", { class: "studio-guide" });
+  window.controllerPlatform?.section?.(guide, "triggers.guide", "advanced", "How trigger force and timing work", "Short explainer", { keywords: "guide help trigger force timing explain rest wall release" });
   guide.append(node("summary", { text: "How trigger force and timing work" }));
   guide.insertAdjacentHTML(
     "beforeend",
     '<div class="trigger-stage-guide"><span>Rest</span><i>Load / tension</i><b>Wall / shot</b><em>Release</em></div><p>Start sets where resistance begins. End sets the wall or break. Strength scales force; Force cap selects one of eight motor levels. Bow unloads at its high point. Weapon recoil needs space for the trigger to move back.</p><p>Burst spacing separates shots. Kick duration controls each return stroke. Motor strike uses whole-Hz timing, so its actual spacing is rounded. Grip feedback is separate from trigger force.</p>',
   );
   triggerToolbar.after(guide);
+  // Effect gallery + drag-to-draw force curve editor (current trigger settings model only).
+  const ramp = (a) => a.map((v) => Math.max(0, Math.min(1, v)));
+  const gallery = [
+    { name: "Bow draw", tags: ["bow", "tension"], t: { mode: "bow", strength: 90, forceCap: 8, curve: ramp([0,.02,.06,.13,.22,.34,.48,.65,.8,.92,1]), startZone: 0, endZone: 9, snapStrength: 75, zoneForces: [.12,.18,.25,.34,.44,.56,.69,.83,.94,.94] } },
+    { name: "Gun recoil", tags: ["weapon", "shot"], t: { mode: "weapon", strength: 70, curve: ramp([0,.02,.05,.08,.14,.22,.92,.19,.2,.2,.2]), startZone: 4, endZone: 6, snapStrength: 55 } },
+    { name: "Brake ABS pulse", tags: ["racing", "pulse"], t: { mode: "vibration", strength: 60, curve: ramp([.04,.21,.67,.16,.74,.22,.77,.27,.78,.31,.8]) } },
+    { name: "Sticky lever", tags: ["resistance", "mechanical"], t: { mode: "resistance", strength: 65, curve: ramp([0,.3,.55,.7,.4,.35,.5,.75,.9,1,1]) } },
+    { name: "Heartbeat", tags: ["vibration", "rhythm"], t: { mode: "vibration", strength: 45, curve: ramp([.04,.5,.15,.1,.6,.2,.05,.04,.04,.04,.04]) } },
+  ];
+  const galleryCard = card("Trigger effect gallery", "trigger-gallery", { id: "triggers.gallery", level: "tool", title: "Effect gallery", hint: "Ready-made trigger effects to try", keywords: "effect gallery presets trigger heartbeat brake abs lever vibration try" });
+  const galleryStatus = text("Pick an effect, use it on a trigger, or try it on the controller first.");
+  galleryStatus.setAttribute("role", "status");
+  const galleryGrid = node("div", { class: "gallery-grid" });
+  const sideName = (s) => (s === "left" ? "L2" : "R2");
+  for (const g of gallery) {
+    const c = node("div", { class: "gallery-card" });
+    c.append(
+      text(g.name, "strong"),
+      node("div", { class: "gallery-tags" }, g.tags.map((t) => text(t, "span"))),
+      node("div", { class: "studio-toolbar" }, ["left", "right"].map((side) =>
+        button(`Use on ${sideName(side)}`, () => {
+          // Drop per-effect fields from the previous mode so they do not leak into this one.
+          const previous = clone(profile().triggers[side]);
+          for (const stale of ["releasePoint", "preloadStrength", "frequencyHz"]) delete previous[stale];
+          profile().triggers[side] = { ...previous, ...clone(g.t) };
+          app.saveProfiles();
+          app.renderTriggerControls();
+          drawCurveEditor();
+          galleryStatus.textContent = `${g.name} set on ${sideName(side)}. Press Apply to use it.`;
+        }),
+      )),
+      button("Try on controller", async () => {
+        if (!state.connected) {
+          toast("Connect a controller to try an effect.");
+          return;
+        }
+        const side = curveSide;
+        const t = profile().triggers;
+        const ok = await send({ action: "applyTriggers", left: side === "left" ? clone(g.t) : t.left, right: side === "right" ? clone(g.t) : t.right });
+        galleryStatus.textContent = ok
+          ? `${g.name} is active on ${sideName(side)} (temporary). Use "Re-apply my profile triggers" to go back.`
+          : "The controller did not accept that effect. Check Diagnostics.";
+      }),
+    );
+    galleryGrid.append(c);
+  }
+  const curveHost = node("div", { class: "curve-editor" });
+  let curveSide = "right";
+  const curveSideSel = select([["left", "L2"], ["right", "R2"]], curveSide, (v) => { curveSide = v; drawCurveEditor(); });
+  curveSideSel.setAttribute("aria-label", "Trigger to edit");
+  function drawCurveEditor() {
+    const NS = "http://www.w3.org/2000/svg", svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 220 120");
+    svg.setAttribute("role", "img");
+    svg.setAttribute("aria-label", `${sideName(curveSide)} force curve, drag points to draw`);
+    const curve = profile().triggers[curveSide].curve;
+    const pt = (i) => [10 + (i / 10) * 200, 110 - curve[i] * 100];
+    const line = document.createElementNS(NS, "polyline");
+    line.setAttribute("fill", "none");
+    line.style.stroke = "var(--teal)";
+    line.setAttribute("stroke-width", "2");
+    const dots = curve.map(() => document.createElementNS(NS, "circle"));
+    const refresh = () => {
+      line.setAttribute("points", curve.map((_, i) => pt(i).join(",")).join(" "));
+      dots.forEach((d, i) => { const [x, y] = pt(i); d.setAttribute("cx", x); d.setAttribute("cy", y); d.setAttribute("aria-valuenow", String(Math.round(curve[i] * 100))); });
+    };
+    dots.forEach((d, i) => {
+      d.setAttribute("r", 5); d.style.fill = "var(--gold)";
+      d.setAttribute("tabindex", "0"); d.setAttribute("role", "slider");
+      d.setAttribute("aria-orientation", "vertical"); d.setAttribute("aria-valuemin", "0"); d.setAttribute("aria-valuemax", "100");
+      d.setAttribute("aria-label", `Curve point ${i + 1} of ${curve.length}`);
+      d.addEventListener("keydown", (e) => {
+        const step = e.shiftKey ? 0.1 : 0.02;
+        const delta = e.key === "ArrowUp" || e.key === "ArrowRight" ? step : e.key === "ArrowDown" || e.key === "ArrowLeft" ? -step : 0;
+        if (!delta && e.key !== "Home" && e.key !== "End") return;
+        e.preventDefault(); e.stopPropagation();
+        curve[i] = e.key === "Home" ? 0 : e.key === "End" ? 1 : Math.round(Math.max(0, Math.min(1, curve[i] + delta)) * 100) / 100;
+        refresh(); app.saveProfiles();
+      });
+      d.addEventListener("blur", () => { app.renderTriggerControls(); });
+    });
+    svg.append(line, ...dots);
+    let drag = -1;
+    // Map through the SVG's own transform so letterboxing never skews the value.
+    const local = (e) => {
+      const m = svg.getScreenCTM();
+      if (!m) { const r = svg.getBoundingClientRect(); return { x: ((e.clientX - r.left) / r.width) * 220, y: ((e.clientY - r.top) / r.height) * 120 }; }
+      const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(m.inverse());
+      return { x: p.x, y: p.y };
+    };
+    const setFrom = (e) => {
+      const y = local(e).y;
+      curve[drag] = Math.round(Math.max(0, Math.min(1, (110 - y) / 100)) * 100) / 100;
+      refresh();
+    };
+    svg.addEventListener("pointerdown", (e) => {
+      const x = local(e).x;
+      drag = Math.max(0, Math.min(10, Math.round(((x - 10) / 200) * 10)));
+      svg.setPointerCapture(e.pointerId);
+      setFrom(e);
+    });
+    svg.addEventListener("pointermove", (e) => { if (drag >= 0) setFrom(e); });
+    const end = () => {
+      if (drag < 0) return;
+      drag = -1;
+      app.saveProfiles();
+      app.renderTriggerControls();
+    };
+    svg.addEventListener("pointerup", end);
+    svg.addEventListener("pointercancel", end);
+    refresh();
+    curveHost.replaceChildren(svg);
+  }
+  galleryCard.body.append(
+    galleryGrid,
+    galleryStatus,
+    node("div", { class: "studio-toolbar" }, [
+      button("Re-apply my profile triggers", async () => {
+        const t = profile().triggers;
+        galleryStatus.textContent = (await send({ action: "applyTriggers", left: t.left, right: t.right })) ? "Your profile triggers are active again." : "Could not restore. Press Apply triggers.";
+      }),
+    ]),
+    text("Draw a force curve: drag the points, then Apply."),
+    label("Trigger to edit", curveSideSel),
+    curveHost,
+    button("Mirror curve to the other trigger", () => {
+      const other = curveSide === "left" ? "right" : "left";
+      profile().triggers[other].curve = clone(profile().triggers[curveSide].curve);
+      app.saveProfiles();
+      app.renderTriggerControls();
+      toast(`${sideName(curveSide)} curve copied to ${sideName(other)}.`);
+    }, "mirror-curve"),
+  );
+  // After the trigger controls so the gamepad focus order reaches the side tabs first.
+  document.getElementById('triggers').append(galleryCard.box);
   // Reset a single control to its saved profile value, without touching other settings.
   const resetControl = button(
-    "Reset value",
+    "Reset to profile",
     () => {
-      const target = lastTriggerControl;
-      if (!target || !target.isConnected) return;
-      target.value = target.defaultValue || target.getAttribute("min") || "0";
+      let target = lastTriggerControl;
+      // Trigger controls are redrawn on side and profile changes; find the same control again.
+      if (target && !target.isConnected && target.id) target = document.getElementById(target.id);
+      if (!target || !target.isConnected) {
+        toast("That control was redrawn. Click the control you want to reset, then press Reset to profile.", { error: false });
+        return;
+      }
+      const key = controlKey(target),
+        wanted = loadedValues.get(key),
+        name = target.getAttribute("aria-label") || target.id || "Control";
+      if (wanted === undefined || wanted === target.value) {
+        toast(`${name} already matches the value saved in this profile.`);
+        return;
+      }
+      target.value = wanted;
       target.dispatchEvent(new Event("input", { bubbles: true }));
       target.dispatchEvent(new Event("change", { bubbles: true }));
-      toast("Control reset to its initial value.");
+      toast(`${name} reset to ${wanted}, the value saved when this profile was opened.`);
     },
     "reset-trigger-control",
   );
+  resetControl.setAttribute("aria-label", "Reset the last edited trigger range to the saved profile value");
   let lastTriggerControl = null;
+  const loadedValues = new Map();
+  const controlKey = (el) => `${state.profileId}|${state.side}|${el.id || el.getAttribute("aria-label")}`;
+  // Seed the baseline when a profile opens, so edits made before the first focus still reset correctly.
+  const seedBaseline = () => { for (const el of document.querySelectorAll("#triggers input[type=range], #triggers input[type=number]")) if (el.id || el.getAttribute("aria-label")) loadedValues.set(controlKey(el), el.value); };
   $("#triggers").addEventListener("focusin", (e) => {
     if (e.target.matches("input[type=range],input[type=number]")) {
       lastTriggerControl = e.target;
+      const key = controlKey(e.target);
+      if (!loadedValues.has(key)) loadedValues.set(key, e.target.value);
       resetControl.disabled = false;
-      resetControl.title = `Reset ${e.target.getAttribute("aria-label") || e.target.id}`;
+      resetControl.title = `Reset ${e.target.getAttribute("aria-label") || e.target.id} to the value saved in this profile`;
     }
   });
   resetControl.disabled = true;
   triggerToolbar.append(resetControl);
 
-  const steamCard = card("Installed Steam games", "steam-games");
+  const steamCard = card("Installed Steam games", "steam-games", { id: "profiles.steam", level: "advanced", title: "Installed Steam games", hint: "Pick a game's program file", keywords: "steam games installed scan library executable exe find" });
   $(".profile-library-column").append(steamCard.box);
   const steamStatus = text(
       "Find games installed through Steam and choose the executable for this profile.",
@@ -488,15 +701,30 @@
     });
   steamSearch.setAttribute("aria-label", "Filter installed Steam games");
   let games = [];
+  try {
+    const saved = JSON.parse(localStorage.getItem("controller.steamGames") || "[]");
+    if (Array.isArray(saved))
+      games = saved.filter(
+        (g) => g && typeof g.name === "string" && Array.isArray(g.executables),
+      );
+    steamSearch.value = (localStorage.getItem("controller.steamFilter") || "").slice(0, 80);
+  } catch {}
   steamCard.body.append(
     node("div", { class: "studio-toolbar" }, [
       button(
         "Find installed games",
         async () => {
           steamStatus.textContent = "Reading Steam libraries…";
+          if (!native) {
+            steamStatus.textContent =
+              "Scanning Steam is available in the desktop app only.";
+            return;
+          }
           try {
-            games = native ? await invoke("installed_steam_games") : [];
-            games = games || [];
+            games = (await invoke("installed_steam_games")) || [];
+            try {
+              localStorage.setItem("controller.steamGames", JSON.stringify(games.slice(0, 300)));
+            } catch {}
             steamStatus.textContent = games.length
               ? `${games.length} games found. Assign an executable to the current profile.`
               : "No installed Steam games found.";
@@ -512,7 +740,23 @@
     steamStatus,
     steamList,
   );
-  steamSearch.addEventListener("input", renderSteam);
+  steamSearch.addEventListener("input", () => {
+    try {
+      localStorage.setItem("controller.steamFilter", steamSearch.value);
+    } catch {}
+    renderSteam();
+  });
+  if (games.length) {
+    steamStatus.textContent = `${games.length} games from your last scan. Find installed games to refresh.`;
+    queueMicrotask(() => renderSteam());
+  }
+  function applySteamGame(p, game, exe) {
+    p.name = [...game.name].slice(0, 40).join("");
+    p.matchExe = exe.replaceAll("\\", "/").split("/").at(-1).toLowerCase();
+    p.matchPath = exe;
+    p.matchTitle = "";
+    p.tag = "STEAM";
+  }
   function renderSteam() {
     steamList.replaceChildren();
     for (const game of games.filter((g) =>
@@ -539,25 +783,55 @@
             return;
           }
           const p = profile();
-          p.name = [...game.name].slice(0, 40).join("");
-          p.matchExe = exe.value
-            .replaceAll("\\", "/")
-            .split("/")
-            .at(-1)
-            .toLowerCase();
-          p.matchPath = exe.value;
-          p.matchTitle = "";
-          p.tag = "STEAM";
+          if (p.matchExe && p.matchPath !== exe.value) {
+            // This profile already belongs to another game: ask before overwriting it.
+            const view = dialog("Assign this game?");
+            view.body.append(
+              text(
+                `The current profile "${p.name}" is already set up for ${p.matchExe}. Create a separate profile for ${game.name}, or overwrite this one?`,
+              ),
+            );
+            view.footer.append(
+              button("Cancel", () => view.d.close()),
+              button("Overwrite this profile", async () => {
+                view.d.close();
+                applySteamGame(p, game, exe.value);
+                app.renderAllProfileControls();
+                if (await app.saveProfiles(true)) toast(`Assigned ${game.name} to ${p.name}`);
+                else toast("Could not save the assignment. Check the profile for errors.");
+              }),
+              button(
+                "Create new profile",
+                async () => {
+                  view.d.close();
+                  const copyOf = clone(p);
+                  copyOf.id = crypto.randomUUID();
+                  copyOf.favorite = false;
+                  applySteamGame(copyOf, game, exe.value);
+                  state.profiles.push(copyOf);
+                  await app.selectProfile(copyOf.id, false);
+                  if (await app.saveProfiles(true)) toast(`Created a profile for ${game.name}`);
+                  else {
+                    toast("Could not save the new profile.");
+                  }
+                },
+                "steam-create-profile",
+              ),
+            );
+            view.d.showModal();
+            return;
+          }
+          applySteamGame(p, game, exe.value);
           app.renderAllProfileControls();
-          await app.saveProfiles(true);
-          toast(`Assigned ${game.name}`);
+          if (await app.saveProfiles(true)) toast(`Assigned ${game.name}`);
+          else toast("The assignment could not be saved. Check the profile for errors.");
         }),
       );
       steamList.append(row);
     }
   }
 
-  const shortcuts = card("Controller profile shortcuts", "game-shortcuts");
+  const shortcuts = card("Profile shortcuts", "game-shortcuts", { id: "profiles.shortcuts", level: "advanced", title: "Profile shortcuts", hint: "Switch profile with a button combination", keywords: "shortcuts combo button switch profile weapon next previous" });
   $("#profiles").append(shortcuts.box);
   const shortcutRows = node("div", { class: "studio-list" }),
     actions = [
@@ -587,7 +861,10 @@
         const available = shortcutButtons.find(
           ([i]) => i !== 8 && !used.has(`${i}:8`),
         );
-        if (!available) return;
+        if (!available) {
+          toast("Every button already has a CREATE-held shortcut. Change or remove one first.");
+          return;
+        }
         profile().gameShortcuts.push({
           button: available[0],
           modifier: 8,
@@ -687,11 +964,15 @@
           toast("Add weapon mappings to this profile first.");
           return;
         }
+        const forward = binding.action === "nextWeapon";
+        if (weaponIndex < 0 || weaponIndex >= rows.length || rows[weaponIndex].weapon !== $("#manual-weapon").value)
+          weaponIndex = rows.findIndex((r) => r.weapon === $("#manual-weapon").value);
         weaponIndex =
-          (weaponIndex +
-            (binding.action === "nextWeapon" ? 1 : -1) +
-            rows.length) %
-          rows.length;
+          weaponIndex < 0
+            ? forward
+              ? 0
+              : rows.length - 1
+            : (weaponIndex + (forward ? 1 : -1) + rows.length) % rows.length;
         $("#manual-weapon").value = rows[weaponIndex].weapon;
         await app.useWeapon(rows[weaponIndex].weapon);
       }
@@ -756,17 +1037,84 @@
   $("#pc-reset-bindings").after(
     button("Stop macros", () => send({ action: "stopMacros" }), "stop-macros"),
   );
+  function macroMs(p) {
+    let total = 0;
+    for (const s of p.steps || []) {
+      if (s.type === "chord" || s.type === "click") total += (Number(s.holdMs) || 0) + 20;
+      else if (s.type === "wait") total += Number(s.ms) || 0;
+      else if (s.type === "scroll") total += 20;
+      else if (s.type === "launch") total += 200;
+    }
+    return total * (Number(p.repeat) || 1);
+  }
+  function explainProgram(p) {
+    if (!p || !Array.isArray(p.steps) || !p.steps.length) return "Add at least one step.";
+    if (p.steps.length > 64) return "A macro can have at most 64 steps.";
+    if (!Number.isInteger(p.repeat) || p.repeat < 1 || p.repeat > 10) return "Repeats must be a whole number from 1 to 10.";
+    for (const [i, s] of p.steps.entries()) {
+      const where = `Step ${i + 1}`;
+      if (s.type === "chord") {
+        if (!Array.isArray(s.keys) || !s.keys.length) return `${where}: choose at least one key.`;
+        if (s.keys.length > 8 || new Set(s.keys).size !== s.keys.length) return `${where}: use up to 8 distinct keys.`;
+        if (!s.keys.every(app.validPcKey)) return `${where}: one of the keys is not supported on this system.`;
+        if (!Number.isInteger(s.holdMs) || s.holdMs < 20 || s.holdMs > 5000) return `${where}: hold time must be 20-5000 ms.`;
+      } else if (s.type === "wait") {
+        if (!Number.isInteger(s.ms) || s.ms < 10 || s.ms > 10000) return `${where}: wait must be 10-10000 ms.`;
+      } else if (s.type === "click") {
+        if (!Number.isInteger(s.holdMs) || s.holdMs < 20 || s.holdMs > 5000) return `${where}: click hold time must be 20-5000 ms.`;
+      } else if (s.type === "scroll") {
+        if (!Number.isInteger(s.amount) || !s.amount || Math.abs(s.amount) > 20) return `${where}: scroll notches must be a non-zero whole number up to 20.`;
+      } else if (s.type === "launch") {
+        if (typeof s.path !== "string" || !(/^[A-Za-z]:\\/.test(s.path) || s.path.startsWith("/"))) return `${where}: enter the full path of the app to open (for example ${platform.appPathPlaceholder}).`;
+        if (s.path.length > 1024) return `${where}: the app path is too long.`;
+        try { parseArgs(JSON.stringify(s.args)); } catch (e) { return `${where}: ${e.message}`; }
+      } else return `${where}: unknown step type.`;
+    }
+    const total = macroMs(p);
+    if (total > 60000) return `The macro takes about ${(total / 1000).toFixed(1)} s with repeats; the limit is 60 s. Shorten waits or lower Repeats.`;
+    return "Check the steps.";
+  }
   function editMacro(binding) {
-    const view = dialog(`${app.names[binding.button]} macro`),
-      program = clone(
-        binding.program || { steps: [{ type: "wait", ms: 100 }], repeat: 1 },
-      ),
-      rows = node("div", { class: "macro-steps" });
+    const draftKey = `controller.macroDraft.${binding.button}`;
+    let program = clone(
+      binding.program || { steps: [{ type: "wait", ms: 100 }], repeat: 1 },
+    );
+    const initial = JSON.stringify(program);
+    let restored = false;
+    try {
+      const saved = JSON.parse(localStorage.getItem(draftKey) || "null");
+      if (saved && Array.isArray(saved.steps) && saved.steps.length <= 64 && JSON.stringify(saved) !== initial) {
+        program = saved;
+        restored = true;
+      }
+    } catch {}
+    const clearDraft = () => {
+      try { localStorage.removeItem(draftKey); } catch {}
+    };
+    const view = dialog(`${app.names[binding.button]} macro`, {
+        isDirty: () => JSON.stringify(program) !== initial,
+        onDiscard: clearDraft,
+      }),
+      rows = node("div", { class: "macro-steps" }),
+      totalLine = node("p", { class: "macro-total", id: "macro-total", role: "status" });
+    const updateTotal = () => {
+      const ms = macroMs(program);
+      totalLine.textContent = `Total time: ${(ms / 1000).toFixed(2)} s of 60 s allowed (${program.steps.length} step${program.steps.length === 1 ? "" : "s"}, repeats x${program.repeat}).`;
+      totalLine.classList.toggle("over", ms > 60000);
+      try {
+        if (JSON.stringify(program) !== initial) localStorage.setItem(draftKey, JSON.stringify(program));
+        else clearDraft();
+      } catch {}
+    };
+    view.body.addEventListener("change", () => queueMicrotask(updateTotal));
+    view.body.addEventListener("input", () => queueMicrotask(updateTotal));
     view.body.append(
       text(
         "Runs in PC control while another window is focused. Focus this app, switch to Game mode, or use Stop macros to cancel.",
       ),
+      ...(restored ? [text("Restored your unsaved draft from last time. Cancel to discard it.")] : []),
       number("Repeats", program.repeat, 1, 10, (v) => (program.repeat = v)),
+      totalLine,
       rows,
     );
     const defaults = {
@@ -801,28 +1149,34 @@
               draw();
             },
           ),
-          button("↑", () => {
-            if (i) {
-              [program.steps[i - 1], program.steps[i]] = [
-                program.steps[i],
-                program.steps[i - 1],
-              ];
+          ((b) => (b.setAttribute("aria-label", `Move step ${i + 1} up`), b))(
+            button("↑", () => {
+              if (i) {
+                [program.steps[i - 1], program.steps[i]] = [
+                  program.steps[i],
+                  program.steps[i - 1],
+                ];
+                draw();
+              }
+            }),
+          ),
+          ((b) => (b.setAttribute("aria-label", `Move step ${i + 1} down`), b))(
+            button("↓", () => {
+              if (i < program.steps.length - 1) {
+                [program.steps[i + 1], program.steps[i]] = [
+                  program.steps[i],
+                  program.steps[i + 1],
+                ];
+                draw();
+              }
+            }),
+          ),
+          ((b) => (b.setAttribute("aria-label", `Remove step ${i + 1}`), b))(
+            button("Remove", () => {
+              program.steps.splice(i, 1);
               draw();
-            }
-          }),
-          button("↓", () => {
-            if (i < program.steps.length - 1) {
-              [program.steps[i + 1], program.steps[i]] = [
-                program.steps[i],
-                program.steps[i + 1],
-              ];
-              draw();
-            }
-          }),
-          button("Remove", () => {
-            program.steps.splice(i, 1);
-            draw();
-          }),
+            }),
+          ),
         );
         row.append(head);
         if (step.type === "chord") {
@@ -933,6 +1287,7 @@
         }
         rows.append(row);
       });
+      updateTotal();
     }
     view.body.append(
       button(
@@ -949,7 +1304,10 @@
       ),
     );
     view.footer.append(
-      button("Cancel", () => view.d.close()),
+      button("Cancel", () => {
+        clearDraft();
+        view.d.close();
+      }),
       button(
         "Save macro",
         () => {
@@ -965,9 +1323,10 @@
             return;
           }
           if (!validProgram(program)) {
-            toast("Check the steps. Macros must finish within 60 seconds.");
+            toast(explainProgram(program));
             return;
           }
+          clearDraft();
           binding.program = program;
           app.savePcBindings();
           app.renderPcBindings();
@@ -1044,7 +1403,7 @@
     return total * p.repeat <= 60000;
   }
 
-  const diag = card("Integration monitor", "integration-monitor");
+  const diag = card("Integration monitor", "integration-monitor", { id: "diag.integration", level: "tool", title: "Integration monitor", hint: "Game receiver, packets, replay", keywords: "integration monitor game receiver packets replay record forza json udp platform check" });
   $("#diagnostics").append(diag.box);
   const summary = node("dl", { class: "studio-status-grid" }),
     diagStatus = text("No game packets received."),
@@ -1062,6 +1421,11 @@
     replaying = false,
     logs = [],
     lastDiagRender = 0,
+    diagTimer = 0,
+    packetHistory = [],
+    selectedPacket = null,
+    packetFilter = "",
+    limitNotified = false,
     lastAction = "No output applied this session",
     receiverMessage = "Off";
   const recordButton = button(
@@ -1072,17 +1436,20 @@
         send({ action: "setGameRecording", enabled: false });
         recordButton.textContent = "Record packets";
         diagStatus.textContent = `Recorded ${packets.length} packets.`;
+        updateRecIndicator();
         return;
       }
       stopReplay();
       packets = [];
       recordBytes = 0;
+      limitNotified = false;
       recording = true;
       send({ action: "setGameRecording", enabled: true });
       recordStart = performance.now();
       recordButton.textContent = "Stop recording";
       diagStatus.textContent =
         "Recording local game packets · limit 2,000 packets / 10 minutes";
+      startRecTicker();
     },
     "record-game-packets",
   );
@@ -1122,6 +1489,10 @@
         JSON.parse(p.packet);
         previous = p.atMs;
       }
+      if (!native) {
+        toast("Replaying packets is available in the desktop app only.");
+        return;
+      }
       if (!profile().gameLink.enabled) {
         toast("Enable the local game receiver on Profiles before replaying.");
         return;
@@ -1129,6 +1500,15 @@
       recording = false;
       send({ action: "setGameRecording", enabled: false });
       recordButton.textContent = "Record packets";
+      updateRecIndicator();
+      diagStatus.textContent = "Starting the local receiver for replay...";
+      const ready = await send({ action: "setGameLink", settings: profile().gameLink });
+      if (generation !== replayGeneration) return;
+      if (!ready) {
+        diagStatus.textContent = "The receiver could not be started, so nothing was replayed.";
+        toast("Replay not started: the local receiver did not start. Check Diagnostics.");
+        return;
+      }
       packets = data.packets;
       startReplay();
     } catch (e) {
@@ -1136,11 +1516,36 @@
       toast(`Replay failed: ${e.message}`);
     }
   });
-  const monitorButtons = node("div", { class: "studio-toolbar" }, [
+  const recIndicator = node("span", { class: "rec-indicator", id: "recording-indicator", role: "status", hidden: true });
+  let recTicker = 0;
+  function updateRecIndicator() {
+    recIndicator.hidden = !recording;
+    if (recording) {
+      const s = Math.floor((performance.now() - recordStart) / 1000);
+      recIndicator.textContent = `● Recording ${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")} · ${packets.length} packet${packets.length === 1 ? "" : "s"}`;
+    } else clearInterval(recTicker);
+  }
+  function startRecTicker() {
+    clearInterval(recTicker);
+    updateRecIndicator();
+    recTicker = setInterval(updateRecIndicator, 1000);
+  }
+  const group = (name, items) => {
+    const g = node("div", { class: "monitor-group" }, [node("small", { text: name }), ...items]);
+    g.setAttribute("role", "group");
+    g.setAttribute("aria-label", name);
+    return g;
+  };
+  const monitorButtons = node("div", { class: "monitor-groups" }, [
+    group("Receiver", [
     button(
       "Test receiver",
       async () => {
         try {
+          if (typeof invoke !== "function") {
+            toast("Sending a test packet is available in the desktop app only.");
+            return;
+          }
           const settings = profile().gameLink;
           if (!settings.enabled) {
             toast("Enable the game receiver on Profiles first.");
@@ -1164,7 +1569,10 @@
       },
       "test-game-receiver",
     ),
+    ]),
+    group("Record / export", [
     recordButton,
+    recIndicator,
     button(
       "Export recording",
       () => {
@@ -1179,16 +1587,87 @@
       },
       "export-game-recording",
     ),
+    ]),
+    group("Replay", [
     button("Replay file", () => replayFile.click(), "replay-game-recording"),
     button("Stop replay", stopReplay, "stop-game-replay"),
+    ]),
+    group("Platform", [
     button("Check platform", platformChecks, "check-platform"),
+    ]),
   ]);
+  // Packet inspector: recent packets, filter, pretty JSON, and a custom packet sender.
+  const inspector = node("details", { class: "packet-inspector", id: "packet-inspector" });
+  window.controllerPlatform?.section?.(inspector, "diag.packet-inspector", "tool", "Packet inspector", "Inspect a game packet", { keywords: "packet inspector game json udp datagram format" });
+  const inspectFilter = node("input", { type: "search", placeholder: "Filter recent packets", maxLength: 80 });
+  inspectFilter.setAttribute("aria-label", "Filter recent packets");
+  const inspectList = node("div", { class: "studio-list" }),
+    inspectView = node("pre", { id: "packet-view", text: "Select a packet to see it formatted." }),
+    custom = node("textarea", { id: "custom-packet", maxLength: 8192, placeholder: '{"events": ["my_event"]}' });
+  custom.setAttribute("aria-label", "Custom packet JSON");
+  inspectFilter.addEventListener("input", () => {
+    packetFilter = inspectFilter.value.trim().toLowerCase();
+    drawInspector();
+  });
+  function drawInspector() {
+    inspectList.replaceChildren();
+    const shown = packetHistory.filter((p) => !packetFilter || p.packet.toLowerCase().includes(packetFilter) || p.label.toLowerCase().includes(packetFilter));
+    for (const p of shown.slice(0, 20)) {
+      const b = button(`${p.time} · ${p.label}`, () => {
+        selectedPacket = p;
+        try {
+          inspectView.textContent = JSON.stringify(JSON.parse(p.packet), null, 2);
+        } catch {
+          inspectView.textContent = p.packet;
+        }
+      });
+      inspectList.append(b);
+    }
+    if (!shown.length) inspectList.append(text(packetHistory.length ? "No packets match the filter." : "Packets will appear here while the receiver is running."));
+  }
+  inspector.append(
+    node("summary", { text: "Packet inspector" }),
+    inspectFilter,
+    inspectList,
+    inspectView,
+    label("Custom packet to send to the local receiver", custom),
+    button("Send custom packet", async () => {
+      try {
+        if (typeof invoke !== "function") {
+          toast("Sending packets is available in the desktop app only.");
+          return;
+        }
+        const settings = profile().gameLink;
+        if (!settings.enabled) {
+          toast("Enable the game receiver on Profiles first.");
+          return;
+        }
+        const raw = custom.value.trim();
+        try {
+          JSON.parse(raw);
+        } catch (e) {
+          toast(`That is not valid JSON: ${e.message}`);
+          return;
+        }
+        if (new TextEncoder().encode(raw).length > 8192) {
+          toast("Packets are limited to 8 KB.");
+          return;
+        }
+        await send({ action: "setGameLink", settings });
+        await invoke("send_game_packet", { port: settings.port, format: settings.format, packet: raw });
+        diagStatus.textContent = "Custom packet sent.";
+      } catch (e) {
+        toast(`Could not send the packet: ${e}`);
+      }
+    }, "send-custom-packet"),
+  );
   diag.body.append(
     summary,
     monitorButtons,
     diagStatus,
     replayFile,
     packetLog,
+    inspector,
     checks,
   );
   function stopReplay() {
@@ -1219,10 +1698,12 @@
         return;
       }
       try {
+        if (typeof invoke !== "function") throw Error("replay is available in the desktop app only");
         await invoke("send_game_packet", { port, format, packet: p.packet });
       } catch (e) {
         if (generation !== replayGeneration) return;
         stopReplay();
+        diagStatus.textContent = `Replay stopped after ${i} of ${packets.length} packets: ${e}`;
         toast(`Replay stopped: ${e}`);
         return;
       }
@@ -1254,6 +1735,7 @@
         const row = node("div", {
           class: "studio-check" + (check.ok ? "" : " is-warn"),
         });
+        row.dataset.check = check.name;
         row.append(text(check.name, "strong"), text(check.detail));
         checks.append(row);
       }
@@ -1284,6 +1766,26 @@
       summary.append(text(name, "dt"), text(String(value), "dd"));
     }
     packetLog.replaceChildren(...logs.map((line) => text(line, "li")));
+    updateRecIndicator();
+    drawInspector();
+  }
+  function scheduleDiagnostics() {
+    if (state.currentView !== "diagnostics") return;
+    const wait = 200 - (performance.now() - lastDiagRender);
+    if (wait <= 0) {
+      clearTimeout(diagTimer);
+      diagTimer = 0;
+      drawDiagnostics();
+      lastDiagRender = performance.now();
+    } else if (!diagTimer) {
+      diagTimer = setTimeout(() => {
+        diagTimer = 0;
+        if (state.currentView === "diagnostics") {
+          drawDiagnostics();
+          lastDiagRender = performance.now();
+        }
+      }, wait);
+    }
   }
   function event(e) {
     if (e.type === "input") handleShortcuts(e.input.buttons);
@@ -1295,6 +1797,10 @@
       lastPacket = e.weapon || e.events?.join(", ") || "DSX instruction";
       logs.unshift(`${new Date().toLocaleTimeString()} · ${lastPacket}`);
       logs = logs.slice(0, 12);
+      if (e.packet) {
+        packetHistory.unshift({ time: new Date().toLocaleTimeString(), label: lastPacket, packet: String(e.packet), format: e.format });
+        packetHistory = packetHistory.slice(0, 50);
+      }
       diagStatus.textContent = `Receiver working · ${received} packets`;
       if (recording && e.packet && e.format) {
         const atMs = Math.round(performance.now() - recordStart);
@@ -1306,6 +1812,10 @@
           recording = false;
           send({ action: "setGameRecording", enabled: false });
           recordButton.textContent = "Record packets";
+          updateRecIndicator();
+          const why = packets.length >= 2000 ? "2,000 packets" : atMs > 600000 ? "10 minutes" : "the size limit";
+          diagStatus.textContent = `Recording stopped automatically at ${why}. ${packets.length} packets were kept; export them now.`;
+          toast(`Recording stopped at ${why}. Your ${packets.length} packets were kept.`);
         } else {
           recordBytes += new TextEncoder().encode(e.packet).length;
           packets.push({ atMs, format: e.format, packet: e.packet });
@@ -1329,13 +1839,7 @@
         receiverMessage = "Off";
       }
     }
-    if (
-      state.currentView === "diagnostics" &&
-      performance.now() - lastDiagRender > 200
-    ) {
-      drawDiagnostics();
-      lastDiagRender = performance.now();
-    }
+    scheduleDiagnostics();
   }
 
   const scrollPositions = new Map();
@@ -1352,52 +1856,234 @@
   );
   paletteButton.title = "Find a page, profile, or action";
   $(".mast-actions").append(paletteButton);
+  function fuzzyScore(name, q) {
+    if (!q) return 1;
+    const n = name.toLowerCase();
+    const at = n.indexOf(q);
+    if (at >= 0) return 1000 - at + (at === 0 ? 200 : 0);
+    let i = 0, score = 0, streak = 0;
+    for (const ch of n) {
+      if (ch === q[i]) {
+        streak++;
+        score += 2 + streak;
+        i++;
+        if (i === q.length) return score;
+      } else streak = 0;
+    }
+    return 0;
+  }
+  // Nav buttons carry a leading index span ("01"); the palette wants only the label text.
+  function navLabel(b) {
+    const span = b.querySelector("span:not(.nav-index)");
+    if (span) return span.textContent.trim().replace(/\s+/g, " ");
+    const copyNode = b.cloneNode(true);
+    copyNode.querySelectorAll(".nav-index").forEach((n) => n.remove());
+    return copyNode.textContent.trim().replace(/\s+/g, " ");
+  }
+  function pageLabel(view) {
+    const b = $$(".nav-link").find((x) => x.dataset.view === view);
+    return b ? navLabel(b) : view || "";
+  }
+  // Every tagged section is searchable. The kit index is preferred; a direct DOM scan fills any gap.
+  function sectionIndex() {
+    const out = new Map();
+    const add = (e) => {
+      if (!e || !e.id || out.has(e.id)) return;
+      out.set(e.id, e);
+    };
+    try {
+      const fromKit = window.controllerUI?.index?.();
+      if (Array.isArray(fromKit))
+        for (const e of fromKit)
+          add({
+            id: e.id,
+            title: e.title || e.id,
+            hint: e.hint || "",
+            keywords: Array.isArray(e.keywords) ? e.keywords.join(" ") : e.keywords || "",
+            level: e.level || "",
+            page: e.page || document.querySelector(`[data-ui-section="${CSS.escape(e.id)}"]`)?.closest(".screen")?.id || "",
+          });
+    } catch {}
+    for (const el of $$("[data-ui-section]"))
+      add({
+        id: el.dataset.uiSection,
+        title: el.dataset.title || el.dataset.uiSection,
+        hint: el.dataset.hint || "",
+        keywords: el.dataset.keywords || "",
+        level: el.dataset.level || "",
+        page: el.closest(".screen")?.id || "",
+      });
+    return [...out.values()];
+  }
+  // Reveal a section without the kit: open ancestor <details>, pick the haptic tab, scroll, focus, highlight.
+  function revealSection(id) {
+    const el = document.querySelector(`[data-ui-section="${CSS.escape(id)}"]`);
+    if (!el) return;
+    try {
+      if (window.controllerUI?.openFor) window.controllerUI.openFor(el);
+    } catch {}
+    // The kit opens ancestor sections without persisting them as the user's choice; only open them by hand without it.
+    if (!window.controllerUI?.openFor) for (let n = el; n; n = n.parentElement) if (n.tagName === "DETAILS") n.open = true;
+    if (el.closest(".haptic-tab-hidden")) {
+      const group = el.closest("[data-haptic-group]")?.dataset.hapticGroup;
+      ($(`#haptic-tabs [data-haptic-tab="${group || "studio"}"]:not([hidden])`) || $('#haptic-tabs [data-haptic-tab="all"]'))?.click();
+    }
+    setTimeout(() => {
+      el.scrollIntoView({ block: "start", behavior: "auto" });
+      const target = el.matches("input,select,textarea,button") ? el : el.querySelector("input:not([type=hidden]):not(:disabled),select:not(:disabled),textarea:not(:disabled),button:not(:disabled),summary");
+      if (target && target.offsetParent !== null) target.focus({ preventScroll: true });
+      else {
+        el.setAttribute("tabindex", "-1");
+        el.focus({ preventScroll: true });
+      }
+      el.classList.add("palette-active");
+      setTimeout(() => el.classList.toggle("palette-active", false), 1600);
+    }, 60);
+  }
+  function recentCommands() {
+    try {
+      const v = JSON.parse(localStorage.getItem("controller.recentCommands") || "[]");
+      return Array.isArray(v) ? v.filter((x) => typeof x === "string").slice(0, 5) : [];
+    } catch {
+      return [];
+    }
+  }
+  function rememberCommand(name) {
+    // Section rows are searched, not "recent": only pages, profiles and actions are remembered.
+    const list = [name, ...recentCommands().filter((n) => n !== name)].slice(0, 5);
+    try {
+      localStorage.setItem("controller.recentCommands", JSON.stringify(list));
+    } catch {}
+  }
   function openPalette() {
     if (document.querySelector("dialog[open]") || state.shortcutRecording)
       return;
+    const opener = document.activeElement;
+    let moved = false; // a page or section was opened: focus belongs to that target
     const view = dialog("Quick switch"),
       search = node("input", {
         type: "search",
-        placeholder: "Page, profile, or action",
+        placeholder: "Search pages, settings and actions",
         class: "palette-search",
+      }),
+      hint = node("small", {
+        class: "palette-hint",
+        text: `Type to find any setting, such as Bluetooth, gyro, Forza or macros. Open this anywhere with ${platform.shortcutLabel}.`,
       }),
       rows = node("div", { class: "studio-list" });
     search.setAttribute("aria-label", "Find a command");
+    view.d.addEventListener("close", () => {
+      if (!moved && opener && opener.isConnected && opener !== document.body) opener.focus({ preventScroll: true });
+    }, { once: true });
     const commands = [
       ...$$(".nav-link").map((b) => ({
-        name: b.textContent.trim().replace(/\s+/g, " "),
+        name: navLabel(b),
+        page: true,
         run: () => app.navigate(b.dataset.view),
       })),
       ...state.profiles.map((p) => ({
         name: `Profile: ${p.name}`,
         run: () => app.selectProfile(p.id, false),
       })),
+      { name: "Apply profile to controller", run: () => app.applyProfileHardware(true) },
+      { name: "Save profile", run: () => $("#save-profile")?.click() },
+      { name: "Undo last action", run: () => { if (!app.undoLast?.()) app.toast("Nothing to undo right now.", { error: false }); } },
+      { name: "Undo trigger edit", run: () => travel(-1) },
+      { name: "Redo trigger edit", run: () => travel(1) },
+      {
+        name: "Start game session",
+        run: () => window.gameSessions?.enqueue(() => window.gameSessions.start(profile(), true)),
+      },
+      { name: "End game session", run: () => window.gameSessions?.enqueue(() => window.gameSessions.restore()) },
+      { name: "Stop all output", run: () => window.dailyUse?.stopAll?.() },
       { name: "Stop macros", run: () => send({ action: "stopMacros" }) },
       { name: "Reset all output", run: () => $("#quick-reset").click() },
     ];
+    // Sections are listed only while searching so the first view stays short.
+    const sections = sectionIndex().map((e) => {
+      const page = pageLabel(e.page);
+      return {
+        name: page && page !== e.title ? `${e.title} \u00b7 ${page}` : e.title,
+        title: e.title,
+        pageName: page && page !== e.title ? page : "",
+        extra: [e.keywords, e.hint, page].join(" ").toLowerCase(),
+        hint: e.hint,
+        section: true,
+        run: () => {
+          if (e.page) app.navigate(e.page);
+          revealSection(e.id);
+        },
+      };
+    });
+    const recents = recentCommands();
+    let shown = [];
     function draw() {
+      const q = search.value.trim().toLowerCase();
+      shown = q
+        ? commands
+            .concat(sections)
+            .map((c, order) => {
+              let score = fuzzyScore(c.name, q);
+              if (c.page && score) score += 300;
+              if (c.extra) {
+                const words = c.extra.split(/\s+/);
+                const kw = words.some((w) => w.startsWith(q)) ? 500 : c.extra.includes(q) ? 250 : 0;
+                score = Math.max(score, kw);
+              }
+              return { c, order, score };
+            })
+            .filter((x) => x.score > 0)
+            .sort((a, b) => b.score - a.score || a.order - b.order)
+            .slice(0, 40)
+            .map((x) => x.c)
+        : [
+            ...recents.map((n) => commands.find((c) => c.name === n)).filter(Boolean),
+            ...commands.filter((c) => !recents.includes(c.name)),
+          ];
       rows.replaceChildren(
-        ...commands
-          .filter((c) =>
-            c.name.toLowerCase().includes(search.value.toLowerCase()),
-          )
-          .map((c) =>
-            button(c.name, () => {
-              view.d.close();
-              c.run();
-            }),
-          ),
+        ...shown.map((c, i) => {
+          const b = button(q || !recents.includes(c.name) ? c.title || c.name : `Recent: ${c.name}`, () => {
+            if (!c.section) rememberCommand(c.name);
+            if (c.section || c.page) moved = true;
+            view.d.close();
+            c.run();
+          });
+          // The page a setting lives on is a muted trailing label, not part of its name.
+          if (c.pageName) b.append(node("small", { class: "palette-page", text: c.pageName }));
+          b.setAttribute("aria-label", c.name);
+          if (c.hint) b.title = c.hint;
+          b.addEventListener("keydown", (e) => {
+            const buttons = [...rows.querySelectorAll("button")];
+            const at = buttons.indexOf(b);
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              buttons[Math.min(buttons.length - 1, at + 1)]?.focus();
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              (at ? buttons[at - 1] : search).focus();
+            }
+          });
+          return b;
+        }),
       );
+      if (!shown.length) rows.append(text("No matching command."));
     }
     search.addEventListener("input", draw);
     search.addEventListener("keydown", (e) => {
+      // type=search clears itself on the first Escape; close in one press instead.
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        view.d.close();
+        return;
+      }
       if (e.key === "ArrowDown") {
         e.preventDefault();
         $("button", rows)?.focus();
       }
       if (e.key === "Enter") $("button", rows)?.click();
     });
-    view.body.append(search, rows);
+    view.body.append(search, hint, rows);
     view.footer.append(button("Close", () => view.d.close()));
     draw();
     view.d.showModal();
@@ -1420,8 +2106,13 @@
       travel(e.key.toLowerCase() === "y" || e.shiftKey ? 1 : -1);
     }
   });
-  const prefs = card("Display", "display-preferences");
-  $(".settings-grid").append(prefs.box);
+  // Reduced motion lives inside the existing "Layout and controls" card when it exists,
+  // so there is a single place for display settings.
+  const layoutBody = $("#layout-preferences .studio-body");
+  const prefs = layoutBody
+    ? { body: layoutBody, box: null }
+    : card("Display", "display-preferences");
+  if (prefs.box) $(".settings-grid").append(prefs.box);
   for (const [key, name, cls] of [
     ["reducedMotion", "Reduce decorative motion", "studio-reduced-motion"],
   ]) {
@@ -1440,6 +2131,9 @@
     );
   }
   function renderProfile() {
+    loadedValues.clear();
+    seedBaseline();
+    if (typeof drawCurveEditor === "function") drawCurveEditor();
     baseline();
     updateHistory();
     renderFavorite();
