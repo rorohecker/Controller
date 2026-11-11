@@ -1958,6 +1958,11 @@
   function openPalette() {
     if (document.querySelector("dialog[open]") || state.shortcutRecording)
       return;
+    // A palette that was just closed removes itself on an asynchronous 'close' event: clear any such leftover so
+    // pressing Ctrl+K again straight after Escape never leaves two search boxes in the page.
+    document.querySelectorAll("dialog:not([open])").forEach((d) => {
+      if (d.querySelector(".palette-search")) d.remove();
+    });
     const opener = document.activeElement;
     let moved = false; // a page or section was opened: focus belongs to that target
     const view = dialog("Quick switch"),

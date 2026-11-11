@@ -58,6 +58,16 @@ def stored(page):
     return json.loads(page.evaluate("localStorage.getItem('controller.ui.v1')") or '{}')
 
 
+def wait_stored(page, key, value):
+    # <details> 'toggle' events (which persist the state) fire asynchronously, slower on CI runners.
+    page.wait_for_function("([k, v]) => { try { return JSON.parse(localStorage.getItem('controller.ui.v1') || '{}')[k] === v; } catch (e) { return false; } }", arg=[key, value])
+    return stored(page)
+
+
+def wait_open(page, section_id, value):
+    page.wait_for_function("([id, v]) => { try { return (JSON.parse(localStorage.getItem('controller.ui.v1') || '{}').open || {})[id] === v; } catch (e) { return false; } }", arg=[section_id, value])
+
+
 def main():
     with sync_playwright() as p:
         chrome = chrome_path()
@@ -79,7 +89,7 @@ def main():
         page.wait_for_function('!!window.controllerUI && !!window.controllerStudio')
         go(page, 'triggers')
         assert page.locator('details.ui-section[data-ui-wrap="triggers.bow-weapon"]').evaluate('d => d.open'), 'open state survives a reload'
-        assert stored(page)['open'].get('triggers.bow-weapon') is True
+        wait_open(page, 'triggers.bow-weapon', True)
         page.locator('details.ui-section[data-ui-wrap="triggers.bow-weapon"] > summary').click()
         page.wait_for_timeout(250)
         page.reload()
@@ -186,9 +196,9 @@ def main():
         assert page.locator('#nav-tools > summary').inner_text().strip().lower() == 'tools and diagnostics'
         page.locator('#nav-tools > summary').click()
         assert visible(page, '#nav [data-view="diagnostics"]')
-        assert stored(page)['navTools'] is True
+        assert wait_stored(page, 'navTools', True)['navTools'] is True
         page.locator('#nav-tools > summary').click()
-        assert not page.evaluate("document.querySelector('#nav-tools').open") and stored(page)['navTools'] is False
+        assert not page.evaluate("document.querySelector('#nav-tools').open") and wait_stored(page, 'navTools', False)['navTools'] is False
         go(page, 'diagnostics')
         assert page.evaluate("document.querySelector('#nav-tools').open"), 'the group opens itself for Diagnostics'
         assert page.locator('#nav [data-view="diagnostics"][aria-current="page"]').count() == 1
@@ -320,7 +330,7 @@ def main():
         wrap.locator('> summary').click()
         page.wait_for_timeout(250)
         assert not wrap.evaluate('d => d.open'), 'the user collapse sticks under Expand all'
-        assert stored(page)['open'].get('triggers.bow-weapon') is False
+        wait_open(page, 'triggers.bow-weapon', False)
         page.evaluate('controllerUI.showAll(false)')
         assert not wrap.evaluate('d => d.open')
         page.close()

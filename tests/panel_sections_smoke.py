@@ -66,13 +66,15 @@ def head_ids(browser):
 def palette_results(page, query):
     page.keyboard.press('Control+k')
     page.wait_for_selector('dialog[open] .palette-search')
-    page.locator('.palette-search').fill(query)
+    page.locator('dialog[open] .palette-search').fill(query)
     names = page.evaluate("[...document.querySelectorAll('dialog[open] .studio-list button')].map(b=>b.getAttribute('aria-label')||b.textContent)")
     return names
 
 
 def close_palette(page):
     page.keyboard.press('Escape')
+    # The dialog removes itself on an asynchronous close event; wait for it so the next Ctrl+K starts clean.
+    page.wait_for_function("!document.querySelector('dialog[open] .palette-search')")
     page.wait_for_function("!document.querySelector('dialog[open]')")
 
 
