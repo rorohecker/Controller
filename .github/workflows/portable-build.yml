@@ -208,7 +208,7 @@ jobs:
           data={'version':json.loads(Path('tauri.conf.json').read_text())['version'],'os':os.environ['RUNNER_OS'],'updaterSigned':bool(list(Path('target').rglob('*.sig'))),'developerIdSigned':mac and bool(os.environ.get('MAC_CERTIFICATE')),'notarized':mac and bool(os.environ.get('MAC_CERTIFICATE') and os.environ.get('MAC_APPLE_ID'))}
           Path('target/portable-build-info-'+os.environ['RUNNER_OS']+'.json').write_text(json.dumps(data,indent=2)+'\n')
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: controller-${{ runner.os }}-preview
           path: |
