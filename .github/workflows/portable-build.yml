@@ -80,7 +80,7 @@ jobs:
             bundle: deb,appimage
             config: tauri.linux.conf.json
           - os: macos-latest
-            bundle: dmg
+            bundle: app,dmg
             config: tauri.macos.conf.json
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
@@ -191,7 +191,9 @@ jobs:
           else
             echo 'No Developer ID certificate configured; macOS preview will not be notarized.'
           fi
-          cargo tauri build --bundles dmg --target universal-apple-darwin --config tauri.macos.conf.json --ci
+          # The updater archive (CONTROLLER.app.tar.gz + .sig) is produced from the `app` bundle, so build it
+          # alongside the dmg; with only `dmg` the update feed has no macOS entry and the release cannot publish.
+          cargo tauri build --bundles app,dmg --target universal-apple-darwin --config tauri.macos.conf.json --ci
           if [[ -n "$MAC_CERTIFICATE" ]]; then
             codesign --verify --deep --strict target/universal-apple-darwin/release/bundle/macos/CONTROLLER.app
             if [[ -n "$MAC_APPLE_ID" ]]; then xcrun stapler validate target/universal-apple-darwin/release/bundle/macos/CONTROLLER.app; fi

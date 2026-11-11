@@ -1,6 +1,6 @@
 {
   "bundle": {
-    "targets": ["dmg"],
+    "targets": ["app", "dmg"],
     "createUpdaterArtifacts": false,
     "macOS": { "minimumSystemVersion": "14.2", "infoPlist": "resources/Info.plist" },
     "icon": ["icons/icon.icns"],
