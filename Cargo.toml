@@ -33,7 +33,7 @@ crossbeam-queue = "0.3"
 rubato = "0.16"
 tauri-plugin-dialog = "~2.8"
 tauri-plugin-notification = "2.3"
-symphonia = { version = "0.5.5", features = ["aac", "mp3", "isomp4", "alac", "flac", "ogg", "pcm", "vorbis", "wav", "aiff"] }
+symphonia = { version = "0.6.1", features = ["aac", "mp3", "isomp4", "alac", "flac", "ogg", "pcm", "vorbis", "wav", "aiff"] }
 
 [target.'cfg(windows)'.dependencies]
 hidapi = { version = "2.6.7", default-features = false, features = ["windows-native"] }
